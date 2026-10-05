@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 1.1.0
+#  PacketPilot 1.2.0
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
-#  nginx serves the static files, everything else runs in the browser.
+#  nginx serves the static files over HTTPS with a self-signed certificate,
+#  everything else runs in the browser.
 #  Nothing is downloaded from the internet except the nginx packages
 #  (and, with --update, the latest script from GitHub).
 #
 #  Usage:
-#    sudo bash packetpilot-install.sh                 Install or update (port 8080)
-#    sudo bash packetpilot-install.sh --port 80       On a different port
+#    sudo bash packetpilot-install.sh                 Install or update (HTTPS on port 8080)
+#    sudo bash packetpilot-install.sh --port 443      On a different port
+#    sudo bash packetpilot-install.sh --http          Plain HTTP instead of HTTPS
+#    sudo bash packetpilot-install.sh --new-cert      Generate a new self-signed certificate
 #    sudo bash packetpilot-install.sh --update        Fetch the latest version from GitHub
 #    sudo bash packetpilot-install.sh --uninstall     Remove
 #    bash packetpilot-install.sh --extract ./web      Only extract the web files (no root)
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="1.1.0"
+PP_VERSION="1.2.0"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -27,6 +30,12 @@ PP_ACTION="install"
 PP_EXTRACT_DIR=""
 PP_FORCE="no"
 PP_PORT_SET="no"
+PP_TLS="yes"
+PP_TLS_SET="no"
+PP_NEW_CERT="no"
+PP_TLS_DIR="${PP_ROOT}/tls"
+PP_CERT="${PP_TLS_DIR}/packetpilot.crt"
+PP_KEY="${PP_TLS_DIR}/packetpilot.key"
 PP_REPO="santiagotoro2023/packetpilot"
 PP_SCRIPT_URL="https://raw.githubusercontent.com/${PP_REPO}/main/packetpilot-install.sh"
 
@@ -36,7 +45,7 @@ warn() { printf '\033[1;33m ! \033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m ✗ \033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -44,6 +53,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --port)      PP_PORT="${2:-}"; PP_PORT_SET="yes"; shift 2 ;;
     --port=*)    PP_PORT="${1#*=}"; PP_PORT_SET="yes"; shift ;;
+    --http)      PP_TLS="no"; PP_TLS_SET="yes"; shift ;;
+    --https)     PP_TLS="yes"; PP_TLS_SET="yes"; shift ;;
+    --new-cert)  PP_NEW_CERT="yes"; shift ;;
     --update)    PP_ACTION="update"; shift ;;
     --uninstall) PP_ACTION="uninstall"; shift ;;
     --extract)   PP_ACTION="extract"; PP_EXTRACT_DIR="${2:-}"; shift 2 ;;
@@ -5862,15 +5874,58 @@ port_in_use() {
 }
 
 install_nginx() {
-  if command -v nginx >/dev/null 2>&1; then
+  local pkgs=()
+  command -v nginx >/dev/null 2>&1 || pkgs+=(nginx)
+  [ "$PP_TLS" = "yes" ] && ! command -v openssl >/dev/null 2>&1 && pkgs+=(openssl)
+  if [ ${#pkgs[@]} -eq 0 ]; then
     ok "nginx is already installed"
   else
-    say "Installing nginx"
+    say "Installing ${pkgs[*]}"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq nginx >/dev/null
-    ok "nginx installed"
+    apt-get install -y -qq "${pkgs[@]}" >/dev/null
+    ok "${pkgs[*]} installed"
   fi
+}
+
+# Self-signed certificate for this server. An existing certificate is kept so that
+# browsers that already accepted it do not warn again; it is only replaced when it
+# is missing, broken, expires within 30 days or --new-cert is given.
+ensure_cert() {
+  [ "$PP_TLS" = "yes" ] || return 0
+  if [ "$PP_NEW_CERT" = "no" ] && [ -s "$PP_CERT" ] && [ -s "$PP_KEY" ] \
+     && openssl x509 -in "$PP_CERT" -noout -checkend 2592000 >/dev/null 2>&1; then
+    ok "Keeping the existing certificate ($(openssl x509 -in "$PP_CERT" -noout -enddate | cut -d= -f2))"
+    return 0
+  fi
+  say "Generating a self-signed certificate"
+  local host fqdn san ip
+  host="$(hostname -s 2>/dev/null || hostname)"
+  fqdn="$(hostname -f 2>/dev/null || true)"
+  san="DNS:${host},DNS:localhost"
+  [ -n "$fqdn" ] && [ "$fqdn" != "$host" ] && [ "$fqdn" != "localhost" ] && san="${san},DNS:${fqdn}"
+  san="${san},IP:127.0.0.1"
+  [ -f /proc/net/if_inet6 ] && san="${san},IP:::1"
+  for ip in $(hostname -I 2>/dev/null || true); do
+    case "$ip" in fe80:*) continue ;; esac
+    san="${san},IP:${ip}"
+  done
+  mkdir -p "$PP_TLS_DIR"
+  chmod 700 "$PP_TLS_DIR"
+  # 825 days is the longest validity Apple devices accept for TLS server certificates
+  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
+    -keyout "${PP_KEY}.new" -out "${PP_CERT}.new" \
+    -subj "/CN=${host}/O=PacketPilot" \
+    -addext "subjectAltName=${san}" \
+    -addext "basicConstraints=critical,CA:FALSE" \
+    -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+    -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1 \
+    || die "Could not generate the certificate with openssl."
+  chmod 600 "${PP_KEY}.new"
+  chmod 644 "${PP_CERT}.new"
+  mv "${PP_KEY}.new" "$PP_KEY"
+  mv "${PP_CERT}.new" "$PP_CERT"
+  ok "Certificate for ${san//,/, } (valid 825 days)"
 }
 
 write_site() {
@@ -5880,13 +5935,28 @@ write_site() {
     listen6="    # IPv6 is not available on this system"
     warn "No IPv6 available, PacketPilot only listens on IPv4."
   fi
+  local ssl="" tls="" PP_TLS_NOTE=" (--http)"
+  if [ "$PP_TLS" = "yes" ]; then
+    PP_TLS_NOTE=""
+    ssl=" ssl"
+    tls="
+    ssl_certificate     ${PP_CERT};
+    ssl_certificate_key ${PP_KEY};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:PacketPilot:1m;
+    ssl_session_timeout 1d;
+    # Plain HTTP on the HTTPS port: redirect instead of showing an error
+    error_page 497 =301 https://\$host:\$server_port\$request_uri;
+"
+  fi
+  [ -n "$ssl" ] && listen6="${listen6/:${PP_PORT};/:${PP_PORT} ssl;}"
   cat > "$PP_SITE" <<NGINX
-# PacketPilot ${PP_VERSION}, generated by packetpilot-install.sh
+# PacketPilot ${PP_VERSION}, generated by packetpilot-install.sh${PP_TLS_NOTE}
 server {
-    listen ${PP_PORT};
+    listen ${PP_PORT}${ssl};
 ${listen6}
     server_name _;
-
+${tls}
     root ${PP_WWW};
     index index.html;
     charset utf-8;
@@ -5922,25 +5992,32 @@ open_firewall() {
   fi
 }
 
-# Keep the previous port when reinstalling
-keep_port() {
-  if [ "$PP_PORT_SET" = "no" ] && [ -f "$PP_SITE" ]; then
+# Keep the previous port and the choice of HTTP or HTTPS when reinstalling
+keep_settings() {
+  [ -f "$PP_SITE" ] || return 0
+  if [ "$PP_PORT_SET" = "no" ]; then
     local old
-    old="$(awk '/^[[:space:]]*listen[[:space:]]+[0-9]+;/ { gsub(";", "", $2); print $2; exit }' "$PP_SITE")"
+    old="$(awk '/^[[:space:]]*listen[[:space:]]+[0-9]+[[:space:];]/ { gsub(";", "", $2); print $2; exit }' "$PP_SITE")"
     if [ -n "$old" ] && [ "$old" != "$PP_PORT" ]; then
       PP_PORT="$old"
       ok "Keeping previous port ${PP_PORT} (change with --port)"
     fi
   fi
+  # Sites written by versions before 1.2.0 never had TLS: those switch to HTTPS now
+  if [ "$PP_TLS_SET" = "no" ] && grep -q "^# PacketPilot.*--http" "$PP_SITE"; then
+    PP_TLS="no"
+    ok "Keeping plain HTTP (switch with --https)"
+  fi
 }
 
 do_install() {
   check_system
-  keep_port
+  keep_settings
   if port_in_use && [ ! -f "$PP_SITE" ]; then
     warn "Port ${PP_PORT} is already in use. If you run into problems, choose another one with --port."
   fi
   install_nginx
+  ensure_cert
   say "Writing web files to ${PP_WWW}"
   local tmp
   tmp="$(mktemp -d)"
@@ -5960,13 +6037,22 @@ do_install() {
   local ips
   ips="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -3 || true)"
   echo
+  local scheme="http"
+  [ "$PP_TLS" = "yes" ] && scheme="https"
   say "PacketPilot ${PP_VERSION} is ready:"
   if [ -n "$ips" ]; then
-    for ip in $ips; do echo "      http://${ip}:${PP_PORT}/"; done
+    for ip in $ips; do echo "      ${scheme}://${ip}:${PP_PORT}/"; done
   else
-    echo "      http://<IP-of-this-server>:${PP_PORT}/"
+    echo "      ${scheme}://<IP-of-this-server>:${PP_PORT}/"
   fi
   echo
+  if [ "$PP_TLS" = "yes" ]; then
+    echo "    The certificate is self-signed, so the browser warns once. Compare the fingerprint"
+    echo "    before you accept it:"
+    echo "      $(openssl x509 -in "$PP_CERT" -noout -fingerprint -sha256 | cut -d= -f2)"
+    echo "    Certificate: ${PP_CERT}"
+    echo
+  fi
   echo "    Each browser stores progress and your own networks separately."
   echo "    Update: sudo bash packetpilot-install.sh --update. Remove: --uninstall"
 }
@@ -5990,6 +6076,8 @@ do_update() {
   local args=()
   [ "$PP_PORT_SET" = "yes" ] && args+=(--port "$PP_PORT")
   [ "$PP_FORCE" = "yes" ] && args+=(--force)
+  [ "$PP_TLS_SET" = "yes" ] && { [ "$PP_TLS" = "yes" ] && args+=(--https) || args+=(--http); }
+  [ "$PP_NEW_CERT" = "yes" ] && args+=(--new-cert)
   exec bash "$tmp" "${args[@]}"
 }
 

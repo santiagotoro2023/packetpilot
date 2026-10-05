@@ -13,18 +13,20 @@ curl -fsSLO https://raw.githubusercontent.com/santiagotoro2023/packetpilot/main/
 sudo bash packetpilot-install.sh
 ```
 
-PacketPilot then runs at `http://<server>:8080/`.
+PacketPilot then runs at `https://<server>:8080/`, secured with a self-signed certificate that the installer generates automatically. Your browser warns once because no public authority signed it; the installer prints the certificate's SHA-256 fingerprint so you can compare it before accepting. Plain `http://` requests to the port are redirected to HTTPS.
 
 | Command | Effect |
 |---|---|
-| `sudo bash packetpilot-install.sh` | installs or updates (port 8080) |
-| `sudo bash packetpilot-install.sh --port 80` | different port. With 80, the nginx default site is disabled |
+| `sudo bash packetpilot-install.sh` | installs or updates (HTTPS on port 8080) |
+| `sudo bash packetpilot-install.sh --port 443` | different port. With 80, the nginx default site is disabled |
+| `sudo bash packetpilot-install.sh --http` | plain HTTP without a certificate (kept on later updates, back with `--https`) |
+| `sudo bash packetpilot-install.sh --new-cert` | generates a new self-signed certificate |
 | `sudo bash packetpilot-install.sh --update` | fetches the latest version from GitHub |
 | `sudo bash packetpilot-install.sh --uninstall` | removes PacketPilot, nginx stays |
 | `bash packetpilot-install.sh --extract ./web` | only extracts the web files, no root needed |
 | `--force` | also installs on untested systems |
 
-The script installs nginx from the Debian packages, writes the files to `/opt/packetpilot/www` and creates `/etc/nginx/sites-available/packetpilot`. If `ufw` is active, the port is opened. At runtime PacketPilot loads nothing from the internet, so it also works in isolated lab networks.
+The script installs nginx (and openssl, if missing) from the Debian packages, writes the files to `/opt/packetpilot/www` and creates `/etc/nginx/sites-available/packetpilot`. The certificate and key live in `/opt/packetpilot/tls/`. The certificate covers the hostname, `localhost` and all IP addresses of the server and is valid for 825 days. Updates keep it, so browsers don't warn again; it is only replaced when it expires within 30 days or with `--new-cert`. To use your own certificate, replace `packetpilot.crt` and `packetpilot.key` there and run `systemctl reload nginx`. If `ufw` is active, the port is opened. At runtime PacketPilot loads nothing from the internet, so it also works in isolated lab networks.
 
 Each browser stores progress, settings and your own networks locally. They can be exported and imported as JSON from the home page.
 
