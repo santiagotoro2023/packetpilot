@@ -1,4 +1,4 @@
-// Bausteine für Topologien und die Beispielnetze
+// Building blocks for topologies and the example networks
 let LN = 1;
 export const host = (name, x, y, ip = '', prefix = 24, gw = '', vlan = null, type = 'pc') =>
   ({ id: name, type, name, x, y, ifaces: { eth1: { ip, prefix, vlan } }, gw });
@@ -20,72 +20,72 @@ export const trunk = (allowed = '1-4094', native = 1) => ({ mode: 'trunk', allow
 
 export function topo(name, devices, links, zones) { return { name, devices, links, zones }; }
 
-// -------------------------------------------------------------- Beispielnetze
+// -------------------------------------------------------------- Example networks
 export const PRESETS = [
-  { id: 'switch3', title: 'Ein Switch, drei PCs', topics: ['Ethernet', 'ARP', 'Switching'],
-    text: 'Das kleinste sinnvolle Netz. Beobachte ARP und wie der Switch seine MAC-Tabelle füllt.',
-    make: () => topo('Ein Switch, drei PCs', [
+  { id: 'switch3', title: 'One switch, three PCs', topics: ['Ethernet', 'ARP', 'Switching'],
+    text: 'The smallest useful network. Watch ARP and how the switch fills its MAC table.',
+    make: () => topo('One switch, three PCs', [
       host('pc1', 120, 120, '10.0.0.1'), host('pc2', 120, 320, '10.0.0.2'), host('pc3', 520, 220, '10.0.0.3'), sw('sw1', 320, 220)],
     [link('pc1', 'eth1', 'sw1', 'eth1'), link('pc2', 'eth1', 'sw1', 'eth2'), link('pc3', 'eth1', 'sw1', 'eth3')]) },
-  { id: 'routed', title: 'Zwei Subnetze und ein Router', topics: ['Routing', 'ARP', 'TTL'],
-    text: 'LAN A und LAN B, verbunden über r1. Ideal, um MAC- und TTL-Wechsel pro Segment zu sehen.',
-    make: () => topo('Zwei Subnetze und ein Router', [
+  { id: 'routed', title: 'Two subnets and a router', topics: ['Routing', 'ARP', 'TTL'],
+    text: 'LAN A and LAN B, connected via r1. Ideal for seeing how MAC addresses and TTL change per segment.',
+    make: () => topo('Two subnets and a router', [
       host('pc1', 100, 120, '192.168.10.10', 24, '192.168.10.1'), host('pc2', 100, 320, '192.168.10.11', 24, '192.168.10.1'),
       sw('sw1', 290, 220), router('r1', 480, 220, { eth1: '192.168.10.1/24', eth2: '192.168.20.1/24' }),
       server('srv1', 680, 220, '192.168.20.20', 24, '192.168.20.1')],
     [link('pc1', 'eth1', 'sw1', 'eth1'), link('pc2', 'eth1', 'sw1', 'eth2'), link('r1', 'eth1', 'sw1', 'eth4'), link('r1', 'eth2', 'srv1', 'eth1')]) },
-  { id: 'chain', title: 'Drei Router in Reihe', topics: ['Statisches Routing', 'traceroute'],
-    text: 'Statische Routen über drei Router. Starte auf pc1 ein traceroute 10.0.4.10.',
+  { id: 'chain', title: 'Three routers in a row', topics: ['Static routing', 'traceroute'],
+    text: 'Static routes across three routers. Run traceroute 10.0.4.10 on pc1.',
     make: chainTopo },
-  { id: 'mtu', title: 'Engpass mit kleiner MTU', topics: ['MTU', 'PMTUD', 'Fragmentierung'],
-    text: 'Der Link zwischen r1 und r2 hat nur MTU 1400. Teste ping -s 1472 -M do und -M dont.',
-    make: () => topo('Engpass mit kleiner MTU', [
+  { id: 'mtu', title: 'Bottleneck with a small MTU', topics: ['MTU', 'PMTUD', 'Fragmentation'],
+    text: 'The link between r1 and r2 only has MTU 1400. Try ping -s 1472 -M do and -M dont.',
+    make: () => topo('Bottleneck with a small MTU', [
       host('pc1', 100, 220, '10.0.1.10', 24, '10.0.1.1'), router('r1', 300, 220, { eth1: '10.0.1.1/24', eth2: '10.0.12.1/24' }, [['10.0.2.0/24', '10.0.12.2']]),
       router('r2', 500, 220, { eth1: '10.0.12.2/24', eth2: '10.0.2.1/24' }, [['10.0.1.0/24', '10.0.12.1']]), server('srv1', 700, 220, '10.0.2.20', 24, '10.0.2.1')],
     [link('pc1', 'eth1', 'r1', 'eth1'), link('r1', 'eth2', 'r2', 'eth1', 1400), link('r2', 'eth2', 'srv1', 'eth1')]) },
-  { id: 'vlans', title: 'VLANs über einen Trunk', topics: ['VLAN', '802.1Q', 'Trunk'],
-    text: 'Zwei Switches, zwei VLANs, ein Trunk dazwischen. Schau dir die Tags auf dem Trunk an.',
+  { id: 'vlans', title: 'VLANs over a trunk', topics: ['VLAN', '802.1Q', 'Trunk'],
+    text: 'Two switches, two VLANs, a trunk in between. Take a look at the tags on the trunk.',
     make: vlanTopo },
-  { id: 'campus', title: 'Campus mit Routing zwischen VLANs', topics: ['VLAN', 'Routing', 'Regeln'],
-    text: 'Clients in VLAN 10, Server in VLAN 20, r1 routet dazwischen. Probiere Regeln auf r1 aus.',
-    make: () => topo('Campus mit Routing zwischen VLANs', [
+  { id: 'campus', title: 'Campus with routing between VLANs', topics: ['VLAN', 'Routing', 'Rules'],
+    text: 'Clients in VLAN 10, servers in VLAN 20, r1 routes between them. Try out rules on r1.',
+    make: () => topo('Campus with routing between VLANs', [
       host('client1', 100, 100, '10.10.0.11', 24, '10.10.0.1'), host('client2', 100, 300, '10.10.0.12', 24, '10.10.0.1'),
       server('web', 640, 100, '10.20.0.80', 24, '10.20.0.1'), server('dns', 640, 300, '10.20.0.53', 24, '10.20.0.1'),
       sw('sw1', 370, 200, { eth1: acc(10), eth2: acc(10), eth3: acc(20), eth4: acc(20), eth5: acc(10), eth6: acc(20) }),
       router('r1', 370, 400, { eth1: '10.10.0.1/24', eth2: '10.20.0.1/24' })],
     [link('client1', 'eth1', 'sw1', 'eth1'), link('client2', 'eth1', 'sw1', 'eth2'), link('web', 'eth1', 'sw1', 'eth3'), link('dns', 'eth1', 'sw1', 'eth4'),
       link('r1', 'eth1', 'sw1', 'eth5'), link('r1', 'eth2', 'sw1', 'eth6')]) },
-  { id: 'vxlan', title: 'VXLAN über ein geroutetes Underlay', topics: ['VXLAN', 'Underlay', 'Overlay'],
-    text: 'Zwei VTEPs, ein Router dazwischen, zwei Segmente. Der Router kennt die Netze der Server nicht.',
+  { id: 'vxlan', title: 'VXLAN over a routed underlay', topics: ['VXLAN', 'Underlay', 'Overlay'],
+    text: 'Two VTEPs, a router in between, two segments. The router does not know the servers\' networks.',
     make: () => vxlanTopo({ two: true }) },
-  { id: 'stp', title: 'Redundanz mit Spanning Tree', topics: ['STP', 'Redundanz', 'Root Bridge'],
-    text: 'Drei Switches im Dreieck. STP blockiert einen Port. Trenne ein Kabel und schau zu, wie das Netz umschaltet.',
+  { id: 'stp', title: 'Redundancy with spanning tree', topics: ['STP', 'Redundancy', 'Root bridge'],
+    text: 'Three switches in a triangle. STP blocks one port. Disconnect a cable and watch the network fail over.',
     make: () => stpTriangle({ enabled: true, rootPrio: 4096 }) },
-  { id: 'loop', title: 'Schleife ohne Spanning Tree', topics: ['Broadcast-Sturm', 'Schleife'],
-    text: 'Das gleiche Dreieck, aber STP ist aus. Ein einziger Ping genügt für einen Broadcast-Sturm.',
+  { id: 'loop', title: 'Loop without spanning tree', topics: ['Broadcast storm', 'Loop'],
+    text: 'The same triangle, but STP is off. A single ping is enough for a broadcast storm.',
     make: () => stpTriangle({ enabled: false }) },
-  { id: 'stpsquare', title: 'Vier Switches im Ring', topics: ['STP', 'Portkosten', 'Port-Rollen'],
-    text: 'Welcher Port blockiert, und wie verschiebst du ihn mit Portkosten?',
+  { id: 'stpsquare', title: 'Four switches in a ring', topics: ['STP', 'Port costs', 'Port roles'],
+    text: 'Which port blocks, and how do you move it with port costs?',
     make: () => stpSquare() },
   { id: 'stick', title: 'Router-on-a-Stick', topics: ['Subinterfaces', 'VLAN', 'Trunk'],
-    text: 'Ein Router, ein Kabel, zwei VLANs: r1 routet über die Subinterfaces eth1.10 und eth1.20.',
+    text: 'One router, one cable, two VLANs: r1 routes via the subinterfaces eth1.10 and eth1.20.',
     make: () => stickTopo(true) },
-  { id: 'services', title: 'Web und DNS', topics: ['TCP', 'UDP', 'DNS', 'Regeln'],
-    text: 'Ein Client, ein Webserver, ein DNS-Server. curl http://web.lab/ löst erst den Namen auf und baut dann eine TCP-Verbindung auf.',
+  { id: 'services', title: 'Web and DNS', topics: ['TCP', 'UDP', 'DNS', 'Rules'],
+    text: 'A client, a web server, a DNS server. curl http://web.lab/ first resolves the name and then opens a TCP connection.',
     make: () => servicesTopo() },
-  { id: 'failover', title: 'Failover mit Gratuitous ARP', topics: ['ARP', 'GARP', 'Failover'],
-    text: 'Die Dienstadresse 10.0.0.100 zieht von srvA zu srvB um. Mit und ohne Gratuitous ARP ausprobieren.',
+  { id: 'failover', title: 'Failover with gratuitous ARP', topics: ['ARP', 'GARP', 'Failover'],
+    text: 'The service address 10.0.0.100 moves from srvA to srvB. Try it with and without gratuitous ARP.',
     make: () => failoverTopo() },
-  { id: 'tcppath', title: 'TCP über einen Engpass', topics: ['TCP', 'MSS', 'PMTUD'],
-    text: 'Zwischen r1 und r2 nur MTU 1400. Der Webserver muss seine Segmente verkleinern.',
+  { id: 'tcppath', title: 'TCP across a bottleneck', topics: ['TCP', 'MSS', 'PMTUD'],
+    text: 'Only MTU 1400 between r1 and r2. The web server has to shrink its segments.',
     make: () => tcpPathTopo() },
-  { id: 'empty', title: 'Leeres Netz', topics: ['Eigenes Netz'],
-    text: 'Ein leerer Plan für deine eigene Topologie.',
-    make: () => topo('Mein Netz', [], []) }
+  { id: 'empty', title: 'Empty network', topics: ['Your own network'],
+    text: 'An empty canvas for your own topology.',
+    make: () => topo('My network', [], []) }
 ];
 
 export function chainTopo() {
-  return topo('Drei Router in Reihe', [
+  return topo('Three routers in a row', [
     host('pc1', 80, 220, '10.0.1.10', 24, '10.0.1.1'),
     router('r1', 250, 220, { eth1: '10.0.1.1/24', eth2: '10.0.12.1/24' }, [['0.0.0.0/0', '10.0.12.2']]),
     router('r2', 420, 220, { eth1: '10.0.12.2/24', eth2: '10.0.23.2/24' }, [['10.0.1.0/24', '10.0.12.1'], ['10.0.4.0/24', '10.0.23.3']]),
@@ -95,7 +95,7 @@ export function chainTopo() {
 }
 export function vlanTopo(trunked = true) {
   const up = trunked ? trunk('10,20', 1) : acc(1);
-  return topo('VLANs über einen Trunk', [
+  return topo('VLANs over a trunk', [
     host('a10', 90, 110, '10.10.0.1'), host('a20', 90, 330, '10.20.0.1'),
     host('b10', 690, 110, '10.10.0.2'), host('b20', 690, 330, '10.20.0.2'),
     sw('s1', 270, 220, { eth1: acc(10), eth2: acc(20), eth8: up }), sw('s2', 510, 220, { eth1: acc(10), eth2: acc(20), eth8: up })],
@@ -116,29 +116,29 @@ export function vxlanTopo({ two = false, vni2 = 10010, port2 = 4789, mtu = 1500,
     devs.push(host('pc1', 90, 400, '192.168.20.11'), host('pc2', 790, 400, '192.168.20.12'));
     links.push(link('pc1', 'eth1', 'vtep1', 'eth3'), link('pc2', 'eth1', 'vtep2', 'eth3'));
   }
-  return topo('VXLAN über ein geroutetes Underlay', devs, links,
-    [{ x: 20, y: 40, w: 860, h: 130, label: two ? 'Overlay: VNI 10010 (192.168.10.0/24) und VNI 10020 (192.168.20.0/24)' : 'Overlay: VNI 10010, 192.168.10.0/24', kind: 'overlay' },
-      { x: 150, y: 320, w: 580, h: 120, label: 'Underlay: geroutet, kennt nur die Loopbacks der VTEPs', kind: 'underlay' }]);
+  return topo('VXLAN over a routed underlay', devs, links,
+    [{ x: 20, y: 40, w: 860, h: 130, label: two ? 'Overlay: VNI 10010 (192.168.10.0/24) and VNI 10020 (192.168.20.0/24)' : 'Overlay: VNI 10010, 192.168.10.0/24', kind: 'overlay' },
+      { x: 150, y: 320, w: 580, h: 120, label: 'Underlay: routed, only knows the VTEP loopbacks', kind: 'underlay' }]);
 }
 
-// -------------------------------------------------------------- Spanning Tree, Subinterfaces, Dienste
-const stpCfg = (enabled, prio = 32768, timers = 'schnell') => ({ stp: { enabled, priority: prio, timers } });
-export function stpTriangle({ enabled = true, rootPrio = 32768, timers = 'schnell', edge = false } = {}) {
+// -------------------------------------------------------------- Spanning tree, subinterfaces, services
+const stpCfg = (enabled, prio = 32768, timers = 'fast') => ({ stp: { enabled, priority: prio, timers } });
+export function stpTriangle({ enabled = true, rootPrio = 32768, timers = 'fast', edge = false } = {}) {
   const pcPort = edge ? { mode: 'access', vlan: 1, edge: true } : acc(1);
-  return topo(enabled ? 'Redundanz mit Spanning Tree' : 'Schleife ohne Spanning Tree', [
+  return topo(enabled ? 'Redundancy with spanning tree' : 'Loop without spanning tree', [
     sw('sw1', 400, 110, {}, stpCfg(enabled, rootPrio, timers)), sw('sw2', 230, 300, { eth5: pcPort }, stpCfg(enabled, 32768, timers)), sw('sw3', 570, 300, { eth5: pcPort }, stpCfg(enabled, 32768, timers)),
     host('pc1', 80, 300, '10.0.0.1'), host('pc2', 720, 300, '10.0.0.2')],
   [link('sw1', 'eth1', 'sw2', 'eth1'), link('sw1', 'eth2', 'sw3', 'eth1'), link('sw2', 'eth2', 'sw3', 'eth2'),
     link('pc1', 'eth1', 'sw2', 'eth5'), link('pc2', 'eth1', 'sw3', 'eth5')],
-  [{ x: 160, y: 40, w: 480, h: 330, label: 'Redundante Verkabelung: drei Wege, eine Schleife', color: 'yellow' }]);
+  [{ x: 160, y: 40, w: 480, h: 330, label: 'Redundant cabling: three paths, one loop', color: 'yellow' }]);
 }
 export function stpSquare() {
-  return topo('Vier Switches im Ring', [
+  return topo('Four switches in a ring', [
     sw('sw1', 240, 110, {}, stpCfg(true, 4096)), sw('sw2', 560, 110, {}, stpCfg(true)), sw('sw3', 560, 340, { eth5: acc(1) }, stpCfg(true)), sw('sw4', 240, 340, {}, stpCfg(true)),
     host('pc1', 80, 110, '10.0.0.1'), host('pc3', 720, 340, '10.0.0.3')],
   [link('sw1', 'eth1', 'sw2', 'eth1'), link('sw2', 'eth2', 'sw3', 'eth1'), link('sw3', 'eth2', 'sw4', 'eth2'), link('sw4', 'eth1', 'sw1', 'eth2'),
     link('pc1', 'eth1', 'sw1', 'eth5'), link('pc3', 'eth1', 'sw3', 'eth5')],
-  [{ x: 170, y: 40, w: 460, h: 370, label: 'Ring aus vier Switches, sw1 ist Root', color: 'yellow' }]);
+  [{ x: 170, y: 40, w: 460, h: 370, label: 'Ring of four switches, sw1 is root', color: 'yellow' }]);
 }
 export function stickTopo(configured = true) {
   const r = { id: 'r1', type: 'router', name: 'r1', x: 400, y: 84, ifaces: { eth1: { ip: '', prefix: 24 } }, routes: [] };
@@ -152,7 +152,7 @@ export function stickTopo(configured = true) {
     host('b1', 680, 200, '10.20.0.11', 24, '10.20.0.1'), server('b2', 680, 380, '10.20.0.12', 24, '10.20.0.1')],
   [link('a1', 'eth1', 'sw1', 'eth1'), link('a2', 'eth1', 'sw1', 'eth2'), link('b1', 'eth1', 'sw1', 'eth3'), link('b2', 'eth1', 'sw1', 'eth4'), link('r1', 'eth1', 'sw1', 'eth8')],
   [{ x: 30, y: 140, w: 210, h: 300, label: 'VLAN 10', color: 'blue' }, { x: 560, y: 140, w: 210, h: 300, label: 'VLAN 20', color: 'violet' },
-    { x: 290, y: 14, w: 220, h: 146, label: 'Router mit Subinterfaces', color: 'gray' }]);
+    { x: 290, y: 14, w: 220, h: 146, label: 'Router with subinterfaces', color: 'gray' }]);
 }
 export function servicesTopo({ acl = [] } = {}) {
   const web = server('web', 640, 110, '10.20.0.80', 24, '10.20.0.1');
@@ -162,23 +162,23 @@ export function servicesTopo({ acl = [] } = {}) {
   dns.dns = [{ name: 'web.lab', ip: '10.20.0.80' }, { name: 'dns.lab', ip: '10.20.0.53' }, { name: 'intranet.lab', ip: '10.20.0.80' }];
   const c1 = host('client', 100, 220, '10.10.0.10', 24, '10.10.0.1');
   c1.resolver = '10.20.0.53';
-  return topo('Web und DNS', [c1, router('r1', 300, 220, { eth1: '10.10.0.1/24', eth2: '10.20.0.1/24' }, [], { acl }), sw('sw1', 470, 220), web, dns],
+  return topo('Web and DNS', [c1, router('r1', 300, 220, { eth1: '10.10.0.1/24', eth2: '10.20.0.1/24' }, [], { acl }), sw('sw1', 470, 220), web, dns],
     [link('client', 'eth1', 'r1', 'eth1'), link('r1', 'eth2', 'sw1', 'eth1'), link('web', 'eth1', 'sw1', 'eth2'), link('dns', 'eth1', 'sw1', 'eth3')],
-    [{ x: 400, y: 40, w: 340, h: 380, label: 'Servernetz 10.20.0.0/24', color: 'green' }]);
+    [{ x: 400, y: 40, w: 340, h: 380, label: 'Server network 10.20.0.0/24', color: 'green' }]);
 }
 export function failoverTopo() {
   const a = server('srvA', 600, 110, '10.0.0.100'), b = server('srvB', 600, 330, '10.0.0.12');
-  return topo('Failover mit Gratuitous ARP', [host('client', 120, 220, '10.0.0.5'), sw('sw1', 360, 220), a, b],
+  return topo('Failover with gratuitous ARP', [host('client', 120, 220, '10.0.0.5'), sw('sw1', 360, 220), a, b],
     [link('client', 'eth1', 'sw1', 'eth1'), link('srvA', 'eth1', 'sw1', 'eth2'), link('srvB', 'eth1', 'sw1', 'eth3')],
-    [{ x: 500, y: 40, w: 220, h: 380, label: 'Cluster, Dienstadresse 10.0.0.100', color: 'orange' }]);
+    [{ x: 500, y: 40, w: 220, h: 380, label: 'Cluster, service address 10.0.0.100', color: 'orange' }]);
 }
 export function tcpPathTopo({ fwAcl = [] } = {}) {
   const web = server('web', 840, 220, '10.0.2.80', 24, '10.0.2.1');
   web.services = [{ proto: 'tcp', port: 80, name: 'http', size: 6000 }];
-  return topo('TCP über einen Engpass', [host('client', 80, 220, '10.0.1.10', 24, '10.0.1.1'),
+  return topo('TCP across a bottleneck', [host('client', 80, 220, '10.0.1.10', 24, '10.0.1.1'),
     router('r1', 270, 220, { eth1: '10.0.1.1/24', eth2: '10.0.12.1/24' }, [['0.0.0.0/0', '10.0.12.2']]),
     router('r2', 460, 220, { eth1: '10.0.12.2/24', eth2: '10.0.23.2/24' }, [['10.0.1.0/24', '10.0.12.1'], ['10.0.2.0/24', '10.0.23.3']]),
     router('fw', 650, 220, { eth1: '10.0.23.3/24', eth2: '10.0.2.1/24' }, [['0.0.0.0/0', '10.0.23.2']], { acl: fwAcl }), web],
   [link('client', 'eth1', 'r1', 'eth1'), link('r1', 'eth2', 'r2', 'eth1', 1400), link('r2', 'eth2', 'fw', 'eth1'), link('fw', 'eth2', 'web', 'eth1')],
-  [{ x: 210, y: 130, w: 310, h: 150, label: 'Tunnel-Strecke, MTU 1400', color: 'orange' }]);
+  [{ x: 210, y: 130, w: 310, h: 150, label: 'Tunnel section, MTU 1400', color: 'orange' }]);
 }

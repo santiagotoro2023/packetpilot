@@ -1,4 +1,4 @@
-// Eigene Linien-Icons, 24x24, stroke=currentColor
+// Custom line icons, 24x24, stroke=currentColor
 const s = (body, extra = '') => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${body}</svg>`;
 
 export const I = {
@@ -44,7 +44,7 @@ export const I = {
   grip: s('<circle cx="9" cy="7" r="1" fill="currentColor"/><circle cx="15" cy="7" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="17" r="1" fill="currentColor"/><circle cx="15" cy="17" r="1" fill="currentColor"/>')
 };
 
-// Geräte-Symbole für den Netzplan (40x40, eigene Farben über CSS)
+// Device symbols for the network diagram (40x40, own colors via CSS)
 export const DEV_ICON = {
   pc: `<rect x="6" y="7" width="28" height="19" rx="2.5" class="dv-fill"/><path d="M15 31h10M20 26v5" class="dv-line"/><path d="M10 11h20v11H10z" class="dv-screen"/>`,
   server: `<rect x="9" y="5" width="22" height="30" rx="2.5" class="dv-fill"/><path d="M12 12h16M12 19h16M12 26h16" class="dv-line"/><circle cx="26" cy="9" r="1.3" class="dv-led"/><circle cx="26" cy="16" r="1.3" class="dv-led"/><circle cx="26" cy="23" r="1.3" class="dv-led"/>`,

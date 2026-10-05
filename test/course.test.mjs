@@ -1,4 +1,4 @@
-// Spielt jede Labor-Lektion mit einer Musterlösung durch und prüft alle Ziele
+// Plays through every lab lesson with a reference solution and checks all goals
 import { Sim } from '../src/js/engine.js';
 import { MODULES } from '../src/js/course/index.js';
 import { runCommand } from '../src/js/cli.js';
@@ -30,7 +30,7 @@ const SOLUTIONS = {
     runT(sim, 'srvA', 'ip link set eth1 down', 10); runT(sim, 'srvB', 'ip addr add 10.0.0.100/24 dev eth1', 10); runT(sim, 'srvB', 'arping -U -c 1 10.0.0.100', 10);
     sim.runToIdle();
     const d = sim.log.filter(e => e.tag === 'ping-done').pop();
-    assert.ok(d.data.sent - d.data.received <= 1, 'höchstens ein Ping verloren'); } },
+    assert.ok(d.data.sent - d.data.received <= 1, 'at most one ping lost'); } },
   'm3-stick': { answers: sim => [null, null, null, null, '2', sim.dev('r1').mac('eth1')], act: (sim, ctx) => {
     for (const c of ['ip link add link eth1 name eth1.10 type vlan id 10', 'ip link add link eth1 name eth1.20 type vlan id 20', 'ip addr add 10.10.0.1/24 dev eth1.10', 'ip addr add 10.20.0.1/24 dev eth1.20']) run(sim, 'r1', c);
     run(sim, 'a1', 'ping -c 2 10.20.0.11');
@@ -52,7 +52,7 @@ const SOLUTIONS = {
   'm4-l3': { answers: [], act: (sim, ctx) => {
     stpRun(sim);
     const t = sim.dev('sw3').bridge.stpTable();
-    assert.equal(t.rootPort, 'eth2', 'sw3 erreicht die Root zuerst über sw4');
+    assert.equal(t.rootPort, 'eth2', 'sw3 initially reaches the root via sw4');
     ctx.ask(0, blocked(sim)); ctx.ask(1, 'sw4');
     run(sim, 'sw3', 'spanning-tree cost eth2 19'); stpRun(sim);
     ctx.ask(3, blocked(sim));
@@ -67,7 +67,7 @@ const SOLUTIONS = {
     run(sim, 'sw2', 'ip link set eth1 down'); stpRun(sim); runT(sim, 'pc1', 'ping -c 2 10.0.0.2'); } },
   'm5-l2': { answers: sim => [null, null, String(sim.log.find(e => e.dev === 'client' && e.kind === 'send' && e.frame?.payload?.l4?.payload?.kind === 'dns').frame.payload.l4.sport), 'NXDOMAIN', null],
     act: (sim, ctx) => { run(sim, 'client', 'dig @10.20.0.53 web.lab'); ctx.inspected.push(sim.log.find(e => e.frame?.payload?.l4?.payload?.kind === 'dns'));
-      run(sim, 'client', 'dig @10.20.0.53 gibtsnicht.lab'); assert.match(sim.dev('client').consoleLines.join('\n'), /NXDOMAIN/); run(sim, 'client', 'nc -u 10.20.0.53 5353'); } },
+      run(sim, 'client', 'dig @10.20.0.53 doesnotexist.lab'); assert.match(sim.dev('client').consoleLines.join('\n'), /NXDOMAIN/); run(sim, 'client', 'nc -u 10.20.0.53 5353'); } },
   'm5-l4': { answers: [null, null, '1460', '3', 'SYN, ACK'], act: (sim, ctx) => {
     run(sim, 'client', 'curl http://web.lab/');
     ctx.inspected.push(sim.log.find(e => e.frame?.payload?.l4?.flags?.SYN && !e.frame.payload.l4.flags.ACK)); } },
@@ -76,7 +76,7 @@ const SOLUTIONS = {
     assert.ok(sim.log.some(e => e.dev === 'r1' && e.tag === 'acl-drop' && e.data.rule === 2));
     sim.dev('r1').cfg.acl.shift(); run(sim, 'client', 'curl http://web.lab/'); } },
   'm5-l6': { answers: [null, 'r2', '1360'], act: sim => { run(sim, 'client', 'curl http://10.0.2.80/'); } },
-  'm5-l6#2': { answers: [null, 'ja', null], act: sim => { run(sim, 'client', 'curl http://10.0.2.80/'); sim.dev('r1').cfg.mssClamp = 1360; run(sim, 'client', 'curl http://10.0.2.80/'); } },
+  'm5-l6#2': { answers: [null, 'yes', null], act: sim => { run(sim, 'client', 'curl http://10.0.2.80/'); sim.dev('r1').cfg.mssClamp = 1360; run(sim, 'client', 'curl http://10.0.2.80/'); } },
 
   'm1-l4': { answers: [null, 'eth2', null], act: sim => { run(sim, 'pc1', 'ping -c 2 10.0.0.2'); sim.dev('sw1').cfg.ageing = 0; run(sim, 'pc1', 'ping -c 1 10.0.0.2'); } },
   'm1-l5': { answers: [null, null, '00:00:00:00:00:00', null, '10.0.0.2'], act: (sim, ctx) => { run(sim, 'pc1', 'ping -c 1 10.0.0.3'); ctx.inspected.push(findFrame(sim, f => f.type === 'arp' && f.payload.op === 1)); run(sim, 'pc2', 'ping -c 1 10.0.0.99'); } },
@@ -104,7 +104,7 @@ const SOLUTIONS = {
     for (const s of ['s1', 's2']) sim.dev(s).cfg.ports.eth8 = { mode: 'trunk', allowed: '10,20', native: 1 };
     run(sim, 'a10', 'ping -c 1 10.10.0.2'); run(sim, 'a20', 'ping -c 1 10.20.0.2');
     const f = findFrame(sim, f => !!f.vlan); ctx.inspected.push(f); } },
-  'm3-l4': { answers: [null, null, '10.255.0.1', '10010', 'nein'], act: (sim, ctx) => {
+  'm3-l4': { answers: [null, null, '10.255.0.1', '10010', 'no'], act: (sim, ctx) => {
     run(sim, 'srv1', 'ping -c 2 192.168.10.12');
     const e = sim.log.find(x => x.dev === 'vtep1' && x.kind === 'send' && x.frame.payload?.l4?.payload?.kind === 'vxlan');
     assert.equal(e.frame.payload.src, '10.255.0.1'); assert.equal(e.frame.payload.l4.payload.vni, 10010);
@@ -121,14 +121,14 @@ let ok = 0;
 for (const [id, step] of labs) {
   const sol = SOLUTIONS[id];
   try {
-    assert.ok(sol, `keine Musterlösung für ${id}`);
+    assert.ok(sol, `no reference solution for ${id}`);
     const sim = new Sim(step.topo());
     const met = new Set();
     const ctx = { inspected: [] };
     ctx.snap = () => step.goals.forEach((g, i) => { if (g.check && g.check(sim, ctx)) met.add(i); });
     ctx.ask = (gi, a) => {
       const exp = step.goals[gi].expect(sim).map(x => String(x).toLowerCase());
-      assert.ok(exp.includes(String(a).toLowerCase()), `${id}: Ziel ${gi + 1} erwartet ${exp}, Lösung ${a}`);
+      assert.ok(exp.includes(String(a).toLowerCase()), `${id}: goal ${gi + 1} expects ${exp}, solution ${a}`);
       met.add(gi);
     };
     sol.act(sim, ctx);
@@ -138,17 +138,17 @@ for (const [id, step] of labs) {
       if (met.has(gi)) { ai++; return; }
       if (g.ask) {
         let a = answers[gi] ?? answers[ai];
-        // Antworten sind nach Zielindex abgelegt
+        // Answers are stored by goal index
         a = answers[gi];
-        assert.ok(a, `${id}: keine Antwort für Ziel ${gi + 1}`);
+        assert.ok(a, `${id}: no answer for goal ${gi + 1}`);
         const exp = g.expect(sim).map(x => String(x).toLowerCase());
-        assert.ok(exp.includes(String(a).toLowerCase()), `${id}: Ziel ${gi + 1} erwartet ${exp}, Lösung ${a}`);
+        assert.ok(exp.includes(String(a).toLowerCase()), `${id}: goal ${gi + 1} expects ${exp}, solution ${a}`);
       } else {
-        assert.ok(g.check(sim, ctx), `${id}: Ziel ${gi + 1} nicht erfüllt: ${g.text.replace(/<[^>]+>/g, '')}`);
+        assert.ok(g.check(sim, ctx), `${id}: goal ${gi + 1} not met: ${g.text.replace(/<[^>]+>/g, '')}`);
       }
       ai++;
     });
-    ok++; console.log('ok  ', id, `(${step.goals.length} Ziele)`);
+    ok++; console.log('ok  ', id, `(${step.goals.length} goals)`);
   } catch (e) { console.log('FAIL', id, e.message); process.exitCode = 1; }
 }
-console.log(`\n${ok} von ${labs.size} Labor-Lektionen lösbar`);
+console.log(`\n${ok} of ${labs.size} lab lessons solvable`);

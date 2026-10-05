@@ -1,4 +1,4 @@
-// Hilfen für Lektionsinhalte und Zielprüfungen
+// Helpers for lesson content and goal checks
 export function bar(parts, caption = '') {
   // parts: [label, sizeText, kind, flex]
   const cells = parts.map(([l, s, k, f]) =>
@@ -8,7 +8,7 @@ export function bar(parts, caption = '') {
 }
 export const note = (html, warn = false) => `<div class="note${warn ? ' warn' : ''}">${html}</div>`;
 
-// Zielprüfungen
+// Goal checks
 export const pingOk = (from, to, o = {}) => sim => sim.log.some(e => e.tag === 'ping-done' && e.dev === from && e.data.dst === to && e.data.received > 0
   && (o.size === undefined || e.data.size >= o.size) && (o.df === undefined || e.data.df === o.df));
 export const pingFailed = (from, to, o = {}) => sim => sim.log.some(e => e.tag === 'ping-done' && e.dev === from && e.data.dst === to && e.data.received === 0
@@ -18,7 +18,7 @@ export const inspected = pred => (sim, ctx) => ctx.inspected.some(e => e.frame &
 export const isArpReq = f => f.type === 'arp' && f.payload.op === 1;
 export const isVxlan = f => f.type === 'ipv4' && f.payload.l4?.payload?.kind === 'vxlan';
 export const all = (...fs) => (sim, ctx) => fs.every(f => f(sim, ctx));
-// Ping erfolgreich, nachdem ein bestimmtes Ereignis eingetreten ist
+// Ping succeeded after a specific event occurred
 export const pingOkAfter = (from, to, evPred) => sim => {
   const ev = sim.log.find(evPred);
   return !!ev && sim.log.some(e => e.seq > ev.seq && e.tag === 'ping-done' && e.dev === from && e.data.dst === to && e.data.received > 0);

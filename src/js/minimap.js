@@ -1,4 +1,4 @@
-// Statische Vorschau einer Topologie und die lebende Mini-Simulation auf der Startseite
+// Static preview of a topology and the live mini simulation on the home page
 import { Sim, TIMING } from './engine.js';
 import { layerKinds, shortLabel } from './packets.js';
 import { svgEl } from './ui.js';
@@ -38,7 +38,7 @@ export function preview(topo) {
   return svg;
 }
 
-/** Lebende Simulation: pc1 pingt in Schleife über einen Router */
+/** Live simulation: pc1 pings in a loop through a router */
 export function heroSim(container, topo, script) {
   const svg = svgEl('svg', { viewBox: frame(topo, 80), class: 'net', style: 'width:100%;height:100%' });
   container.append(svg);

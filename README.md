@@ -1,93 +1,94 @@
 # PacketPilot
 
-Netzwerke verstehen, indem du jedem Paket zuschaust.
+Understand networks by watching every packet.
 
-PacketPilot ist eine kleine Lern-Webapp für Netzwerktechnik. Sie simuliert Hosts, Server, Switches, Router und VXLAN-VTEPs vollständig im Browser. Du baust Netze per Drag and Drop, sendest Pakete im Zeitraffer, verfolgst jeden Hop und zerlegst jeden Frame Schicht für Schicht. Ein geführter Kurs leitet Schritt für Schritt durch die Konzepte, mit Theorie, Übungen und Laboraufgaben, die automatisch geprüft werden.
+PacketPilot is a small learning web app for networking. It simulates hosts, servers, switches, routers and VXLAN VTEPs entirely in the browser. You build networks by drag and drop, send packets in slow motion, follow every hop and take every frame apart layer by layer. A guided course leads you through the concepts step by step, with theory, exercises and lab tasks that are checked automatically.
 
 ## Installation
 
-Auf Debian 12 oder 13, als root oder mit sudo:
+On Debian 12 or 13, as root or with sudo:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/santiagotoro2023/packetpilot/main/packetpilot-install.sh
 sudo bash packetpilot-install.sh
 ```
 
-Danach läuft PacketPilot unter `http://<server>:8080/`.
+PacketPilot then runs at `http://<server>:8080/`.
 
-| Aufruf | Wirkung |
+| Command | Effect |
 |---|---|
-| `sudo bash packetpilot-install.sh` | installiert oder aktualisiert (Port 8080) |
-| `sudo bash packetpilot-install.sh --port 80` | anderer Port. Bei 80 wird die nginx-Standardseite deaktiviert |
-| `sudo bash packetpilot-install.sh --uninstall` | entfernt PacketPilot, nginx bleibt |
-| `bash packetpilot-install.sh --extract ./web` | entpackt nur die Webdateien, ohne root |
-| `--force` | installiert auch auf nicht getesteten Systemen |
+| `sudo bash packetpilot-install.sh` | installs or updates (port 8080) |
+| `sudo bash packetpilot-install.sh --port 80` | different port. With 80, the nginx default site is disabled |
+| `sudo bash packetpilot-install.sh --update` | fetches the latest version from GitHub |
+| `sudo bash packetpilot-install.sh --uninstall` | removes PacketPilot, nginx stays |
+| `bash packetpilot-install.sh --extract ./web` | only extracts the web files, no root needed |
+| `--force` | also installs on untested systems |
 
-Das Skript installiert nginx aus den Debian-Paketen, schreibt die Dateien nach `/opt/packetpilot/www` und legt `/etc/nginx/sites-available/packetpilot` an. Ist `ufw` aktiv, wird der Port freigegeben. Zur Laufzeit lädt PacketPilot nichts aus dem Internet nach, es funktioniert also auch in abgeschotteten Lab-Netzen.
+The script installs nginx from the Debian packages, writes the files to `/opt/packetpilot/www` and creates `/etc/nginx/sites-available/packetpilot`. If `ufw` is active, the port is opened. At runtime PacketPilot loads nothing from the internet, so it also works in isolated lab networks.
 
-Fortschritt, Einstellungen und eigene Netze speichert jeder Browser lokal. Über die Startseite lassen sie sich als JSON exportieren und importieren.
+Each browser stores progress, settings and your own networks locally. They can be exported and imported as JSON from the home page.
 
-## Was drin ist
+## What's inside
 
-**Kurs mit fünf Modulen und 32 Lektionen**
+**Course with five modules and 32 lessons**
 
-| Modul | Inhalte |
+| Module | Contents |
 |---|---|
-| 1. Ethernet, MAC und ARP | Kapselung, Ethernet-Frame Byte für Byte, MAC-Adressen (OUI, I/G, U/L), MAC-Learning und Flooding, ARP mit Neighbor-Zuständen, Gratuitous ARP, ARP-Probe und Failover, ein Paket über einen Router |
-| 2. Spanning Tree | Broadcast-Sturm und MAC-Flapping, Wahl der Root Bridge, BPDUs, Port-Rollen und Pfadkosten, Port-Zustände und PortFast, Ausfall, Topologieänderung und Konvergenz |
-| 3. IP und Routing | IPv4-Header, Longest Prefix Match, TTL und traceroute, der Rückweg, MTU und Path MTU Discovery, Regeln und das PMTUD-Blackhole, Control Plane und Data Plane |
-| 4. VLAN und VXLAN | 802.1Q-Tag, Access und Trunk, Router-on-a-Stick mit Subinterfaces, VXLAN-Kapselung, VXLAN im Underlay, Fehlersuche im Overlay, die MTU-Falle |
-| 5. Transport: UDP, TCP und Dienste | Ports und Sockets, DNS über UDP, Drei-Wege-Handshake, abgelehnte und gefilterte Verbindungen, MSS, Path MTU und MSS Clamping |
+| 1. Ethernet, MAC and ARP | Encapsulation, the Ethernet frame byte by byte, MAC addresses (OUI, I/G, U/L), MAC learning and flooding, ARP with neighbor states, gratuitous ARP, ARP probe and failover, a packet across a router |
+| 2. Spanning tree | Broadcast storm and MAC flapping, root bridge election, BPDUs, port roles and path costs, port states and PortFast, failure, topology change and convergence |
+| 3. IP and routing | IPv4 header, longest prefix match, TTL and traceroute, the return path, MTU and Path MTU Discovery, rules and the PMTUD blackhole, control plane and data plane |
+| 4. VLAN and VXLAN | 802.1Q tag, access and trunk, router on a stick with subinterfaces, VXLAN encapsulation, VXLAN in the underlay, troubleshooting the overlay, the MTU trap |
+| 5. Transport: UDP, TCP and services | Ports and sockets, DNS over UDP, three-way handshake, refused and filtered connections, MSS, path MTU and MSS clamping |
 
-Übungstypen: Theorie, Quiz mit Erklärungen, Header beschriften per Drag and Drop, Schichten in Reihenfolge bringen, **Frames selbst konstruieren** (Schichten wählen und jedes Feld ausfüllen, geprüft gegen den Frame, den die Simulation erzeugt), MAC-Decoder, Longest-Prefix-Match-Trainer und Laboraufgaben mit automatisch geprüften Zielen.
+Exercise types: theory, quizzes with explanations, labeling headers by drag and drop, putting layers in order, **building frames yourself** (pick the layers and fill in every field, checked against the frame the simulation produces), MAC decoder, longest prefix match trainer and lab tasks with automatically checked goals.
 
-**Labor**
+**Lab**
 
-- Netzplan-Editor: PCs, Server, Switches, Router und VTEPs per Drag and Drop, Kabel mit Taste K
-- **Bereiche** zum Ordnen: farbige, beschriftete Rechtecke, verschiebbar (Geräte darin wandern mit) und in der Grösse veränderbar
-- Simulation von Ethernet, 802.1Q, ARP (inklusive Gratuitous ARP, ARP-Probe und Neighbor Unreachability Detection), MAC-Learning, **Spanning Tree (802.1D)** mit Root-Wahl, Rollen, Zuständen, Timern, PortFast und Topologieänderung, Erkennung von Schleifen und Broadcast-Stürmen, IPv4-Forwarding, statischem Routing, **Router-Subinterfaces**, ICMP, Fragmentierung und Path MTU Discovery, **UDP, DNS und TCP** (Handshake, Segmentierung nach MSS, RST, Timeouts, Neuübertragung nach PMTUD), Regeln auf Routern (erlauben, verwerfen, ablehnen, mit Protokoll und Port), MSS Clamping und VXLAN mit Head-End Replication und Flood and Learn
-- Dienste pro Server (TCP und UDP, frei wählbare Ports) und DNS-Einträge, DNS-Server pro Host
-- Zeitraffer mit Tempo-Regler, Pause, Einzelschritt und Vorspulen, BPDUs ein- und ausblendbar
-- Pakete als Umschläge mit farbigen Streifen pro Schicht, Klick zerlegt sie im Paketinspektor
-- STP-Zustand direkt im Plan: Punkte an jedem Switch-Port zeigen Rolle und Zustand
-- Ereignisprotokoll mit Erklärungen in Klartext, Filter pro Gerät, nur Spanning Tree, Verfolgung eines einzelnen Pakets über alle Hops
-- Konsole pro Gerät: `ping`, `traceroute`, `arping [-U|-A|-D]`, `curl`, `nc -zv`, `nc -u`, `dig`, `ss`, `ip addr`, `ip route`, `ip neigh`, `ip link` (Subinterfaces anlegen, Ports trennen), `bridge fdb`, `show spanning-tree`, `spanning-tree …`, `show ip route`, `show vxlan`
-- Beispielnetze, eigene Netze speichern, Export und Import als JSON
+- Network diagram editor: PCs, servers, switches, routers and VTEPs by drag and drop, cables with the K key
+- **Areas** for organizing: colored, labeled rectangles that can be moved (devices inside move along) and resized
+- Simulation of Ethernet, 802.1Q, ARP (including gratuitous ARP, ARP probe and Neighbor Unreachability Detection), MAC learning, **spanning tree (802.1D)** with root election, roles, states, timers, PortFast and topology change, detection of loops and broadcast storms, IPv4 forwarding, static routing, **router subinterfaces**, ICMP, fragmentation and Path MTU Discovery, **UDP, DNS and TCP** (handshake, segmentation by MSS, RST, timeouts, retransmission after PMTUD), rules on routers (allow, drop, reject, with protocol and port), MSS clamping and VXLAN with head-end replication and flood and learn
+- Services per server (TCP and UDP, freely chosen ports) and DNS records, DNS server per host
+- Slow motion with a speed slider, pause, single step and fast-forward, BPDUs can be shown or hidden
+- Packets as envelopes with colored stripes per layer, a click takes them apart in the packet inspector
+- STP state right in the diagram: dots on every switch port show role and state
+- Event log with plain-language explanations, filter per device, spanning tree only, tracing a single packet across all hops
+- Console per device: `ping`, `traceroute`, `arping [-U|-A|-D]`, `curl`, `nc -zv`, `nc -u`, `dig`, `ss`, `ip addr`, `ip route`, `ip neigh`, `ip link` (create subinterfaces, disconnect ports), `bridge fdb`, `show spanning-tree`, `spanning-tree …`, `show ip route`, `show vxlan`
+- Example networks, saving your own networks, export and import as JSON
 
-**Frame-Baukasten**: Header frei stapeln, die Reihenfolge prüfen lassen und Grössen, Overhead und MTU-Bedarf berechnen.
+**Frame builder**: stack headers freely, have the order checked and compute sizes, overhead and MTU requirements.
 
-## Entwicklung
+## Development
 
-Die Quellen liegen in `src/`, ohne Build-Schritt und ohne Abhängigkeiten (ES-Module, reines HTML, CSS und JavaScript).
+The sources live in `src/`, with no build step and no dependencies (ES modules, plain HTML, CSS and JavaScript).
 
 ```bash
-python3 -m http.server -d src 8765     # lokal testen
-node test/engine.test.mjs               # Simulations-Engine
-node test/course.test.mjs               # jede Laborlektion mit Musterlösung durchspielen
-node test/build.test.mjs                # Frame-Aufgaben gegen die Simulation prüfen
-bash build.sh                           # packetpilot-install.sh neu erzeugen
+python3 -m http.server -d src 8765     # test locally
+node test/engine.test.mjs               # simulation engine
+node test/course.test.mjs               # play through every lab lesson with its reference solution
+node test/build.test.mjs                # check the frame exercises against the simulation
+bash build.sh                           # regenerate packetpilot-install.sh
 ```
 
-Für `test/ui.test.mjs`, `test/features.test.mjs` und `test/lesson.test.mjs` wird Playwright mit Chromium benötigt.
+`test/ui.test.mjs`, `test/features.test.mjs` and `test/lesson.test.mjs` require Playwright with Chromium.
 
 ```
 src/
   index.html, css/app.css
-  js/engine.js        Simulation (Ereigniswarteschlange, L2, STP, L3, TCP/UDP, VXLAN)
-  js/packets.js       Frames bauen, beschreiben, zerlegen
-  js/net.js           Adressen und Grössen
-  js/cli.js           Gerätekonsole
-  js/lab.js           Editor, Animation, Protokoll, Inspektor
-  js/panels.js        Konfiguration, Tabellen, Konsole
-  js/widgets.js       Übungen
-  js/course/          Kursinhalte
-  js/presets.js       Beispielnetze
-installer/            Kopf und Ende des Installationsskripts
-build.sh              setzt das Installationsskript zusammen
+  js/engine.js        simulation (event queue, L2, STP, L3, TCP/UDP, VXLAN)
+  js/packets.js       building, describing and dissecting frames
+  js/net.js           addresses and sizes
+  js/cli.js           device console
+  js/lab.js           editor, animation, log, inspector
+  js/panels.js        configuration, tables, console
+  js/widgets.js       exercises
+  js/course/          course content
+  js/presets.js       example networks
+installer/            head and tail of the installer script
+build.sh              assembles the installer script
 ```
 
-Eine neue Lektion ist ein Objekt in `src/js/course/m*.js`. Laborschritte bestehen aus einer Topologie, einer Einleitung und Zielen. Ein Ziel ist entweder eine Funktion, die den Zustand der Simulation prüft, oder eine Frage, deren richtige Antwort aus der Simulation berechnet wird.
+A new lesson is an object in `src/js/course/m*.js`. Lab steps consist of a topology, an introduction and goals. A goal is either a function that checks the state of the simulation, or a question whose correct answer is computed from the simulation.
 
-## Geplant
+## Planned
 
-Statisches Routing mit ECMP, OSPF und BFD, VRRP, DHCP mit Relay und DNS-Hierarchie, VPN (WireGuard, IPsec), BGP und EVPN, danach IPv6 als Erweiterung.
+Static routing with ECMP, OSPF and BFD, VRRP, DHCP with relay and the DNS hierarchy, VPN (WireGuard, IPsec), BGP and EVPN, then IPv6 as an extension.

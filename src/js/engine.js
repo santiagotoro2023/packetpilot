@@ -1,4 +1,4 @@
-// PacketPilot Simulations-Engine: ereignisgesteuert, ohne DOM
+// PacketPilot simulation engine: event-driven, no DOM
 import { BCAST, VXLAN_PORT, PROTO, STP_MAC, isGroupMac, macFor, inNet, parseCidr, isIp,
   netOf, intToIp, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR } from './net.js';
 import { ethFrame, arpPacket, ipPacket, icmp, udp, tcp, ipChecksum, summary, icmpName, fmtBid } from './packets.js';
@@ -14,7 +14,9 @@ export const TYPE_NAMES = { pc: 'PC', server: 'Server', router: 'Router', switch
 const T = { linkDelay: 0.1, arpTimeout: 1000, arpRetries: 3, pingInterval: 1000, replyTimeout: 4000, reachable: 30000,
   nudDelay: 5000, nudProbes: 3, tcpSyn: [1000, 2000, 4000], tcpStall: 10000, dnsTimeout: 5000, loopHalt: 8 };
 export const TIMING = T;
-export const STP_PRESETS = { standard: { hello: 2, fwd: 15, maxAge: 20 }, schnell: { hello: 1, fwd: 4, maxAge: 6 } };
+export const STP_PRESETS = { standard: { hello: 2, fwd: 15, maxAge: 20 }, fast: { hello: 1, fwd: 4, maxAge: 6 } };
+// Networks saved by older versions still use the German name of the fast timers
+STP_PRESETS.schnell = STP_PRESETS.fast;
 
 // ---------------------------------------------------------------- Simulation
 export class Sim {
@@ -62,7 +64,7 @@ export class Sim {
     l.up = up;
     if (!up) this.inflight = this.inflight.filter(f => f.link !== l);
     const A = this.devices.get(l.a.dev), B = this.devices.get(l.b.dev);
-    this.record(A, up ? 'info' : 'err', `Link ${A?.name} ${l.a.if} ↔ ${B?.name} ${l.b.if} ist ${up ? 'wieder aktiv' : 'unterbrochen'}`, { tag: up ? 'link-up' : 'link-down' });
+    this.record(A, up ? 'info' : 'err', `Link ${A?.name} ${l.a.if} ↔ ${B?.name} ${l.b.if} is ${up ? 'up again' : 'down'}`, { tag: up ? 'link-up' : 'link-down' });
     this._linkNotify(l, up);
     this.emit('topology');
   }
@@ -123,18 +125,18 @@ export class Sim {
   transmit(dev, ifname, frame) {
     const link = this.linkAt(dev.id, ifname);
     const quiet = frame.type === 'stp';
-    if (!link) { if (!quiet) this.record(dev, 'drop', `${ifname} ist nicht verbunden, Frame geht verloren`, { frame }); return; }
-    if (!link.up) { if (!quiet) this.record(dev, 'drop', `Link an ${ifname} ist unterbrochen, Frame geht verloren`, { frame, tag: 'link-down-drop' }); return; }
+    if (!link) { if (!quiet) this.record(dev, 'drop', `${ifname} is not connected, frame is lost`, { frame }); return; }
+    if (!link.up) { if (!quiet) this.record(dev, 'drop', `Link on ${ifname} is down, frame is lost`, { frame, tag: 'link-down-drop' }); return; }
     const plen = framePayloadLen(frame);
     if (plen > link.mtu) {
-      this.record(dev, 'drop', `Frame passt nicht durch den Link an ${ifname} (Nutzlast ${plen} > MTU ${link.mtu}), still verworfen`, { frame, tag: 'link-mtu-drop' });
+      this.record(dev, 'drop', `Frame does not fit through the link on ${ifname} (payload ${plen} > MTU ${link.mtu}), silently dropped`, { frame, tag: 'link-mtu-drop' });
       return;
     }
     const peer = link.a.dev === dev.id && link.a.if === ifname ? link.b : link.a;
     const f = clone(frame);
     const fl = { id: f.id + ':' + this.seq, frame: f, link, from: dev.id, fromIf: ifname, to: peer.dev, toIf: peer.if, t0: this.time, t1: this.time + T.linkDelay };
     this.inflight.push(fl);
-    this.record(dev, 'send', `sendet über ${ifname}: ${summary(f)}`, { frame: f, tag: quiet ? 'bpdu-sent' : null });
+    this.record(dev, 'send', `sends via ${ifname}: ${summary(f)}`, { frame: f, tag: quiet ? 'bpdu-sent' : null });
     this.schedule(T.linkDelay, () => {
       this.inflight = this.inflight.filter(x => x !== fl);
       const target = this.devices.get(peer.dev);
@@ -212,7 +214,7 @@ export function parseVlanList(s) {
   return out;
 }
 
-// ---------------------------------------------------------------- Geräte
+// ---------------------------------------------------------------- Devices
 class Device {
   constructor(sim, cfg) { this.sim = sim; this.cfg = cfg; this.id = cfg.id; this.consoleLines = []; }
   get name() { return this.cfg.name; }
@@ -288,28 +290,28 @@ class L3 {
     return this.ifaces()[0]?.ip || '0.0.0.0';
   }
 
-  // ---- Senden
+  // ---- Sending
   output(pkt, ctx = {}) {
     if (this.isOwn(pkt.dst)) { this.sim.schedule(0.01, () => this.deliver(pkt, 'lo')); return { ok: true }; }
     const r = this.lookup(pkt.dst);
     if (!r) {
       if (ctx.forwarded) {
-        this.dev.record('drop', `keine Route zu ${pkt.dst}, sendet ICMP Network Unreachable an ${pkt.src}`, { tag: 'no-route', data: { dst: pkt.dst } });
+        this.dev.record('drop', `no route to ${pkt.dst}, sends ICMP Network Unreachable to ${pkt.src}`, { tag: 'no-route', data: { dst: pkt.dst } });
         this.icmpError(pkt, 3, 0);
-      } else this.dev.record('err', `keine Route zu ${pkt.dst}: Network is unreachable`, { tag: 'no-route', data: { dst: pkt.dst } });
+      } else this.dev.record('err', `no route to ${pkt.dst}: Network is unreachable`, { tag: 'no-route', data: { dst: pkt.dst } });
       return { ok: false, error: 'Network is unreachable' };
     }
     const mtu = this.mtu(r.dev);
     if (pkt.totalLength > mtu) {
       if (pkt.df) {
         if (ctx.forwarded) {
-          this.dev.record('drop', `Paket (${pkt.totalLength} Byte) grösser als MTU ${mtu} von ${r.dev} und DF gesetzt: verworfen, ICMP Fragmentation Needed an ${pkt.src}`, { tag: 'frag-needed-sent', data: { mtu } });
+          this.dev.record('drop', `Packet (${pkt.totalLength} bytes) larger than MTU ${mtu} of ${r.dev} and DF set: dropped, ICMP Fragmentation Needed to ${pkt.src}`, { tag: 'frag-needed-sent', data: { mtu } });
           this.icmpError(pkt, 3, 4, { mtu });
         }
         return { ok: false, error: `message too long, mtu=${mtu}`, mtu };
       }
       const frags = this.fragment(pkt, mtu);
-      this.dev.record('info', `Paket (${pkt.totalLength} Byte) grösser als MTU ${mtu}: zerlegt in ${frags.length} Fragmente`, { tag: 'fragmented', data: { count: frags.length, mtu } });
+      this.dev.record('info', `Packet (${pkt.totalLength} bytes) larger than MTU ${mtu}: split into ${frags.length} fragments`, { tag: 'fragmented', data: { count: frags.length, mtu } });
       for (const f of frags) this.l2send(f, r.dev, r.via || pkt.dst);
       return { ok: true };
     }
@@ -362,7 +364,7 @@ class L3 {
       if (this.arp.get(nh) !== entry || entry.mac) return;
       if (entry.tries >= T.arpRetries) {
         entry.state = 'FAILED';
-        this.dev.record('err', `keine ARP-Antwort von ${nh} nach ${T.arpRetries} Versuchen`, { tag: 'arp-failed', data: { ip: nh } });
+        this.dev.record('err', `no ARP reply from ${nh} after ${T.arpRetries} attempts`, { tag: 'arp-failed', data: { ip: nh } });
         const q = this.pending.get(nh) || [];
         this.pending.delete(nh);
         for (const { pkt } of q) {
@@ -372,13 +374,13 @@ class L3 {
         return;
       }
       entry.tries++;
-      this.dev.record('info', `kennt die MAC von ${nh} nicht und fragt per ARP (Versuch ${entry.tries})`, { tag: 'arp-request-sent', data: { ip: nh } });
+      this.dev.record('info', `does not know the MAC of ${nh} and asks via ARP (attempt ${entry.tries})`, { tag: 'arp-request-sent', data: { ip: nh } });
       this.sendFrame(egress, BCAST, 'arp', arpPacket(1, this.dev.mac(egress), myIp, null, nh));
       this.sim.schedule(T.arpTimeout, ask);
     };
     ask();
   }
-  // Neighbor Unreachability Detection: veraltete Einträge prüfen
+  // Neighbor Unreachability Detection: verify stale entries
   nudCheck(nh, e) {
     if (this.sim.time - e.t <= T.reachable || e.probing) return;
     e.probing = true; e.state = 'DELAY';
@@ -392,10 +394,10 @@ class L3 {
         if (this.sim.time - e.t <= T.reachable) { e.probing = false; e.state = 'REACHABLE'; return; }
         if (n++ >= T.nudProbes) {
           this.arp.delete(nh);
-          this.dev.record('err', `${nh} antwortet nicht mehr unter ${e.mac}: ARP-Eintrag gelöscht (FAILED). Das nächste Paket löst eine neue ARP-Anfrage aus.`, { tag: 'nud-failed', data: { ip: nh } });
+          this.dev.record('err', `${nh} no longer answers at ${e.mac}: ARP entry deleted (FAILED). The next packet triggers a new ARP request.`, { tag: 'nud-failed', data: { ip: nh } });
           return;
         }
-        this.dev.record('info', `prüft per Unicast-ARP, ob ${nh} noch bei ${e.mac} erreichbar ist (Probe ${n})`, { tag: 'nud-probe', data: { ip: nh } });
+        this.dev.record('info', `checks via unicast ARP whether ${nh} is still reachable at ${e.mac} (probe ${n})`, { tag: 'nud-probe', data: { ip: nh } });
         this.sendFrame(e.ifname, e.mac, 'arp', arpPacket(1, this.dev.mac(e.ifname), this.ifIp(e.ifname), null, nh));
         this.sim.schedule(1000, probe);
       };
@@ -406,7 +408,7 @@ class L3 {
     const old = this.arp.get(ip);
     const changed = !old || old.mac !== mac;
     this.arp.set(ip, { mac, ifname, t: this.sim.time, state: 'REACHABLE' });
-    if (changed && !quiet) this.dev.record('learn', `trägt ${ip} → ${mac} in die ARP-Tabelle ein (${how})`, { tag: 'arp-learned', data: { ip, mac } });
+    if (changed && !quiet) this.dev.record('learn', `adds ${ip} → ${mac} to the ARP table (${how})`, { tag: 'arp-learned', data: { ip, mac } });
     const q = this.pending.get(ip);
     if (q) { this.pending.delete(ip); for (const { pkt, egress } of q) this.sendFrame(egress, mac, 'ipv4', pkt); }
   }
@@ -415,23 +417,23 @@ class L3 {
       state: e.state === 'REACHABLE' && this.sim.time - e.t > T.reachable ? 'STALE' : e.state }));
   }
 
-  // ---- Empfangen
+  // ---- Receiving
   receive(phys, frame) {
     if (frame.type === 'stp') return;
     const vid = frame.vlan ? frame.vlan.vid : 0;
     const ifname = this.logicalFor(phys, vid);
     if (!ifname) {
-      this.dev.record('drop', vid ? `verwirft Frame mit VLAN-Tag ${vid} auf ${phys}: kein passendes (Sub-)Interface` : `verwirft Frame ohne VLAN-Tag auf ${phys}: Interface erwartet einen Tag`,
+      this.dev.record('drop', vid ? `drops frame with VLAN tag ${vid} on ${phys}: no matching (sub)interface` : `drops untagged frame on ${phys}: interface expects a tag`,
         { frame, tag: 'vlan-mismatch' });
       return;
     }
     const myMac = this.dev.mac(phys);
     if (frame.dst !== myMac && frame.dst !== BCAST) {
-      this.dev.record('ignore', `sieht einen Frame an ${frame.dst} auf ${phys}: nicht für mich, verworfen`,
+      this.dev.record('ignore', `sees a frame to ${frame.dst} on ${phys}: not for me, dropped`,
         { frame, tag: 'frame-not-mine', data: { type: frame.type, kind: frame.type === 'ipv4' ? frame.payload.l4?.kind : 'arp' } });
       return;
     }
-    // Erreichbarkeit bestätigen: Verkehr vom Nachbarn hält den ARP-Eintrag frisch
+    // Confirm reachability: traffic from the neighbor keeps the ARP entry fresh
     for (const e of this.arp.values()) if (e.mac === frame.src && e.ifname === ifname && e.state !== 'INCOMPLETE') { e.t = this.sim.time; e.state = 'REACHABLE'; e.probing = false; }
     if (frame.type === 'arp') return this.rxArp(ifname, frame);
     if (frame.type === 'ipv4') return this.rxIp(ifname, frame.payload, frame);
@@ -443,33 +445,33 @@ class L3 {
     for (const s of [...this.sessions]) s.onArp?.(a, ifname);
     if (a.spa === a.tpa && a.spa !== '0.0.0.0') {
       if (myIp && a.spa === myIp && a.sha !== myMac) {
-        this.dev.record('err', `Adresskonflikt: ${a.sha} meldet ebenfalls ${myIp}`, { frame, tag: 'ip-conflict' });
+        this.dev.record('err', `Address conflict: ${a.sha} also claims ${myIp}`, { frame, tag: 'ip-conflict' });
         return;
       }
       const e = this.arp.get(a.spa);
       if (e && e.mac) {
-        if (e.mac !== a.sha) this.dev.record('learn', `aktualisiert ${a.spa}: ${e.mac} → ${a.sha} (Gratuitous ARP)`, { frame, tag: 'garp-updated', data: { ip: a.spa, mac: a.sha } });
-        this.learnArp(a.spa, a.sha, ifname, 'Gratuitous ARP', true);
-      } else this.dev.record('ignore', `Gratuitous ARP von ${a.spa}: kein Eintrag vorhanden, nichts zu aktualisieren`, { frame, tag: 'garp-ignored' });
+        if (e.mac !== a.sha) this.dev.record('learn', `updates ${a.spa}: ${e.mac} → ${a.sha} (gratuitous ARP)`, { frame, tag: 'garp-updated', data: { ip: a.spa, mac: a.sha } });
+        this.learnArp(a.spa, a.sha, ifname, 'gratuitous ARP', true);
+      } else this.dev.record('ignore', `Gratuitous ARP from ${a.spa}: no entry present, nothing to update`, { frame, tag: 'garp-ignored' });
       return;
     }
     if (a.op === 1 && a.spa === '0.0.0.0') {
       if (myIp && a.tpa === myIp) {
-        this.dev.record('info', `beantwortet eine ARP-Probe: ${myIp} ist bereits vergeben`, { frame, tag: 'dad-reply' });
+        this.dev.record('info', `answers an ARP probe: ${myIp} is already in use`, { frame, tag: 'dad-reply' });
         this.sendFrame(ifname, a.sha, 'arp', arpPacket(2, myMac, myIp, a.sha, '0.0.0.0'));
       }
       return;
     }
     if (a.op === 1) {
       if (myIp && a.tpa === myIp) {
-        this.learnArp(a.spa, a.sha, ifname, 'aus der Anfrage gelernt');
-        this.dev.record('info', `beantwortet die ARP-Anfrage: ${myIp} ist bei ${myMac}`, { tag: 'arp-reply-sent', data: { ip: myIp } });
+        this.learnArp(a.spa, a.sha, ifname, 'learned from the request');
+        this.dev.record('info', `answers the ARP request: ${myIp} is at ${myMac}`, { tag: 'arp-reply-sent', data: { ip: myIp } });
         this.sendFrame(ifname, a.sha, 'arp', arpPacket(2, myMac, myIp, a.sha, a.spa));
-      } else this.dev.record('ignore', `ARP-Anfrage für ${a.tpa} ist nicht für mich, ignoriert`, { frame, tag: 'arp-ignored' });
+      } else this.dev.record('ignore', `ARP request for ${a.tpa} is not for me, ignored`, { frame, tag: 'arp-ignored' });
     } else if (a.op === 2) {
       if (a.tpa === '0.0.0.0') return;
-      if (this.arp.has(a.spa) || this.pending.has(a.spa)) this.learnArp(a.spa, a.sha, ifname, 'aus der Antwort');
-      else this.dev.record('ignore', `ungefragte ARP-Antwort von ${a.spa} ignoriert`, { frame, tag: 'arp-unsolicited' });
+      if (this.arp.has(a.spa) || this.pending.has(a.spa)) this.learnArp(a.spa, a.sha, ifname, 'from the reply');
+      else this.dev.record('ignore', `unsolicited ARP reply from ${a.spa} ignored`, { frame, tag: 'arp-unsolicited' });
     }
   }
   rxIp(ifname, ip, frame) {
@@ -478,7 +480,7 @@ class L3 {
       return this.deliver(ip, ifname, frame);
     }
     if (!this.forwarding) {
-      this.dev.record('drop', `Paket an ${ip.dst} ist nicht für mich, und ich leite nicht weiter (ip_forward=0)`, { frame, tag: 'not-forwarding' });
+      this.dev.record('drop', `Packet to ${ip.dst} is not for me, and I do not forward (ip_forward=0)`, { frame, tag: 'not-forwarding' });
       return;
     }
     this.forward(ip, ifname, frame);
@@ -506,7 +508,7 @@ class L3 {
   forward(ip, inIf, frame) {
     const m = this.aclMatch(ip);
     if (m && m.rule.action !== 'allow') {
-      this.dev.record('drop', `Regel ${m.index} (${m.rule.action === 'reject' ? 'ablehnen' : 'verwerfen'}) trifft: Paket ${ip.src} > ${ip.dst} wird nicht weitergeleitet`, { frame, tag: 'acl-drop', data: { rule: m.index } });
+      this.dev.record('drop', `Rule ${m.index} (${m.rule.action === 'reject' ? 'reject' : 'drop'}) matches: packet ${ip.src} > ${ip.dst} is not forwarded`, { frame, tag: 'acl-drop', data: { rule: m.index } });
       if (m.rule.action === 'reject') {
         if (ip.proto === PROTO.TCP && ip.l4?.flags?.SYN) this.sendTcp(ip.src, tcp(ip.l4.dport, ip.l4.sport, 0, ip.l4.seq + 1, { RST: true, ACK: true }), ip.dst);
         else this.icmpError(ip, 3, 13);
@@ -514,7 +516,7 @@ class L3 {
       return;
     }
     if (ip.ttl <= 1) {
-      this.dev.record('drop', `TTL von ${ip.src} > ${ip.dst} ist abgelaufen, sendet ICMP Time Exceeded an ${ip.src}`, { frame, tag: 'ttl-expired' });
+      this.dev.record('drop', `TTL of ${ip.src} > ${ip.dst} expired, sends ICMP Time Exceeded to ${ip.src}`, { frame, tag: 'ttl-expired' });
       this.icmpError(ip, 11, 0);
       return;
     }
@@ -523,11 +525,11 @@ class L3 {
     out.ttl = ip.ttl - 1;
     const clamp = Number(this.cfg.mssClamp || 0);
     if (clamp && out.proto === PROTO.TCP && out.l4?.flags?.SYN && out.l4.mss > clamp) {
-      this.dev.record('info', `passt die MSS im SYN von ${out.l4.mss} auf ${clamp} an (MSS Clamping)`, { frame, tag: 'mss-clamped', data: { from: out.l4.mss, to: clamp } });
+      this.dev.record('info', `adjusts the MSS in the SYN from ${out.l4.mss} to ${clamp} (MSS clamping)`, { frame, tag: 'mss-clamped', data: { from: out.l4.mss, to: clamp } });
       out.l4.mss = clamp;
     }
     out.checksum = ipChecksum(out);
-    if (r) this.dev.record('fwd', `leitet ${ip.src} > ${ip.dst} weiter: Route ${r.net}/${r.len}${r.via ? ' via ' + r.via : ' direkt'} über ${r.dev}, TTL ${ip.ttl} → ${out.ttl}`,
+    if (r) this.dev.record('fwd', `forwards ${ip.src} > ${ip.dst}: route ${r.net}/${r.len}${r.via ? ' via ' + r.via : ' direct'} out ${r.dev}, TTL ${ip.ttl} → ${out.ttl}`,
       { frame, tag: 'forwarded', data: { dst: ip.dst, route: `${r.net}/${r.len}`, from: inIf, to: r.dev } });
     this.output(out, { forwarded: true, inIf });
   }
@@ -553,7 +555,7 @@ class L3 {
       full.l4 = clone(first.frag.origL4);
       delete full.frag;
       full.mf = false; full.fragOffset = 0; full.totalLength = IP_HDR + ip.frag.total;
-      this.dev.record('info', `setzt ${r.parts.length} Fragmente wieder zu einem Paket mit ${full.totalLength} Byte zusammen`, { tag: 'reassembled' });
+      this.dev.record('info', `reassembles ${r.parts.length} fragments into one packet of ${full.totalLength} bytes`, { tag: 'reassembled' });
       this.deliver(full, ifname);
     }
   }
@@ -563,21 +565,21 @@ class L3 {
     if (!l4) return;
     if (l4.kind === 'icmp') {
       if (l4.type === 8) {
-        this.dev.record('ok', `erhält Echo Request von ${ip.src} (seq ${l4.seq}) und antwortet`, { frame, tag: 'echo-request-received', data: { from: ip.src } });
+        this.dev.record('ok', `receives Echo Request from ${ip.src} (seq ${l4.seq}) and replies`, { frame, tag: 'echo-request-received', data: { from: ip.src } });
         this.output(ipPacket({ src: ip.dst, dst: ip.src, proto: PROTO.ICMP, df: ip.df, trace: ip.trace, l4: icmp(0, 0, { ident: l4.ident, seq: l4.seq, dataLen: l4.dataLen }) }), {});
         return;
       }
       if (l4.type === 0) {
-        this.dev.record('ok', `erhält Echo Reply von ${ip.src} (seq ${l4.seq})`, { frame, tag: 'echo-reply-received', data: { from: ip.src, size: l4.dataLen } });
+        this.dev.record('ok', `receives Echo Reply from ${ip.src} (seq ${l4.seq})`, { frame, tag: 'echo-reply-received', data: { from: ip.src, size: l4.dataLen } });
         for (const s of [...this.sessions]) s.onEchoReply?.(ip);
         return;
       }
       if (l4.type === 3 || l4.type === 11) {
         if (l4.type === 3 && l4.code === 4 && l4.mtu && l4.orig) {
           this.pmtu.set(l4.orig.dst, l4.mtu);
-          this.dev.record('learn', `merkt sich: Weg zu ${l4.orig.dst} hat MTU ${l4.mtu} (Path MTU Discovery)`, { frame, tag: 'pmtu-learned', data: { mtu: l4.mtu } });
+          this.dev.record('learn', `remembers: path to ${l4.orig.dst} has MTU ${l4.mtu} (Path MTU Discovery)`, { frame, tag: 'pmtu-learned', data: { mtu: l4.mtu } });
           if (l4.orig.proto === PROTO.TCP) this.tcpPmtu(l4.orig, l4.mtu);
-        } else this.dev.record('err', `erhält ICMP ${icmpName(l4.type, l4.code)} von ${ip.src}`, { frame, tag: 'icmp-error-received', data: { type: l4.type, code: l4.code } });
+        } else this.dev.record('err', `receives ICMP ${icmpName(l4.type, l4.code)} from ${ip.src}`, { frame, tag: 'icmp-error-received', data: { type: l4.type, code: l4.code } });
         for (const s of [...this.sessions]) s.onIcmpError?.(ip);
       }
       return;
@@ -589,10 +591,10 @@ class L3 {
       const svc = this.service('udp', l4.dport);
       if (svc) {
         if (l4.payload?.kind === 'dns' && !l4.payload.qr) return this.answerDns(ip, svc, frame);
-        this.dev.record('ok', `empfängt ein UDP-Datagramm von ${ip.src}:${l4.sport} an Port ${l4.dport} (${svc.name || 'Dienst'})`, { frame, tag: 'udp-received', data: { port: l4.dport, from: ip.src } });
+        this.dev.record('ok', `receives a UDP datagram from ${ip.src}:${l4.sport} on port ${l4.dport} (${svc.name || 'service'})`, { frame, tag: 'udp-received', data: { port: l4.dport, from: ip.src } });
         return;
       }
-      this.dev.record('info', `UDP-Port ${l4.dport} ist geschlossen, sendet ICMP Port Unreachable an ${ip.src}`, { frame, tag: 'port-unreachable-sent', data: { port: l4.dport } });
+      this.dev.record('info', `UDP port ${l4.dport} is closed, sends ICMP Port Unreachable to ${ip.src}`, { frame, tag: 'port-unreachable-sent', data: { port: l4.dport } });
       this.icmpError(ip, 3, 3);
     }
   }
@@ -601,7 +603,7 @@ class L3 {
     const name = q.qname.toLowerCase().replace(/\.$/, '');
     const recs = (this.cfg.dns || []).filter(r => String(r.name).toLowerCase().replace(/\.$/, '') === name && isIp(r.ip));
     const ans = { kind: 'dns', id: q.id, qr: 1, qname: q.qname, answers: recs.map(r => ({ name: q.qname, ip: r.ip })), rcode: recs.length ? 'NOERROR' : 'NXDOMAIN' };
-    this.dev.record('ok', `beantwortet die DNS-Anfrage für ${q.qname}: ${recs.length ? recs.map(r => r.ip).join(', ') : 'NXDOMAIN (unbekannt)'}`, { frame, tag: 'dns-answered', data: { name: q.qname, found: !!recs.length } });
+    this.dev.record('ok', `answers the DNS query for ${q.qname}: ${recs.length ? recs.map(r => r.ip).join(', ') : 'NXDOMAIN (unknown)'}`, { frame, tag: 'dns-answered', data: { name: q.qname, found: !!recs.length } });
     this.output(ipPacket({ src: ip.dst, dst: ip.src, proto: PROTO.UDP, trace: ip.trace, l4: udp(ip.l4.dport, ip.l4.sport, ans) }), {});
   }
 
@@ -617,13 +619,13 @@ class L3 {
     }
     c.sndNxt = Math.max(c.sndNxt, end);
   }
-  // Nach ICMP Fragmentation Needed: nicht bestätigte Daten mit kleinerer MSS neu senden
+  // After ICMP Fragmentation Needed: resend unacknowledged data with a smaller MSS
   tcpPmtu(orig, mtu) {
     for (const c of this.tcp.values()) {
       if (c.client || !c.resp || c.lport !== orig.sport || c.rip !== orig.dst || c.rport !== orig.dport) continue;
       const mss = Math.min(c.peerMss, mtu - 40);
       if (mss >= c.curMss || c.acked >= c.resp.start + c.resp.total) continue;
-      this.dev.record('info', `sendet die nicht bestätigten Daten ab Byte ${c.acked - c.resp.start} neu, jetzt in Segmenten zu ${mss} Byte`, { tag: 'tcp-retransmit', data: { mss } });
+      this.dev.record('info', `resends the unacknowledged data from byte ${c.acked - c.resp.start}, now in segments of ${mss} bytes`, { tag: 'tcp-retransmit', data: { mss } });
       this.sendResponse(c, mss, c.acked);
     }
   }
@@ -642,33 +644,33 @@ class L3 {
       if (s.flags.SYN && !s.flags.ACK) {
         const svc = this.service('tcp', s.dport);
         if (!svc) {
-          this.dev.record('info', `kein Dienst auf TCP-Port ${s.dport}: antwortet mit RST`, { frame, tag: 'tcp-rst-sent', data: { port: s.dport } });
+          this.dev.record('info', `no service on TCP port ${s.dport}: replies with RST`, { frame, tag: 'tcp-rst-sent', data: { port: s.dport } });
           this.sendTcp(ip.src, tcp(s.dport, s.sport, 0, s.seq + 1, { RST: true, ACK: true }), ip.dst);
           return;
         }
         const conn = { state: 'SYN_RECEIVED', lport: s.dport, rip: ip.src, rport: s.sport, iss: nextIsn(this.sim), rcvNxt: s.seq + 1, peerMss: s.mss || 536, svc, local: ip.dst };
         conn.sndNxt = conn.iss + 1;
         this.tcp.set(key, conn);
-        this.dev.record('info', `Dienst ${svc.name || ''} auf Port ${s.dport} nimmt die Verbindung an: SYN/ACK`, { frame, tag: 'tcp-synack-sent', data: { port: s.dport } });
+        this.dev.record('info', `Service ${svc.name || ''} on port ${s.dport} accepts the connection: SYN/ACK`, { frame, tag: 'tcp-synack-sent', data: { port: s.dport } });
         this.sendTcp(ip.src, tcp(s.dport, s.sport, conn.iss, conn.rcvNxt, { SYN: true, ACK: true }, { mss: this.mssFor(ip.src) }), ip.dst);
         return;
       }
       if (!s.flags.RST) this.sendTcp(ip.src, tcp(s.dport, s.sport, s.ack, s.seq + (s.dataLen || 0), { RST: true, ACK: true }), ip.dst);
       return;
     }
-    if (s.flags.RST) { this.tcp.delete(key); this.dev.record('info', `Verbindung zu ${ip.src}:${s.sport} durch RST beendet`, { frame, tag: 'tcp-reset' }); return; }
+    if (s.flags.RST) { this.tcp.delete(key); this.dev.record('info', `Connection to ${ip.src}:${s.sport} terminated by RST`, { frame, tag: 'tcp-reset' }); return; }
     if (c.state === 'SYN_RECEIVED' && s.flags.ACK && s.ack === c.sndNxt) {
       c.state = 'ESTABLISHED';
-      this.dev.record('ok', `Verbindung mit ${ip.src}:${s.sport} aufgebaut (ESTABLISHED)`, { frame, tag: 'tcp-established', data: { port: c.lport } });
+      this.dev.record('ok', `Connection with ${ip.src}:${s.sport} established (ESTABLISHED)`, { frame, tag: 'tcp-established', data: { port: c.lport } });
     }
     if (s.dataLen > 0 && s.seq === c.rcvNxt) {
       c.rcvNxt += s.dataLen;
       const total = Number(c.svc.size ?? 2000);
       const mss = Math.min(c.peerMss, this.mssFor(ip.src), (this.pmtu.get(ip.src) || 65535) - 40);
       const n = Math.max(1, Math.ceil(total / mss));
-      this.dev.record('info', `erhält ${s.dataLen} Byte${s.app ? ' (' + s.app + ')' : ''} und antwortet mit ${total} Byte in ${n} Segment${n > 1 ? 'en' : ''} (MSS ${mss})`,
+      this.dev.record('info', `receives ${s.dataLen} bytes${s.app ? ' (' + s.app + ')' : ''} and replies with ${total} bytes in ${n} segment${n > 1 ? 's' : ''} (MSS ${mss})`,
         { frame, tag: 'tcp-response', data: { segments: n, bytes: total, mss } });
-      c.resp = { start: c.sndNxt, total, app: c.svc.name === 'http' ? `HTTP/1.1 200 OK, ${total} Byte` : c.svc.name === 'ssh' ? 'SSH-2.0-OpenSSH_9.6' : `${c.svc.name || 'Antwort'}` };
+      c.resp = { start: c.sndNxt, total, app: c.svc.name === 'http' ? `HTTP/1.1 200 OK, ${total} bytes` : c.svc.name === 'ssh' ? 'SSH-2.0-OpenSSH_9.6' : `${c.svc.name || 'response'}` };
       c.acked = c.sndNxt;
       this.sendResponse(c, mss, c.sndNxt);
       return;
@@ -678,17 +680,17 @@ class L3 {
       c.rcvNxt += 1;
       this.sendTcp(ip.src, tcp(c.lport, c.rport, c.sndNxt, c.rcvNxt, { FIN: true, ACK: true }), c.local);
       c.sndNxt += 1; c.state = 'LAST_ACK';
-      this.dev.record('info', `${ip.src} beendet die Verbindung: FIN/ACK zurück`, { frame, tag: 'tcp-fin' });
+      this.dev.record('info', `${ip.src} closes the connection: FIN/ACK back`, { frame, tag: 'tcp-fin' });
       return;
     }
     if (c.state === 'LAST_ACK' && s.flags.ACK && s.ack === c.sndNxt) {
       this.tcp.delete(key);
-      this.dev.record('ok', `Verbindung mit ${ip.src}:${s.sport} geschlossen`, { frame, tag: 'tcp-closed' });
+      this.dev.record('ok', `Connection with ${ip.src}:${s.sport} closed`, { frame, tag: 'tcp-closed' });
     }
   }
 }
 
-// ---------------------------------------------------------------- Sitzungen
+// ---------------------------------------------------------------- Sessions
 let IDENT = 100;
 const pad2 = n => String(n).padStart(2);
 class Session {
@@ -706,7 +708,7 @@ class PingSession extends Session {
   start() {
     this.begin();
     if (!this.noEcho) this.dev.print(`$ ping -c ${this.count}${this.size !== 56 ? ' -s ' + this.size : ''}${this.df ? ' -M do' : ''}${this.ttl !== 64 ? ' -t ' + this.ttl : ''} ${this.dst}`);
-    this.dev.print(`PING ${this.dst}: ${this.size} Byte Daten, ${IP_HDR + ICMP_HDR + this.size} Byte IP-Paket`);
+    this.dev.print(`PING ${this.dst}: ${this.size} bytes of data, ${IP_HDR + ICMP_HDR + this.size} byte IP packet`);
     this.sendNext();
   }
   sendNext() {
@@ -714,17 +716,17 @@ class PingSession extends Session {
     const seq = ++this.seq;
     const total = IP_HDR + ICMP_HDR + this.size;
     const r = this.l3.lookup(this.dst);
-    if (!r && !this.l3.isOwn(this.dst)) { this.dev.print('ping: connect: Network is unreachable'); this.dev.record('err', `ping ${this.dst}: keine Route`, { tag: 'no-route' }); return this.finish(true); }
+    if (!r && !this.l3.isOwn(this.dst)) { this.dev.print('ping: connect: Network is unreachable'); this.dev.record('err', `ping ${this.dst}: no route`, { tag: 'no-route' }); return this.finish(true); }
     const lim = Math.min(this.l3.pmtu.get(this.dst) || Infinity, r ? this.l3.mtu(r.dev) : 65536);
     this.sent++;
     if (this.df && total > lim) {
       this.dev.print(`ping: local error: message too long, mtu=${lim}`);
-      this.dev.record('err', `Paket mit ${total} Byte und DF passt nicht (MTU ${lim}), lokal abgelehnt`, { tag: 'local-mtu-error', data: { mtu: lim } });
+      this.dev.record('err', `Packet of ${total} bytes with DF does not fit (MTU ${lim}), rejected locally`, { tag: 'local-mtu-error', data: { mtu: lim } });
       this.errors++;
     } else {
       const pkt = ipPacket({ src: this.l3.srcFor(this.dst), dst: this.dst, ttl: this.ttl, proto: PROTO.ICMP, df: this.df, l4: icmp(8, 0, { ident: this.ident, seq, dataLen: this.size }) });
       const t0 = this.sim.time;
-      const ev = this.sim.schedule(T.replyTimeout, () => { if (this.open.has(seq)) { this.open.delete(seq); this.dev.print(`icmp_seq=${seq}: keine Antwort (Timeout)`); this.checkEnd(); } });
+      const ev = this.sim.schedule(T.replyTimeout, () => { if (this.open.has(seq)) { this.open.delete(seq); this.dev.print(`icmp_seq=${seq}: no answer (timeout)`); this.checkEnd(); } });
       this.open.set(seq, { t0, ev });
       this.l3.output(pkt, {});
     }
@@ -737,7 +739,7 @@ class PingSession extends Session {
     if (l4.ident !== this.ident) return;
     const o = this.take(l4.seq); if (!o) return;
     this.received++;
-    this.dev.print(`${ICMP_HDR + l4.dataLen} Byte von ${ip.src}: icmp_seq=${l4.seq} ttl=${ip.ttl} Zeit=${(this.sim.time - o.t0).toFixed(2)} ms`);
+    this.dev.print(`${ICMP_HDR + l4.dataLen} bytes from ${ip.src}: icmp_seq=${l4.seq} ttl=${ip.ttl} time=${(this.sim.time - o.t0).toFixed(2)} ms`);
     this.checkEnd();
   }
   onIcmpError(ip) {
@@ -761,15 +763,15 @@ class PingSession extends Session {
     if (this.done) return;
     this.end();
     const loss = this.sent ? Math.round((1 - this.received / this.sent) * 100) : 100;
-    if (!aborted) { this.dev.print(`--- ${this.dst} Statistik ---`); this.dev.print(`${this.sent} gesendet, ${this.received} empfangen${this.errors ? `, ${this.errors} Fehler` : ''}, ${loss} % Verlust`); }
-    this.dev.record(this.received ? 'ok' : 'err', `ping an ${this.dst} beendet: ${this.received} von ${this.sent} beantwortet`,
+    if (!aborted) { this.dev.print(`--- ${this.dst} ping statistics ---`); this.dev.print(`${this.sent} packets transmitted, ${this.received} received${this.errors ? `, ${this.errors} errors` : ''}, ${loss}% packet loss`); }
+    this.dev.record(this.received ? 'ok' : 'err', `ping to ${this.dst} finished: ${this.received} of ${this.sent} answered`,
       { tag: 'ping-done', data: { dst: this.dst, sent: this.sent, received: this.received, size: this.size, df: this.df } });
   }
 }
 
 class TraceSession extends Session {
   constructor(l3, dst, o) { super(l3); Object.assign(this, { dst, max: o.maxHops ?? 8 }); this.ttl = 0; this.port = 33433; this.hops = []; }
-  start() { this.begin(); this.dev.print(`$ traceroute -n ${this.dst}`); this.dev.print(`traceroute zu ${this.dst}, höchstens ${this.max} Hops`); this.next(); }
+  start() { this.begin(); this.dev.print(`$ traceroute -n ${this.dst}`); this.dev.print(`traceroute to ${this.dst}, ${this.max} hops max`); this.next(); }
   next() {
     if (this.done) return;
     if (this.ttl >= this.max) return this.finish();
@@ -796,7 +798,7 @@ class TraceSession extends Session {
   finish(reached = false) {
     if (this.done) return;
     this.end();
-    this.dev.record(reached ? 'ok' : 'err', `traceroute zu ${this.dst} beendet${reached ? ', Ziel erreicht' : ''}`, { tag: 'trace-done', data: { dst: this.dst, reached, hops: this.hops.length, path: this.hops } });
+    this.dev.record(reached ? 'ok' : 'err', `traceroute to ${this.dst} finished${reached ? ', destination reached' : ''}`, { tag: 'trace-done', data: { dst: this.dst, reached, hops: this.hops.length, path: this.hops } });
   }
 }
 
@@ -807,10 +809,10 @@ class ArpingSession extends Session {
     const ifn = this.ifname || this.l3.ifaces().find(i => i.name !== 'lo')?.name;
     this.ifname = ifn;
     const myIp = this.l3.ifIp(ifn);
-    if (!ifn || !myIp) { this.dev.print('arping: kein Interface mit IP-Adresse'); return this.end(); }
+    if (!ifn || !myIp) { this.dev.print('arping: no interface with an IP address'); return this.end(); }
     const flag = { normal: '', gratuitous: '-U ', reply: '-A ', dad: '-D ' }[this.mode];
     this.dev.print(`$ arping ${flag}-c ${this.count} -I ${ifn} ${this.target}`);
-    this.dev.print(`ARPING ${this.target} von ${this.mode === 'dad' ? '0.0.0.0' : myIp} ${ifn}`);
+    this.dev.print(`ARPING ${this.target} from ${this.mode === 'dad' ? '0.0.0.0' : myIp} ${ifn}`);
     const mac = this.dev.mac(ifn);
     const tick = () => {
       if (this.done) return;
@@ -822,7 +824,7 @@ class ArpingSession extends Session {
       else if (this.mode === 'dad') { pkt = arpPacket(1, mac, '0.0.0.0', null, this.target); label = 'dad-sent'; }
       else { pkt = arpPacket(1, mac, myIp, null, this.target); label = 'arping-sent'; }
       this.t0 = this.sim.time;
-      this.dev.record('info', this.mode === 'gratuitous' || this.mode === 'reply' ? `kündigt ${myIp} bei ${mac} ungefragt an (Gratuitous ARP)` : this.mode === 'dad' ? `prüft per ARP-Probe, ob ${this.target} schon vergeben ist` : `fragt per arping nach ${this.target}`,
+      this.dev.record('info', this.mode === 'gratuitous' || this.mode === 'reply' ? `announces ${myIp} at ${mac} unsolicited (gratuitous ARP)` : this.mode === 'dad' ? `checks via ARP probe whether ${this.target} is already in use` : `asks for ${this.target} via arping`,
         { tag: label, data: { ip: this.mode === 'dad' ? this.target : myIp } });
       this.l3.sendFrame(ifn, BCAST, 'arp', pkt);
       this.sim.schedule(1000, tick);
@@ -837,9 +839,9 @@ class ArpingSession extends Session {
   finish() {
     if (this.done) return;
     this.end();
-    this.dev.print(`${this.sent} Pakete gesendet${this.mode === 'gratuitous' || this.mode === 'reply' ? '' : `, ${this.replies} Antworten`}`);
-    if (this.mode === 'dad') this.dev.print(this.replies ? `Adresse ${this.target} ist bereits vergeben (Konflikt).` : `Adresse ${this.target} ist frei.`);
-    this.dev.record(this.mode === 'dad' && this.replies ? 'err' : 'ok', `arping beendet (${this.mode})`, { tag: 'arping-done', data: { mode: this.mode, target: this.target, replies: this.replies } });
+    this.dev.print(`Sent ${this.sent} probes${this.mode === 'gratuitous' || this.mode === 'reply' ? '' : `, received ${this.replies} responses`}`);
+    if (this.mode === 'dad') this.dev.print(this.replies ? `Address ${this.target} is already in use (conflict).` : `Address ${this.target} is free.`);
+    this.dev.record(this.mode === 'dad' && this.replies ? 'err' : 'ok', `arping finished (${this.mode})`, { tag: 'arping-done', data: { mode: this.mode, target: this.target, replies: this.replies } });
   }
 }
 
@@ -865,11 +867,11 @@ class TcpClient extends Session {
     if (this.done || this.state !== 'SYN_SENT') return;
     if (this.tries >= T.tcpSyn.length) {
       this.dev.print(this.mode === 'probe' ? `nc: connect to ${this.dst} port ${this.port} (tcp) timed out` : `curl: (28) Failed to connect to ${this.dst} port ${this.port}: Connection timed out`);
-      this.dev.record('err', `TCP-Verbindung zu ${this.dst}:${this.port}: keine Antwort auf SYN (gefiltert?)`, { tag: 'tcp-timeout', data: { dst: this.dst, port: this.port } });
+      this.dev.record('err', `TCP connection to ${this.dst}:${this.port}: no answer to SYN (filtered?)`, { tag: 'tcp-timeout', data: { dst: this.dst, port: this.port } });
       return this.finish(false);
     }
     const wait = T.tcpSyn[this.tries++];
-    this.dev.record('info', `öffnet eine TCP-Verbindung zu ${this.dst}:${this.port}: SYN${this.tries > 1 ? ' (Wiederholung ' + (this.tries - 1) + ')' : ''}`, { tag: 'tcp-syn-sent', data: { dst: this.dst, port: this.port } });
+    this.dev.record('info', `opens a TCP connection to ${this.dst}:${this.port}: SYN${this.tries > 1 ? ' (retry ' + (this.tries - 1) + ')' : ''}`, { tag: 'tcp-syn-sent', data: { dst: this.dst, port: this.port } });
     this.l3.sendTcp(this.dst, tcp(this.lport, this.port, this.iss, 0, { SYN: true }, { mss: this.l3.mssFor(this.dst) }));
     this.t0 = this.sim.time;
     this.timer = this.sim.schedule(wait, () => this.syn());
@@ -880,7 +882,7 @@ class TcpClient extends Session {
     if (s.flags.RST) {
       this.sim.cancel(this.timer);
       this.dev.print(this.mode === 'probe' ? `nc: connect to ${this.dst} port ${this.port} (tcp) failed: Connection refused` : `curl: (7) Failed to connect to ${this.dst} port ${this.port}: Connection refused`);
-      this.dev.record('err', `${this.dst}:${this.port} lehnt ab (RST): Port geschlossen oder Verbindung abgelehnt`, { tag: 'tcp-refused', data: { dst: this.dst, port: this.port } });
+      this.dev.record('err', `${this.dst}:${this.port} refuses (RST): port closed or connection rejected`, { tag: 'tcp-refused', data: { dst: this.dst, port: this.port } });
       return this.finish(false);
     }
     if (this.state === 'SYN_SENT' && s.flags.SYN && s.flags.ACK && s.ack === this.iss + 1) {
@@ -888,7 +890,7 @@ class TcpClient extends Session {
       this.rcvNxt = s.seq + 1; this.sndNxt = this.iss + 1; this.peerMss = s.mss;
       this.l3.sendTcp(this.dst, tcp(this.lport, this.port, this.sndNxt, this.rcvNxt, { ACK: true }));
       this.setState('ESTABLISHED');
-      this.dev.record('ok', `Drei-Wege-Handshake mit ${this.dst}:${this.port} abgeschlossen (ESTABLISHED)`, { tag: 'tcp-established', data: { dst: this.dst, port: this.port, client: true } });
+      this.dev.record('ok', `Three-way handshake with ${this.dst}:${this.port} complete (ESTABLISHED)`, { tag: 'tcp-established', data: { dst: this.dst, port: this.port, client: true } });
       if (this.mode === 'probe') { this.dev.print(`Connection to ${this.dst} ${this.port} port [tcp] succeeded!`); return this.close(); }
       const req = 78;
       this.l3.sendTcp(this.dst, tcp(this.lport, this.port, this.sndNxt, this.rcvNxt, { ACK: true, PSH: true }, { dataLen: req, app: 'GET / HTTP/1.1' }));
@@ -903,7 +905,7 @@ class TcpClient extends Session {
       this.l3.sendTcp(this.dst, tcp(this.lport, this.port, this.sndNxt, this.rcvNxt, { ACK: true }));
       this.armStall();
       if (this.expected !== null && this.bytes >= this.expected) {
-        this.dev.print(`${this.bytes} Byte in ${this.segments} Segment${this.segments > 1 ? 'en' : ''} empfangen (MSS ${Math.max(...[s.dataLen, this.firstLen || 0])})`);
+        this.dev.print(`${this.bytes} bytes received in ${this.segments} segment${this.segments > 1 ? 's' : ''} (MSS ${Math.max(...[s.dataLen, this.firstLen || 0])})`);
         this.close();
       }
       this.firstLen ??= s.dataLen;
@@ -912,7 +914,7 @@ class TcpClient extends Session {
     if (this.state === 'FIN_WAIT' && s.flags.FIN) {
       this.rcvNxt += 1;
       this.l3.sendTcp(this.dst, tcp(this.lport, this.port, this.sndNxt, this.rcvNxt, { ACK: true }));
-      this.dev.record('ok', `Verbindung zu ${this.dst}:${this.port} sauber geschlossen`, { tag: 'tcp-closed', data: { client: true } });
+      this.dev.record('ok', `Connection to ${this.dst}:${this.port} closed cleanly`, { tag: 'tcp-closed', data: { client: true } });
       this.finish(true);
     }
   }
@@ -921,7 +923,7 @@ class TcpClient extends Session {
     this.timer = this.sim.schedule(T.tcpStall, () => {
       if (this.done || this.state !== 'ESTABLISHED') return;
       this.dev.print(`curl: (28) Operation timed out after ${T.tcpStall} milliseconds with ${this.bytes} bytes received`);
-      this.dev.record('err', `Verbindung zu ${this.dst}:${this.port} steht, aber die Antwort kommt nicht an (${this.bytes} Byte erhalten)`, { tag: 'tcp-stalled', data: { dst: this.dst, port: this.port, bytes: this.bytes } });
+      this.dev.record('err', `Connection to ${this.dst}:${this.port} is up, but the response does not arrive (${this.bytes} bytes received)`, { tag: 'tcp-stalled', data: { dst: this.dst, port: this.port, bytes: this.bytes } });
       this.l3.sendTcp(this.dst, tcp(this.lport, this.port, this.sndNxt, this.rcvNxt, { RST: true, ACK: true }));
       this.finish(false);
     });
@@ -936,8 +938,8 @@ class TcpClient extends Session {
     const l4 = ip.l4, o = l4.orig;
     if (!o || o.sport !== this.lport || this.done) return;
     this.sim.cancel(this.timer);
-    const txt = l4.type === 11 ? 'TTL abgelaufen' : l4.code === 13 ? 'Communication administratively prohibited' : l4.code === 3 ? 'Connection refused' : 'No route to host';
-    this.dev.print(`${this.tool}: ${this.dst} port ${this.port}: ${txt} (ICMP von ${ip.src})`);
+    const txt = l4.type === 11 ? 'TTL exceeded' : l4.code === 13 ? 'Communication administratively prohibited' : l4.code === 3 ? 'Connection refused' : 'No route to host';
+    this.dev.print(`${this.tool}: ${this.dst} port ${this.port}: ${txt} (ICMP from ${ip.src})`);
     this.finish(false);
   }
   onArpFail(pkt) {
@@ -951,7 +953,7 @@ class TcpClient extends Session {
     this.sim.cancel(this.timer);
     this.end();
     this.l3.tcp.delete(this.key);
-    this.dev.record(ok ? 'ok' : 'err', `${this.tool} ${this.dst}:${this.port} beendet`, { tag: 'tcp-done', data: { dst: this.dst, port: this.port, ok: !!ok, bytes: this.bytes, segments: this.segments, mode: this.mode } });
+    this.dev.record(ok ? 'ok' : 'err', `${this.tool} ${this.dst}:${this.port} finished`, { tag: 'tcp-done', data: { dst: this.dst, port: this.port, ok: !!ok, bytes: this.bytes, segments: this.segments, mode: this.mode } });
   }
 }
 
@@ -964,7 +966,7 @@ class DigSession extends Session {
     this.t0 = this.sim.time;
     const res = this.l3.output(ipPacket({ src: this.l3.srcFor(this.server), dst: this.server, proto: PROTO.UDP, l4: udp(this.sport, 53, { kind: 'dns', id: this.id, qr: 0, qname: this.name }) }), {});
     if (!res.ok) { this.print(`;; ${res.error}`); return this.finish(false); }
-    this.dev.record('info', `fragt ${this.server} per DNS (UDP 53) nach ${this.name}`, { tag: 'dns-query', data: { name: this.name } });
+    this.dev.record('info', `asks ${this.server} via DNS (UDP 53) for ${this.name}`, { tag: 'dns-query', data: { name: this.name } });
     this.timer = this.sim.schedule(T.dnsTimeout, () => { this.print(';; connection timed out; no servers could be reached'); this.finish(false); });
   }
   onUdp(ip) {
@@ -991,8 +993,8 @@ class DigSession extends Session {
     if (this.done) return;
     this.end();
     const answer = d?.answers?.[0]?.ip || null;
-    this.dev.record(ok ? 'ok' : 'err', ok ? `DNS: ${this.name} ist ${answer}` : `DNS-Abfrage ${this.name} ohne Ergebnis`, { tag: 'dns-done', data: { name: this.name, ok, answer } });
-    if (this.then) { if (answer) this.dev.print(`${this.name} → ${answer} (DNS über ${this.server})`); this.then(answer); }
+    this.dev.record(ok ? 'ok' : 'err', ok ? `DNS: ${this.name} is ${answer}` : `DNS lookup ${this.name} without result`, { tag: 'dns-done', data: { name: this.name, ok, answer } });
+    if (this.then) { if (answer) this.dev.print(`${this.name} → ${answer} (DNS via ${this.server})`); this.then(answer); }
   }
 }
 
@@ -1003,13 +1005,13 @@ class UdpSend extends Session {
     this.dev.print(`$ echo test | nc -u -w1 ${this.dst} ${this.port}`);
     const res = this.l3.output(ipPacket({ src: this.l3.srcFor(this.dst), dst: this.dst, proto: PROTO.UDP, l4: udp(this.sport, this.port, { kind: 'data', len: this.len }) }), {});
     if (!res.ok) { this.dev.print(`nc: ${res.error}`); return this.end(); }
-    this.dev.print(`${this.len} Byte als UDP-Datagramm gesendet. UDP wartet auf keine Bestätigung.`);
+    this.dev.print(`${this.len} bytes sent as a UDP datagram. UDP does not wait for any acknowledgment.`);
     this.sim.schedule(2000, () => this.end());
   }
-  onIcmpError(ip) { const o = ip.l4.orig; if (!o || o.sport !== this.sport || this.done) return; this.dev.print(`Hinweis: ICMP ${icmpName(ip.l4.type, ip.l4.code)} von ${ip.src} erhalten`); this.end(); }
+  onIcmpError(ip) { const o = ip.l4.orig; if (!o || o.sport !== this.sport || this.done) return; this.dev.print(`Note: received ICMP ${icmpName(ip.l4.type, ip.l4.code)} from ${ip.src}`); this.end(); }
 }
 
-// ---------------------------------------------------------------- Hosts und Router
+// ---------------------------------------------------------------- Hosts and routers
 class Host extends Device {
   constructor(sim, cfg) { super(sim, cfg); this.l3 = new L3(this); }
   receive(ifname, frame) { this.l3.receive(ifname, frame); }
@@ -1021,21 +1023,21 @@ class Host extends Device {
   dig(server, name) { const s = new DigSession(this.l3, server, name); s.start(); return s; }
   resolve(name, cb) {
     if (isIp(name)) return cb(name);
-    if (!isIp(this.cfg.resolver)) { this.print(`${name}: kein DNS-Server eingetragen`); this.record('err', `kann ${name} nicht auflösen: kein DNS-Server konfiguriert`, { tag: 'dns-no-resolver' }); return cb(null); }
+    if (!isIp(this.cfg.resolver)) { this.print(`${name}: no DNS server configured`); this.record('err', `cannot resolve ${name}: no DNS server configured`, { tag: 'dns-no-resolver' }); return cb(null); }
     const s = new DigSession(this.l3, this.cfg.resolver, name, cb); s.start(); return s;
   }
   udpSend(dst, port, len = 32) { const s = new UdpSend(this.l3, dst, port, len); s.start(); return s; }
 }
 class Router extends Host {}
 
-// ---------------------------------------------------------------- Bridge mit Spanning Tree
+// ---------------------------------------------------------------- Bridge with spanning tree
 const cmpBid = (a, b) => (a.prio - b.prio) || a.mac.localeCompare(b.mac);
 const cmpPort = (a, b) => { const [ap, an] = a.split('.').map(Number), [bp, bn] = b.split('.').map(Number); return (ap - bp) || (an - bn); };
 function cmpVec(a, b) {
   return cmpBid(a.root, b.root) || (a.cost - b.cost) || cmpBid(a.bridge, b.bridge) || cmpPort(a.port, b.port) || (a.rx && b.rx ? cmpPort(a.rx, b.rx) : 0);
 }
-const ROLE_DE = { root: 'Root-Port', designated: 'Designated', alternate: 'Alternate (blockiert)', disabled: 'deaktiviert' };
-const STATE_DE = { blocking: 'Blocking', listening: 'Listening', learning: 'Learning', forwarding: 'Forwarding', disabled: 'Disabled' };
+const ROLE_TEXT = { root: 'Root port', designated: 'Designated', alternate: 'Alternate (blocked)', disabled: 'disabled' };
+const STATE_TEXT = { blocking: 'Blocking', listening: 'Listening', learning: 'Learning', forwarding: 'Forwarding', disabled: 'Disabled' };
 
 class Bridge {
   constructor(dev) { this.dev = dev; this.sim = dev.sim; this.resetState(); }
@@ -1081,12 +1083,12 @@ class Bridge {
     if (frame.type === 'stp') { if (this.stp) this.stpReceive(p, frame); return; }
     const ps = this.stp && !p.startsWith('vxlan') ? this.stp.ports.get(p) : null;
     if (ps && (ps.state === 'blocking' || ps.state === 'listening' || ps.state === 'disabled')) {
-      this.dev.record('drop', `${p} ist im Zustand ${STATE_DE[ps.state]} (STP): Frame verworfen`, { frame, tag: 'stp-drop', data: { port: p, state: ps.state } });
+      this.dev.record('drop', `${p} is in state ${STATE_TEXT[ps.state]} (STP): frame dropped`, { frame, tag: 'stp-drop', data: { port: p, state: ps.state } });
       return;
     }
     const vid = from.vid ?? this.vidIn(p, frame);
     if (vid === null) {
-      this.dev.record('drop', `Frame auf ${p} passt zu keinem erlaubten VLAN (${frame.vlan ? 'Tag ' + frame.vlan.vid : 'ohne Tag'}), verworfen`, { frame, tag: 'vlan-drop', data: { port: p } });
+      this.dev.record('drop', `Frame on ${p} matches no allowed VLAN (${frame.vlan ? 'tag ' + frame.vlan.vid : 'untagged'}), dropped`, { frame, tag: 'vlan-drop', data: { port: p } });
       return;
     }
     const inner = clone(frame); inner.vlan = null;
@@ -1096,29 +1098,29 @@ class Bridge {
       this.fdb.set(key, { port: p, t: this.sim.time, remote: from.remote || null });
       if (!old || old.port !== p || old.remote !== (from.remote || null)) {
         const flap = old && old.port !== p && this.sim.time - old.t < 1000;
-        this.dev.record('learn', flap ? `MAC-Flapping: ${frame.src} springt von ${old.port} zu ${p}` : `lernt: ${frame.src} ist in VLAN ${vid} an ${p}${from.remote ? ' (hinter VTEP ' + from.remote + ')' : ''}`,
+        this.dev.record('learn', flap ? `MAC flapping: ${frame.src} jumps from ${old.port} to ${p}` : `learns: ${frame.src} is in VLAN ${vid} on ${p}${from.remote ? ' (behind VTEP ' + from.remote + ')' : ''}`,
           { tag: flap ? 'mac-flap' : 'mac-learned', data: { mac: frame.src, port: p, vid, remote: from.remote || null } });
       }
     }
-    if (ps && ps.state === 'learning') { this.dev.record('drop', `${p} ist im Zustand Learning: MAC gelernt, Frame aber nicht weitergeleitet`, { frame, tag: 'stp-learning' }); return; }
+    if (ps && ps.state === 'learning') { this.dev.record('drop', `${p} is in state Learning: MAC learned, but frame not forwarded`, { frame, tag: 'stp-learning' }); return; }
     const e = !isGroupMac(frame.dst) && this.ageingMs > 0 ? this.entry(vid, frame.dst) : null;
     if (e && (!this.stp || e.port.startsWith('vxlan') || this.stp.ports.get(e.port)?.state === 'forwarding')) {
-      if (e.port === p) { this.dev.record('drop', `Ziel ${frame.dst} liegt am selben Port ${p}, Frame wird gefiltert`, { frame, tag: 'filtered' }); return; }
-      this.dev.record('fwd', `leitet an ${e.port} weiter (MAC-Tabelle: ${frame.dst})`, { frame, tag: 'switched', data: { port: e.port } });
+      if (e.port === p) { this.dev.record('drop', `Destination ${frame.dst} is on the same port ${p}, frame is filtered`, { frame, tag: 'filtered' }); return; }
+      this.dev.record('fwd', `forwards to ${e.port} (MAC table: ${frame.dst})`, { frame, tag: 'switched', data: { port: e.port } });
       this.egress(e.port, inner, vid, e.remote);
       return;
     }
-    // Schleifenerkennung: derselbe Broadcast kommt immer wieder
+    // Loop detection: the same broadcast keeps coming back
     if (isGroupMac(frame.dst) || !e) {
       const n = (this.seen.get(frame.id) || 0) + 1;
       this.seen.set(frame.id, n);
       if (this.seen.size > 500) this.seen.delete(this.seen.keys().next().value);
-      if (n === 2) this.dev.record('err', `sieht denselben Frame (${frame.type === 'arp' ? 'ARP' : 'IP'} von ${frame.src}) zum zweiten Mal: Das Netz hat eine Schleife!`, { frame, tag: 'loop-detected' });
-      if (n >= T.loopHalt) return this.sim.halt(this.dev, `Broadcast-Sturm: ${this.dev.name} hat denselben Frame ${n}-mal geflutet. Ethernet hat keine TTL, ohne Spanning Tree kreist er ewig. Simulation angehalten.`);
+      if (n === 2) this.dev.record('err', `sees the same frame (${frame.type === 'arp' ? 'ARP' : 'IP'} from ${frame.src}) for the second time: the network has a loop!`, { frame, tag: 'loop-detected' });
+      if (n >= T.loopHalt) return this.sim.halt(this.dev, `Broadcast storm: ${this.dev.name} has flooded the same frame ${n} times. Ethernet has no TTL, without spanning tree it circles forever. Simulation halted.`);
     }
-    const why = frame.dst === BCAST ? 'Broadcast' : isGroupMac(frame.dst) ? 'Multicast' : this.ageingMs === 0 ? 'Aging 0: lernt nichts, flutet alles' : `Ziel ${frame.dst} unbekannt`;
+    const why = frame.dst === BCAST ? 'Broadcast' : isGroupMac(frame.dst) ? 'Multicast' : this.ageingMs === 0 ? 'aging 0: learns nothing, floods everything' : `destination ${frame.dst} unknown`;
     const targets = this.allPorts().filter(x => x !== p && this.carries(x, vid) && !(from.remote && x.startsWith('vxlan')));
-    this.dev.record('fwd', targets.length ? `flutet an ${targets.join(', ')} (${why})` : `kein weiterer Port in VLAN ${vid} (${why})`, { frame, tag: 'flooded', data: { ports: targets, why } });
+    this.dev.record('fwd', targets.length ? `floods to ${targets.join(', ')} (${why})` : `no other port in VLAN ${vid} (${why})`, { frame, tag: 'flooded', data: { ports: targets, why } });
     for (const t of targets) this.egress(t, inner, vid, null);
   }
   egress(p, inner, vid, remote) {
@@ -1129,7 +1131,7 @@ class Bridge {
     this.dev.transmit(p, f);
   }
 
-  // ---------- Spanning Tree (IEEE 802.1D, vereinfacht)
+  // ---------- Spanning tree (IEEE 802.1D, simplified)
   timers() { return STP_PRESETS[this.cfg.stp.timers] || STP_PRESETS.standard; }
   myId() { return { prio: Number(this.cfg.stp.priority ?? 32768), mac: macFor(this.dev.id + '/bridge') }; }
   portId(p) { return `128.${PORTS.switch.indexOf(p) + 1}`; }
@@ -1137,7 +1139,7 @@ class Bridge {
   stpStart() {
     if (this.stp) return;
     this.stp = { ports: new Map(), rootPort: null, rootId: this.myId(), rootCost: 0, tcUntil: 0, lastFlush: -1e9, timer: null };
-    this.dev.record('info', `startet Spanning Tree (Bridge ID ${fmtBid(this.myId())}) und hält sich zunächst selbst für die Root`, { tag: 'stp-start' });
+    this.dev.record('info', `starts spanning tree (bridge ID ${fmtBid(this.myId())}) and initially considers itself the root`, { tag: 'stp-start' });
     for (const p of PORTS.switch) this.stp.ports.set(p, { role: 'disabled', state: 'disabled', info: null, timer: null, edge: false });
     this.stpRecompute(true);
     const tick = () => { if (!this.stp) return; this.stpHello(); this.stp.timer = this.sim.schedule(this.timers().hello * 1000, tick); };
@@ -1148,7 +1150,7 @@ class Bridge {
     this.sim.cancel(this.stp.timer);
     for (const ps of this.stp.ports.values()) this.sim.cancel(ps.timer);
     this.stp = null;
-    this.dev.record('info', 'Spanning Tree ausgeschaltet: alle Ports leiten sofort weiter', { tag: 'stp-stop' });
+    this.dev.record('info', 'Spanning tree turned off: all ports forward immediately', { tag: 'stp-stop' });
   }
   stpHello() {
     const now = this.sim.time, { maxAge } = this.timers();
@@ -1156,7 +1158,7 @@ class Bridge {
     for (const [p, ps] of this.stp.ports) {
       if (ps.info && now - ps.info.t > maxAge * 1000) {
         ps.info = null; changed = true;
-        this.dev.record('err', `${p}: seit ${maxAge} s keine BPDU mehr (Max Age), die gespeicherte Information verfällt`, { tag: 'stp-maxage', data: { port: p } });
+        this.dev.record('err', `${p}: no BPDU for ${maxAge} s (max age), the stored information expires`, { tag: 'stp-maxage', data: { port: p } });
       }
     }
     if (changed) this.stpRecompute();
@@ -1174,15 +1176,15 @@ class Bridge {
     const ps = this.stp.ports.get(p);
     if (!ps || !this.physUp(p)) return;
     const b = frame.payload;
-    if (ps.edge) { ps.edge = false; ps.edgeLost = true; this.dev.record('err', `${p} ist als Edge-Port konfiguriert, empfängt aber eine BPDU: verliert den Edge-Status`, { frame, tag: 'stp-edge-lost', data: { port: p } }); }
+    if (ps.edge) { ps.edge = false; ps.edgeLost = true; this.dev.record('err', `${p} is configured as an edge port but receives a BPDU: loses edge status`, { frame, tag: 'stp-edge-lost', data: { port: p } }); }
     const isNew = !ps.info || cmpBid(ps.info.root, b.root) || ps.info.cost !== b.cost || cmpBid(ps.info.bridge, b.bridge);
     ps.info = { root: b.root, cost: b.cost, bridge: b.bridge, port: b.port, age: b.age, t: this.sim.time };
-    if (isNew) this.dev.record('learn', `${p} empfängt BPDU: Root ${fmtBid(b.root)}, Kosten ${b.cost}, von ${fmtBid(b.bridge)}`, { frame, tag: 'stp-bpdu', data: { port: p } });
+    if (isNew) this.dev.record('learn', `${p} receives BPDU: root ${fmtBid(b.root)}, cost ${b.cost}, from ${fmtBid(b.bridge)}`, { frame, tag: 'stp-bpdu', data: { port: p } });
     if (b.tc && p === this.stp.rootPort && this.sim.time - this.stp.lastFlush > 5000) {
       this.stp.lastFlush = this.sim.time;
       this.fdb.clear();
       this.stp.tcUntil = Math.max(this.stp.tcUntil, this.sim.time + this.timers().fwd * 1000);
-      this.dev.record('info', 'Topologieänderung gemeldet: MAC-Tabelle geleert, Adressen werden neu gelernt', { tag: 'stp-tc-flush' });
+      this.dev.record('info', 'Topology change reported: MAC table flushed, addresses are learned again', { tag: 'stp-tc-flush' });
     }
     this.stpRecompute();
   }
@@ -1201,7 +1203,7 @@ class Bridge {
     st.rootId = best ? best.root : me;
     st.rootCost = best ? best.cost : 0;
     if (cmpBid(oldRoot, st.rootId) !== 0 && !initial) {
-      this.dev.record('info', rootPort ? `neue Root Bridge: ${fmtBid(st.rootId)}, Root-Port ${rootPort}, Kosten ${st.rootCost}` : 'ist jetzt selbst die Root Bridge', { tag: 'stp-root', data: { root: fmtBid(st.rootId), rootPort } });
+      this.dev.record('info', rootPort ? `new root bridge: ${fmtBid(st.rootId)}, root port ${rootPort}, cost ${st.rootCost}` : 'is now the root bridge itself', { tag: 'stp-root', data: { root: fmtBid(st.rootId), rootPort } });
     }
     for (const [p, ps] of st.ports) {
       let role;
@@ -1220,32 +1222,32 @@ class Bridge {
     const cfgEdge = !!this.portCfg(p).edge;
     if (role === 'disabled') { this.sim.cancel(ps.timer); ps.state = 'disabled'; ps.edge = false; ps.edgeLost = false; return; }
     ps.edge = cfgEdge && !ps.edgeLost;
-    if (role !== prev && !initial) this.dev.record('info', `${p} wird ${ROLE_DE[role]}`, { tag: 'stp-role', data: { port: p, role } });
+    if (role !== prev && !initial) this.dev.record('info', `${p} becomes ${ROLE_TEXT[role]}`, { tag: 'stp-role', data: { port: p, role } });
     if (role === 'alternate') {
       if (ps.state !== 'blocking') {
         const wasFwd = ps.state === 'forwarding';
         this.sim.cancel(ps.timer); ps.state = 'blocking';
-        this.dev.record('info', `${p}: Zustand Blocking (verhindert eine Schleife)`, { tag: 'stp-state', data: { port: p, state: 'blocking' } });
+        this.dev.record('info', `${p}: state Blocking (prevents a loop)`, { tag: 'stp-state', data: { port: p, state: 'blocking' } });
         if (wasFwd) this.topologyChange();
       }
       return;
     }
     if (ps.edge && role === 'designated') {
-      if (ps.state !== 'forwarding') { this.sim.cancel(ps.timer); ps.state = 'forwarding'; this.dev.record('info', `${p} ist Edge-Port (PortFast): sofort Forwarding`, { tag: 'stp-state', data: { port: p, state: 'forwarding', edge: true } }); }
+      if (ps.state !== 'forwarding') { this.sim.cancel(ps.timer); ps.state = 'forwarding'; this.dev.record('info', `${p} is an edge port (PortFast): Forwarding immediately`, { tag: 'stp-state', data: { port: p, state: 'forwarding', edge: true } }); }
       return;
     }
     if (ps.state === 'blocking' || ps.state === 'disabled') {
       ps.state = 'listening';
-      this.dev.record('info', `${p}: Zustand Listening (${this.timers().fwd} s, leitet noch nichts weiter)`, { tag: 'stp-state', data: { port: p, state: 'listening' } });
+      this.dev.record('info', `${p}: state Listening (${this.timers().fwd} s, not forwarding anything yet)`, { tag: 'stp-state', data: { port: p, state: 'listening' } });
       const fwd = this.timers().fwd * 1000;
       ps.timer = this.sim.schedule(fwd, () => {
         if (!this.stp || ps.state !== 'listening') return;
         ps.state = 'learning';
-        this.dev.record('info', `${p}: Zustand Learning (${this.timers().fwd} s, lernt MAC-Adressen, leitet noch nicht weiter)`, { tag: 'stp-state', data: { port: p, state: 'learning' } });
+        this.dev.record('info', `${p}: state Learning (${this.timers().fwd} s, learns MAC addresses, not forwarding yet)`, { tag: 'stp-state', data: { port: p, state: 'learning' } });
         ps.timer = this.sim.schedule(fwd, () => {
           if (!this.stp || ps.state !== 'learning') return;
           ps.state = 'forwarding';
-          this.dev.record('ok', `${p}: Zustand Forwarding, leitet jetzt weiter`, { tag: 'stp-state', data: { port: p, state: 'forwarding' } });
+          this.dev.record('ok', `${p}: state Forwarding, now forwarding`, { tag: 'stp-state', data: { port: p, state: 'forwarding' } });
           this.topologyChange();
         });
       });
@@ -1257,7 +1259,7 @@ class Bridge {
     if (this.sim.time - this.stp.lastFlush > 5000) {
       this.stp.lastFlush = this.sim.time;
       this.fdb.clear();
-      this.dev.record('info', 'Topologieänderung: MAC-Tabelle geleert und Änderung per BPDU gemeldet', { tag: 'stp-tc', data: {} });
+      this.dev.record('info', 'Topology change: MAC table flushed and change reported via BPDU', { tag: 'stp-tc', data: {} });
     }
   }
   stpTable() {
@@ -1273,7 +1275,7 @@ class Bridge {
   roleOf(p) { return this.stp?.ports.get(p)?.role || null; }
   stateOf(p) { return this.stp?.ports.get(p)?.state || null; }
 }
-export const STP_TEXT = { ROLE_DE, STATE_DE };
+export const STP_TEXT = { ROLE: ROLE_TEXT, STATE: STATE_TEXT };
 
 class Switch extends Device {
   constructor(sim, cfg) { super(sim, cfg); this.bridge = new Bridge(this); }
@@ -1315,17 +1317,17 @@ class Vtep extends Device {
     const plen = framePayloadLen(inner);
     const vm = this.vxlanMtu(m);
     if (plen > vm) {
-      this.record('drop', `${port}: Frame mit ${plen} Byte Nutzlast ist grösser als die MTU ${vm} des VXLAN-Interfaces, still verworfen (keine ICMP-Meldung auf Layer 2)`, { frame: inner, tag: 'vxlan-mtu-drop', data: { mtu: vm, len: plen } });
+      this.record('drop', `${port}: frame with ${plen} bytes of payload is larger than the MTU ${vm} of the VXLAN interface, silently dropped (no ICMP message on layer 2)`, { frame: inner, tag: 'vxlan-mtu-drop', data: { mtu: vm, len: plen } });
       return;
     }
     const targets = remote ? [remote] : (m.flood || []).filter(isIp);
-    if (!targets.length) { this.record('drop', `${port}: Flood-Liste ist leer, Frame geht an keinen VTEP`, { frame: inner, tag: 'vxlan-no-flood' }); return; }
+    if (!targets.length) { this.record('drop', `${port}: flood list is empty, frame goes to no VTEP`, { frame: inner, tag: 'vxlan-no-flood' }); return; }
     const src = this.localIp();
     for (const t of targets) {
       const pkt = ipPacket({ src, dst: t, proto: PROTO.UDP, df: false, trace: traceOf(inner) ?? undefined,
         l4: udp(hashFlow(inner.src + inner.dst + (inner.type === 'ipv4' ? inner.payload.src + inner.payload.dst + inner.payload.proto : 'arp')),
           Number(m.dstport || VXLAN_PORT), { kind: 'vxlan', vni: Number(m.vni), frame: clone(inner) }) });
-      this.record('info', `kapselt in VXLAN (VNI ${m.vni}) und sendet ${remote ? 'per Unicast' : 'per Head-End Replication'} an VTEP ${t}`, { frame: ethFrame(this.mac('eth1'), '00:00:00:00:00:00', 'ipv4', pkt), tag: 'vxlan-encap', data: { vni: Number(m.vni), dst: t } });
+      this.record('info', `encapsulates in VXLAN (VNI ${m.vni}) and sends ${remote ? 'via unicast' : 'via head-end replication'} to VTEP ${t}`, { frame: ethFrame(this.mac('eth1'), '00:00:00:00:00:00', 'ipv4', pkt), tag: 'vxlan-encap', data: { vni: Number(m.vni), dst: t } });
       this.l3.output(pkt, {});
     }
   }
@@ -1335,8 +1337,8 @@ class Vtep extends Device {
     const onPort = this.maps().filter(m => Number(m.dstport || VXLAN_PORT) === l4.dport);
     if (!onPort.length) return false;
     const m = onPort.find(x => Number(x.vni) === l4.payload.vni);
-    if (!m) { this.record('drop', `VXLAN mit VNI ${l4.payload.vni} von ${ip.src} erhalten, aber kein Segment mit diesem VNI: verworfen`, { tag: 'vxlan-vni-unknown', data: { vni: l4.payload.vni } }); return true; }
-    this.record('info', `packt VXLAN von ${ip.src} aus (VNI ${m.vni} → VLAN ${m.vlan})`, { tag: 'vxlan-decap', data: { vni: Number(m.vni), from: ip.src } });
+    if (!m) { this.record('drop', `Received VXLAN with VNI ${l4.payload.vni} from ${ip.src}, but no segment with this VNI: dropped`, { tag: 'vxlan-vni-unknown', data: { vni: l4.payload.vni } }); return true; }
+    this.record('info', `decapsulates VXLAN from ${ip.src} (VNI ${m.vni} → VLAN ${m.vlan})`, { tag: 'vxlan-decap', data: { vni: Number(m.vni), from: ip.src } });
     this.bridge.receive('vxlan' + m.vni, clone(l4.payload.frame), { vid: Number(m.vlan), remote: ip.src, learning: m.learning !== false });
     return true;
   }

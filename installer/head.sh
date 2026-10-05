@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  PacketPilot @@VERSION@@
-#  Netzwerke verstehen, indem du jedem Paket zuschaust.
+#  Understand networks by watching every packet.
 #
-#  Installiert die Lern-Webapp auf Debian 12 (Bookworm) oder 13 (Trixie):
-#  nginx liefert die statischen Dateien aus, alles Weitere läuft im Browser.
-#  Es werden keine Dateien aus dem Internet nachgeladen, ausser den nginx-Paketen
-#  (und bei --update das neueste Skript von GitHub).
+#  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
+#  nginx serves the static files, everything else runs in the browser.
+#  Nothing is downloaded from the internet except the nginx packages
+#  (and, with --update, the latest script from GitHub).
 #
-#  Aufruf:
-#    sudo bash packetpilot-install.sh                 Installieren oder aktualisieren (Port 8080)
-#    sudo bash packetpilot-install.sh --port 80       Auf einem anderen Port
-#    sudo bash packetpilot-install.sh --update        Neueste Version von GitHub holen
-#    sudo bash packetpilot-install.sh --uninstall     Entfernen
-#    bash packetpilot-install.sh --extract ./web      Nur die Webdateien entpacken (ohne root)
+#  Usage:
+#    sudo bash packetpilot-install.sh                 Install or update (port 8080)
+#    sudo bash packetpilot-install.sh --port 80       On a different port
+#    sudo bash packetpilot-install.sh --update        Fetch the latest version from GitHub
+#    sudo bash packetpilot-install.sh --uninstall     Remove
+#    bash packetpilot-install.sh --extract ./web      Only extract the web files (no root)
 # =============================================================================
 set -euo pipefail
 
@@ -49,12 +49,12 @@ while [ $# -gt 0 ]; do
     --extract)   PP_ACTION="extract"; PP_EXTRACT_DIR="${2:-}"; shift 2 ;;
     --force)     PP_FORCE="yes"; shift ;;
     -h|--help)   usage ;;
-    *) die "Unbekannte Option: $1 (Hilfe mit --help)" ;;
+    *) die "Unknown option: $1 (help with --help)" ;;
   esac
 done
 
 case "$PP_PORT" in
-  ''|*[!0-9]*) die "Ungültiger Port: ${PP_PORT}" ;;
+  ''|*[!0-9]*) die "Invalid port: ${PP_PORT}" ;;
 esac
-[ "$PP_PORT" -ge 1 ] && [ "$PP_PORT" -le 65535 ] || die "Port muss zwischen 1 und 65535 liegen."
+[ "$PP_PORT" -ge 1 ] && [ "$PP_PORT" -le 65535 ] || die "Port must be between 1 and 65535."
 

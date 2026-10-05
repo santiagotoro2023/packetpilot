@@ -1,4 +1,4 @@
-// Hilfsfunktionen für Adressen und Paketgrössen. Ohne DOM, auch in Node nutzbar.
+// Helper functions for addresses and packet sizes. No DOM, also usable in Node.
 
 export const ETH_HDR = 14, VLAN_TAG = 4, FCS = 4, PREAMBLE = 8, IFG = 12;
 export const IP_HDR = 20, UDP_HDR = 8, ICMP_HDR = 8, VXLAN_HDR = 8, ARP_LEN = 28, TCP_HDR = 20, LLC_LEN = 3, BPDU_LEN = 35;
@@ -44,7 +44,7 @@ export const isBroadcastMac = m => m === BCAST;
 export function isGroupMac(mac) { return (parseInt(mac.slice(0, 2), 16) & 1) === 1; }
 export function isLocalMac(mac) { return (parseInt(mac.slice(0, 2), 16) & 2) === 2; }
 
-// Stabile MAC aus einem Namen (containerlab-Stil aa:c1:ab:xx:xx:xx)
+// Stable MAC from a name (containerlab style aa:c1:ab:xx:xx:xx)
 export function macFor(seed) {
   let h = 2166136261;
   for (const c of seed) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
@@ -58,7 +58,7 @@ export function hashFlow(s) {
   return 49152 + ((h >>> 0) % 16384);
 }
 
-// ---------- Grössen ----------
+// ---------- Sizes ----------
 export function l4Len(ip) {
   const l4 = ip.l4;
   if (ip.frag) return ip.frag.len;
@@ -81,7 +81,7 @@ export function udpPayloadLen(udp) {
   return p.len || 0;
 }
 export function ipTotalLen(ip) { return IP_HDR + l4Len(ip); }
-/** Länge ab Ziel-MAC bis Ende Nutzlast, ohne FCS (so wie tcpdump sie zeigt) */
+/** Length from destination MAC to end of payload, without FCS (as tcpdump shows it) */
 export function frameLen(f) {
   return ETH_HDR + (f.vlan ? VLAN_TAG : 0) + framePayloadLen(f);
 }
@@ -91,7 +91,7 @@ export function framePayloadLen(f) {
   if (f.type === 'stp') return LLC_LEN + BPDU_LEN;
   return f.payload?.len || 0;
 }
-/** Auf dem Kabel: mit FCS und Padding auf 64 Byte */
+/** On the wire: with FCS and padding to 64 bytes */
 export function frameWireLen(f) { return Math.max(64, frameLen(f) + FCS); }
 
 export function clone(o) { return o == null ? o : JSON.parse(JSON.stringify(o)); }

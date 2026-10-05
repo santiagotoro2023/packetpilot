@@ -1,12 +1,12 @@
-// Speicherung im Browser, robust gegen gesperrten Speicher
+// Storage in the browser, robust against blocked storage
 const KEY = 'packetpilot.v1';
 let mem = { progress: {}, nets: {}, prefs: {} };
 try {
   const raw = localStorage.getItem(KEY);
   if (raw) mem = { ...mem, ...JSON.parse(raw) };
-} catch { /* privates Fenster o. ä. */ }
+} catch { /* private window or similar */ }
 
-function persist() { try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch { /* ignorieren */ } }
+function persist() { try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch { /* ignore */ } }
 
 export const store = {
   get prefs() { return mem.prefs; },
@@ -26,7 +26,7 @@ export const store = {
   exportAll() { return JSON.stringify(mem, null, 2); },
   importAll(json) {
     const d = JSON.parse(json);
-    if (typeof d !== 'object' || !d) throw new Error('Keine gültige PacketPilot-Datei');
+    if (typeof d !== 'object' || !d) throw new Error('Not a valid PacketPilot file');
     mem = { progress: d.progress || {}, nets: d.nets || {}, prefs: d.prefs || mem.prefs };
     persist();
   }

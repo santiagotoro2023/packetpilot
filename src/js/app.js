@@ -1,4 +1,4 @@
-// PacketPilot: Ansichten und Navigation
+// PacketPilot: views and navigation
 import { h, toast, download, pickFile } from './ui.js';
 import { I } from './icons.js';
 import { store } from './store.js';
@@ -12,15 +12,15 @@ import { clone } from './net.js';
 
 const main = document.querySelector('.main');
 let cleanup = [];
-function clear() { cleanup.forEach(f => { try { f(); } catch { /* egal */ } }); cleanup = []; main.innerHTML = ''; main.scrollTop = 0; }
+function clear() { cleanup.forEach(f => { try { f(); } catch { /* ignore */ } }); cleanup = []; main.innerHTML = ''; main.scrollTop = 0; }
 
-// ---------------------------------------------------------------- Thema
+// ---------------------------------------------------------------- Theme
 function applyTheme() {
   const t = store.prefs.theme;
   if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
   const btn = document.querySelector('#theme');
   const dark = t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches);
-  btn.innerHTML = (dark ? I.sun : I.moon) + (dark ? 'Hell' : 'Dunkel');
+  btn.innerHTML = (dark ? I.sun : I.moon) + (dark ? 'Light' : 'Dark');
 }
 document.querySelector('#theme').addEventListener('click', () => {
   const dark = document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
@@ -29,24 +29,24 @@ document.querySelector('#theme').addEventListener('click', () => {
 });
 applyTheme();
 
-// ---------------------------------------------------------------- Startseite und Kurs
+// ---------------------------------------------------------------- Home page and course
 function lessonProgress(l) { return { done: store.lessonDone(l.id), steps: store.lessonSteps(l.id), total: l.steps.length }; }
 function viewHome() {
   const page = h('div', { class: 'page' });
-  const heroBox = h('div', { class: 'hero-lab' }, h('span', { class: 'caption' }, 'Live: pc1 pingt srv1. Jeder Streifen auf dem Umschlag ist eine Schicht.'));
+  const heroBox = h('div', { class: 'hero-lab' }, h('span', { class: 'caption' }, 'Live: pc1 pings srv1. Every stripe on the envelope is a layer.'));
   const flat = MODULES.flatMap(m => m.lessons);
   const next = flat.find(l => !store.lessonDone(l.id)) || flat[0];
   const doneCount = flat.filter(l => store.lessonDone(l.id)).length;
   page.append(h('section', { class: 'hero' },
     h('div', {},
       h('h1', {}, 'PacketPilot'),
-      h('p', {}, 'Netzwerke verstehen, indem du jedem Paket zuschaust. Baue Netze, sende Pakete im Zeitraffer, zerlege jeden Frame Schicht für Schicht und finde Fehler, bevor sie dich im echten Netz finden.'),
+      h('p', {}, 'Understand networks by watching every packet. Build networks, send packets in slow motion, take every frame apart layer by layer and find faults before they find you in a real network.'),
       h('div', { class: 'row', style: { marginTop: '18px' } },
-        h('a', { class: 'btn primary', href: `#/lektion/${next.id}` }, doneCount ? 'Weiterlernen' : 'Mit Lektion 1 beginnen'),
-        h('a', { class: 'btn', href: '#/labor' }, 'Freies Labor öffnen')),
-      h('div', { class: 'small muted', style: { marginTop: '12px' } }, `${doneCount} von ${flat.length} Lektionen abgeschlossen`)),
+        h('a', { class: 'btn primary', href: `#/lesson/${next.id}` }, doneCount ? 'Continue learning' : 'Start with lesson 1'),
+        h('a', { class: 'btn', href: '#/lab' }, 'Open the free lab')),
+      h('div', { class: 'small muted', style: { marginTop: '12px' } }, `${doneCount} of ${flat.length} lessons completed`)),
     heroBox));
-  page.append(h('h2', { style: { marginTop: '18px' } }, 'Kurs'));
+  page.append(h('h2', { style: { marginTop: '18px' } }, 'Course'));
   const mods = h('div', { class: 'modules' });
   MODULES.forEach((m, mi) => {
     const lp = m.lessons.map(lessonProgress);
@@ -54,10 +54,10 @@ function viewHome() {
     const list = h('ol', { class: 'lessons' });
     m.lessons.forEach((l, li) => {
       const p = lp[li];
-      list.append(h('li', {}, h('a', { href: `#/lektion/${l.id}` },
+      list.append(h('li', {}, h('a', { href: `#/lesson/${l.id}` },
         h('span', { class: 'st' + (p.done ? ' ok' : ''), html: p.done ? I.check : I.circle }),
         h('span', {}, l.title),
-        h('span', { class: 'meta' }, p.done ? 'erledigt' : p.steps ? `${p.steps} von ${p.total} Schritten` : `${l.minutes} Min.`))));
+        h('span', { class: 'meta' }, p.done ? 'done' : p.steps ? `${p.steps} of ${p.total} steps` : `${l.minutes} min`))));
     });
     const pct = Math.round(lp.filter(x => x.done).length / lp.length * 100);
     mods.append(h('article', { class: 'module' + (allDone ? ' done' : '') },
@@ -66,16 +66,16 @@ function viewHome() {
         h('h2', {}, m.title),
         h('div', { class: 'bands', 'aria-hidden': 'true' }, m.bands.map(b => h('i', { class: `bg-${b}` }))),
         h('p', { class: 'muted' }, m.text),
-        h('div', { class: 'progressbar', title: `${pct} % erledigt` }, h('i', { style: { width: `${pct}%` } })),
+        h('div', { class: 'progressbar', title: `${pct} % done` }, h('i', { style: { width: `${pct}%` } })),
         list)));
   });
   page.append(mods);
-  page.append(h('h2', { style: { marginTop: '28px' } }, 'In Vorbereitung'),
+  page.append(h('h2', { style: { marginTop: '28px' } }, 'Coming soon'),
     h('div', { class: 'netgrid' }, UPCOMING.map(u => h('div', { class: 'netcard' }, h('h3', {}, u.title), h('p', { class: 'muted small' }, u.text)))));
   page.append(h('div', { class: 'row', style: { marginTop: '28px' } },
-    h('button', { class: 'btn', html: I.download + 'Fortschritt und Netze exportieren', onclick: () => download('packetpilot-export.json', store.exportAll()) }),
-    h('button', { class: 'btn', html: I.upload + 'Importieren', onclick: async () => { const t = await pickFile(); if (!t) return; try { store.importAll(t); toast('Import erfolgreich'); route(); } catch (e) { toast(e.message); } } }),
-    h('button', { class: 'btn ghost', onclick: () => { if (confirm('Fortschritt aller Lektionen zurücksetzen?')) { store.resetProgress(); route(); } } }, 'Fortschritt zurücksetzen')));
+    h('button', { class: 'btn', html: I.download + 'Export progress and networks', onclick: () => download('packetpilot-export.json', store.exportAll()) }),
+    h('button', { class: 'btn', html: I.upload + 'Import', onclick: async () => { const t = await pickFile(); if (!t) return; try { store.importAll(t); toast('Import successful'); route(); } catch (e) { toast(e.message); } } }),
+    h('button', { class: 'btn ghost', onclick: () => { if (confirm('Reset progress for all lessons?')) { store.resetProgress(); route(); } } }, 'Reset progress')));
   main.append(page);
   const heroTopo = PRESETS.find(p => p.id === 'routed').make();
   heroTopo.devices = heroTopo.devices.filter(d => d.id !== 'pc2');
@@ -87,7 +87,7 @@ function viewHome() {
   }));
 }
 
-// ---------------------------------------------------------------- Lektion
+// ---------------------------------------------------------------- Lesson
 function viewLesson(id, stepIdx) {
   const f = findLesson(id);
   if (!f) return viewHome();
@@ -96,9 +96,9 @@ function viewLesson(id, stepIdx) {
   if (stepIdx === undefined) { const first = l.steps.findIndex((_, i) => !store.stepDone(l.id, i)); cur = first < 0 ? 0 : first; }
   const step = l.steps[cur];
   const top = h('div', { class: 'lesson-top' },
-    h('a', { class: 'btn icon ghost', href: '#/', title: 'Zur Kursübersicht', html: I.left }),
-    h('div', {}, h('div', { class: 'crumb' }, `Modul ${MODULES.indexOf(m) + 1}: ${m.title}`), h('h1', {}, l.title)));
-  const steps = h('div', { class: 'steps', 'aria-label': 'Schritte' });
+    h('a', { class: 'btn icon ghost', href: '#/', title: 'Back to the course overview', html: I.left }),
+    h('div', {}, h('div', { class: 'crumb' }, `Module ${MODULES.indexOf(m) + 1}: ${m.title}`), h('h1', {}, l.title)));
+  const steps = h('div', { class: 'steps', 'aria-label': 'Steps' });
   l.steps.forEach((s, i) => steps.append(h('button', { class: (i === cur ? 'cur ' : '') + (store.stepDone(l.id, i) ? 'ok' : ''), title: s.title || s.type,
     onclick: () => go(i), 'aria-current': i === cur ? 'step' : null }, store.stepDone(l.id, i) && i !== cur ? '✓' : String(i + 1))));
   top.append(steps);
@@ -106,24 +106,24 @@ function viewLesson(id, stepIdx) {
   const nextBtn = h('button', { class: 'btn primary' });
   const status = h('span', { class: 'small muted' });
   const nav = h('div', { class: 'lesson-nav' },
-    h('button', { class: 'btn', disabled: cur === 0 ? true : null, onclick: () => go(cur - 1), html: I.left + 'Zurück' }), status, nextBtn);
-  const go = i => { location.hash = `#/lektion/${l.id}/${i}`; };
+    h('button', { class: 'btn', disabled: cur === 0 ? true : null, onclick: () => go(cur - 1), html: I.left + 'Back' }), status, nextBtn);
+  const go = i => { location.hash = `#/lesson/${l.id}/${i}`; };
   const isLast = cur === l.steps.length - 1;
   const markDone = () => {
     store.markStep(l.id, cur);
     steps.children[cur].classList.add('ok');
     if (l.steps.every((_, i) => store.stepDone(l.id, i))) store.markLesson(l.id);
     nextBtn.disabled = false;
-    status.textContent = step.type === 'theory' ? '' : 'Schritt erledigt';
+    status.textContent = step.type === 'theory' ? '' : 'Step complete';
   };
   const nl = nextLesson(l.id);
-  nextBtn.innerHTML = isLast ? (nl ? 'Nächste Lektion' : 'Zur Übersicht') + I.right : 'Weiter' + I.right;
+  nextBtn.innerHTML = isLast ? (nl ? 'Next lesson' : 'To the overview') + I.right : 'Next' + I.right;
   nextBtn.addEventListener('click', () => {
     if (!isLast) return go(cur + 1);
-    location.hash = nl ? `#/lektion/${nl.id}` : '#/';
+    location.hash = nl ? `#/lesson/${nl.id}` : '#/';
   });
   const done0 = store.stepDone(l.id, cur);
-  if (step.type !== 'theory' && !done0) { nextBtn.disabled = true; status.textContent = step.type === 'lab' ? 'Erfülle die Ziele links, dann geht es weiter' : 'Löse die Aufgabe, dann geht es weiter'; }
+  if (step.type !== 'theory' && !done0) { nextBtn.disabled = true; status.textContent = step.type === 'lab' ? 'Complete the goals on the left to continue' : 'Solve the exercise to continue'; }
   main.append(h('div', { class: 'lesson' }, top, body, nav));
 
   if (step.type === 'theory') {
@@ -133,7 +133,7 @@ function viewLesson(id, stepIdx) {
     labStep(step, body, markDone, done0, l.id + ':' + cur);
   } else {
     renderWidget({ ...step, id: l.id + cur }, body, markDone);
-    if (done0) { nextBtn.disabled = false; status.textContent = 'Bereits erledigt, du kannst es aber nochmals lösen'; }
+    if (done0) { nextBtn.disabled = false; status.textContent = 'Already done, but you can solve it again'; }
   }
 }
 
@@ -157,17 +157,17 @@ function labStep(step, body, markDone, already, key) {
   const items = step.goals.map((g, i) => {
     const li = h('li', {}, h('span', { class: 'st', html: I.circle }), h('div', { class: 'txt' }, h('span', { html: g.text })));
     if (g.ask) {
-      const inp = h('input', { class: 'input mono', placeholder: g.placeholder || 'Antwort', 'aria-label': 'Antwort' });
+      const inp = h('input', { class: 'input mono', placeholder: g.placeholder || 'Answer', 'aria-label': 'Answer' });
       const fb = h('span', { class: 'small' });
       const test = () => {
         const exp = g.expect(lab.sim).map(x => String(x).toLowerCase().trim());
         const ok = exp.includes(inp.value.toLowerCase().trim());
-        fb.textContent = ok ? '' : 'Noch nicht, schau nochmals genau hin';
+        fb.textContent = ok ? '' : 'Not yet, take another close look';
         fb.style.color = 'var(--err)';
         if (ok) { goalState[i] = true; inp.disabled = true; evaluate(); }
       };
       inp.addEventListener('keydown', e => { if (e.key === 'Enter') test(); });
-      li.querySelector('.txt').append(h('div', { class: 'ask' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, inp, h('button', { class: 'btn', onclick: test }, 'Prüfen')), fb));
+      li.querySelector('.txt').append(h('div', { class: 'ask' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, inp, h('button', { class: 'btn', onclick: test }, 'Check')), fb));
     }
     list.append(li);
     return li;
@@ -176,14 +176,14 @@ function labStep(step, body, markDone, already, key) {
   const hintBox = h('div');
   if (step.hints?.length) {
     let shown = 0;
-    const btn = h('button', { class: 'btn ghost', html: I.bulb + 'Tipp anzeigen' });
+    const btn = h('button', { class: 'btn ghost', html: I.bulb + 'Show a hint' });
     btn.addEventListener('click', () => { hintBox.append(h('div', { class: 'hint' }, step.hints[shown++])); if (shown >= step.hints.length) btn.remove(); });
     col.append(btn, hintBox);
   }
   const outro = h('div');
   col.append(outro);
   col.append(h('div', { class: 'row', style: { marginTop: '16px' } },
-    h('button', { class: 'btn ghost', html: I.reset + 'Netz neu laden', onclick: () => { lab.load(step.topo()); ctx.inspected = []; } })));
+    h('button', { class: 'btn ghost', html: I.reset + 'Reload network', onclick: () => { lab.load(step.topo()); ctx.inspected = []; } })));
   let finished = false;
   function evaluate() {
     step.goals.forEach((g, i) => {
@@ -193,44 +193,44 @@ function labStep(step, body, markDone, already, key) {
     });
     if (!finished && goalState.every(Boolean)) {
       finished = true;
-      outro.append(h('div', { class: 'done-banner' }, 'Alle Ziele erreicht.'));
+      outro.append(h('div', { class: 'done-banner' }, 'All goals reached.'));
       if (step.outro) outro.append(h('div', { class: 'theory', style: { padding: '10px 0 0' }, html: step.outro }));
       markDone();
     }
   }
-  if (already) { const n = h('div', { class: 'small muted', style: { marginTop: '8px' } }, 'Diesen Schritt hast du schon erledigt. Du kannst ihn trotzdem nochmals durchspielen.'); col.insertBefore(n, list); }
-  // Erste Konsole öffnen, damit der Einstieg klar ist
+  if (already) { const n = h('div', { class: 'small muted', style: { marginTop: '8px' } }, 'You have already completed this step. You can still play through it again.'); col.insertBefore(n, list); }
+  // Open the first console so it is clear where to start
   const firstDev = Object.keys(step.presets || {})[0];
   if (firstDev) lab.selectByName(firstDev, 'console');
 }
 
-// ---------------------------------------------------------------- Labor
+// ---------------------------------------------------------------- Lab
 function viewLab(presetId) {
   let topo;
   if (presetId) topo = PRESETS.find(p => p.id === presetId)?.make();
   if (!topo) topo = store.prefs.sandbox ? clone(store.prefs.sandbox) : PRESETS.find(p => p.id === 'routed').make();
-  const nameIn = h('input', { class: 'input', value: topo.name || 'Mein Netz', 'aria-label': 'Name des Netzes', style: { width: '220px' } });
-  const savedSel = h('select', { class: 'input', 'aria-label': 'Gespeicherte Netze' });
+  const nameIn = h('input', { class: 'input', value: topo.name || 'My network', 'aria-label': 'Network name', style: { width: '220px' } });
+  const savedSel = h('select', { class: 'input', 'aria-label': 'Saved networks' });
   const fillSaved = () => {
     savedSel.innerHTML = '';
-    savedSel.append(h('option', { value: '' }, 'Gespeicherte Netze …'));
+    savedSel.append(h('option', { value: '' }, 'Saved networks …'));
     for (const n of Object.keys(store.nets()).sort()) savedSel.append(h('option', { value: n }, n));
   };
   fillSaved();
   const root = h('div', { style: { minHeight: 0 } });
   const page = h('div', { class: 'labpage' }, h('div', { class: 'labbar' },
-    h('span', { class: 'title' }, 'Labor'), nameIn,
-    h('button', { class: 'btn', html: I.save + 'Speichern', onclick: () => { lab.sim.topo.name = nameIn.value.trim() || 'Mein Netz'; store.saveNet(lab.sim.topo.name, clone(lab.sim.topo)); fillSaved(); toast(`"${lab.sim.topo.name}" gespeichert`); } }),
+    h('span', { class: 'title' }, 'Lab'), nameIn,
+    h('button', { class: 'btn', html: I.save + 'Save', onclick: () => { lab.sim.topo.name = nameIn.value.trim() || 'My network'; store.saveNet(lab.sim.topo.name, clone(lab.sim.topo)); fillSaved(); toast(`"${lab.sim.topo.name}" saved`); } }),
     savedSel,
-    h('button', { class: 'btn ghost', onclick: () => { const n = savedSel.value; if (n && confirm(`"${n}" löschen?`)) { store.deleteNet(n); fillSaved(); } } }, 'Löschen'),
+    h('button', { class: 'btn ghost', onclick: () => { const n = savedSel.value; if (n && confirm(`Delete "${n}"?`)) { store.deleteNet(n); fillSaved(); } } }, 'Delete'),
     h('span', { class: 'grow' }),
-    h('button', { class: 'btn', onclick: () => { if (confirm('Leeres Netz beginnen? Nicht gespeicherte Änderungen gehen verloren.')) { lab.load({ name: 'Mein Netz', devices: [], links: [] }); nameIn.value = 'Mein Netz'; } } }, 'Neu'),
-    h('a', { class: 'btn', href: '#/netze' }, 'Beispielnetze'),
-    h('button', { class: 'btn', html: I.download + 'Export', onclick: () => download(`${(lab.sim.topo.name || 'netz').replace(/\W+/g, '-')}.json`, JSON.stringify(lab.sim.topo, null, 2)) }),
+    h('button', { class: 'btn', onclick: () => { if (confirm('Start an empty network? Unsaved changes will be lost.')) { lab.load({ name: 'My network', devices: [], links: [] }); nameIn.value = 'My network'; } } }, 'New'),
+    h('a', { class: 'btn', href: '#/networks' }, 'Example networks'),
+    h('button', { class: 'btn', html: I.download + 'Export', onclick: () => download(`${(lab.sim.topo.name || 'network').replace(/\W+/g, '-')}.json`, JSON.stringify(lab.sim.topo, null, 2)) }),
     h('button', { class: 'btn', html: I.upload + 'Import', onclick: async () => {
       const t = await pickFile(); if (!t) return;
-      try { const d = JSON.parse(t); if (!Array.isArray(d.devices) || !Array.isArray(d.links)) throw new Error(); lab.load(d); nameIn.value = d.name || 'Importiert'; toast('Netz importiert'); }
-      catch { toast('Diese Datei ist kein PacketPilot-Netz'); }
+      try { const d = JSON.parse(t); if (!Array.isArray(d.devices) || !Array.isArray(d.links)) throw new Error(); lab.load(d); nameIn.value = d.name || 'Imported'; toast('Network imported'); }
+      catch { toast('This file is not a PacketPilot network'); }
     } })), root);
   main.append(page);
   const lab = new Lab(root, { topo, edit: 'full', onEvent: type => { if (['config', 'added', 'deleted', 'linked', 'moved', 'renamed'].includes(type)) autosave(); } });
@@ -242,32 +242,34 @@ function viewLab(presetId) {
   cleanup.push(() => lab.destroy());
 }
 
-// ---------------------------------------------------------------- Beispielnetze
+// ---------------------------------------------------------------- Example networks
 function viewNets() {
-  const page = h('div', { class: 'page' }, h('h1', {}, 'Beispielnetze'),
-    h('p', { class: 'muted' }, 'Fertige Topologien zum Ausprobieren. Ein Netz öffnet sich im Labor, dort kannst du alles verändern und unter eigenem Namen speichern.'));
+  const page = h('div', { class: 'page' }, h('h1', {}, 'Example networks'),
+    h('p', { class: 'muted' }, 'Ready-made topologies to experiment with. A network opens in the lab, where you can change everything and save it under your own name.'));
   const grid = h('div', { class: 'netgrid' });
   for (const p of PRESETS) {
     grid.append(h('article', { class: 'netcard' }, preview(p.make()), h('h3', {}, p.title),
       h('div', { class: 'row' }, p.topics.map(t => h('span', { class: 'chip' }, t))),
       h('p', { class: 'muted small' }, p.text),
-      h('div', {}, h('a', { class: 'btn primary', href: `#/labor/${p.id}` }, 'Im Labor öffnen'))));
+      h('div', {}, h('a', { class: 'btn primary', href: `#/lab/${p.id}` }, 'Open in the lab'))));
   }
   page.append(grid);
   main.append(page);
 }
 
 // ---------------------------------------------------------------- Router
+// Older German links (#/lektion, #/labor, #/netze, #/baukasten) keep working
+const ALIAS = { lektion: 'lesson', labor: 'lab', netze: 'networks', baukasten: 'builder' };
 function route() {
   clear();
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  const nav = parts[0] || '';
+  const nav = ALIAS[parts[0]] || parts[0] || '';
   document.querySelectorAll('.rail a').forEach(a => a.classList.toggle('active',
-    (a.dataset.nav === 'kurs' && (nav === '' || nav === 'lektion')) || a.dataset.nav === nav));
-  if (nav === 'lektion') viewLesson(parts[1], parts[2]);
-  else if (nav === 'labor') viewLab(parts[1]);
-  else if (nav === 'netze') viewNets();
-  else if (nav === 'baukasten') { renderFrameBuilder(main); }
+    (a.dataset.nav === 'course' && (nav === '' || nav === 'lesson')) || a.dataset.nav === nav));
+  if (nav === 'lesson') viewLesson(parts[1], parts[2]);
+  else if (nav === 'lab') viewLab(parts[1]);
+  else if (nav === 'networks') viewNets();
+  else if (nav === 'builder') { renderFrameBuilder(main); }
   else viewHome();
   document.title = 'PacketPilot';
 }

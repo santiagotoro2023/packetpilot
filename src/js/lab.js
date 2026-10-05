@@ -1,4 +1,4 @@
-// Labor: Netzplan-Editor, Animation, Seitenpanel, Protokoll und Inspektor
+// Lab: network diagram editor, animation, side panel, log and inspector
 import { Sim, PORTS, TYPE_NAMES, TIMING, newId, normalizeDevice, traceOf, STP_TEXT } from './engine.js';
 import { layerKinds, shortLabel } from './packets.js';
 import { isIp } from './net.js';
@@ -9,7 +9,7 @@ import { configPanel, tablesPanel, consolePanel } from './panels.js';
 
 const CARD_W = 76, CARD_H = 60;
 const NAME_PREFIX = { pc: 'pc', server: 'srv', router: 'r', switch: 'sw', vtep: 'vtep' };
-export const ZONE_COLORS = [['blue', 'Blau'], ['violet', 'Violett'], ['green', 'Grün'], ['orange', 'Orange'], ['pink', 'Pink'], ['yellow', 'Gelb'], ['gray', 'Grau']];
+export const ZONE_COLORS = [['blue', 'Blue'], ['violet', 'Violet'], ['green', 'Green'], ['orange', 'Orange'], ['pink', 'Pink'], ['yellow', 'Yellow'], ['gray', 'Gray']];
 const KIND_COLOR = { vlan: 'violet', overlay: 'pink', underlay: 'blue' };
 export const zoneColor = z => z.color || KIND_COLOR[z.kind] || 'gray';
 
@@ -30,7 +30,7 @@ export class Lab {
     this.pktEls = new Map();
     this.tab = 'config';
     this.build();
-    this.load(opts.topo || { name: 'Neues Netz', devices: [], links: [] }, true);
+    this.load(opts.topo || { name: 'New network', devices: [], links: [] }, true);
     this.raf = requestAnimationFrame(t => this.loop(t));
     this.keyHandler = e => this.onKey(e);
     window.addEventListener('keydown', this.keyHandler);
@@ -48,78 +48,78 @@ export class Lab {
   get canEditTopo() { return this.opts.edit === 'full'; }
   get canConfig() { return this.opts.edit !== 'view'; }
 
-  // ------------------------------------------------------------ Aufbau
+  // ------------------------------------------------------------ Structure
   build() {
     const o = this.opts;
     this.root.innerHTML = '';
     this.el = h('div', { class: `lab${o.compact ? ' compact' : ''}${this.canEditTopo ? '' : ' no-palette'}` });
     // Palette
-    this.palette = h('div', { class: 'palette', 'aria-label': 'Geräte' });
+    this.palette = h('div', { class: 'palette', 'aria-label': 'Devices' });
     if (this.canEditTopo) {
       for (const t of o.palette) {
-        const it = h('button', { class: 'pal-item', draggable: 'true', title: `${TYPE_NAMES[t]} hinzufügen (ziehen oder klicken)` },
+        const it = h('button', { class: 'pal-item', draggable: 'true', title: `Add ${TYPE_NAMES[t]} (drag or click)` },
           h('span', { html: `<svg viewBox="0 0 40 40">${DEV_ICON[t]}</svg>` }), TYPE_NAMES[t]);
         it.addEventListener('dragstart', e => { e.dataTransfer.setData('text/pp-device', t); e.dataTransfer.effectAllowed = 'copy'; });
         it.addEventListener('click', () => this.addDevice(t));
         this.palette.append(it);
       }
       this.palette.append(h('div', { class: 'pal-sep' }));
-      this.cableBtn = h('button', { class: 'pal-item', title: 'Kabel ziehen: erst ein Gerät, dann das zweite anklicken (Taste K)', html: `<span>${I.cable}</span>Kabel`,
+      this.cableBtn = h('button', { class: 'pal-item', title: 'Draw a cable: click one device, then the second (key K)', html: `<span>${I.cable}</span>Cable`,
         onclick: () => this.setConnect(!this.connectMode) });
       this.palette.append(this.cableBtn);
-      const area = h('button', { class: 'pal-item', draggable: 'true', title: 'Bereich zum Ordnen: farbiges Rechteck mit Beschriftung (ziehen oder klicken)', html: `<span>${I.area}</span>Bereich` });
+      const area = h('button', { class: 'pal-item', draggable: 'true', title: 'Area for organizing: colored rectangle with a label (drag or click)', html: `<span>${I.area}</span>Area` });
       area.addEventListener('dragstart', e => { e.dataTransfer.setData('text/pp-device', 'zone'); e.dataTransfer.effectAllowed = 'copy'; });
       area.addEventListener('click', () => this.addZone());
       this.palette.append(area);
     }
     // Canvas
     this.canvasWrap = h('div', { class: 'canvas-wrap' });
-    this.svg = svgEl('svg', { class: `net${this.canEditTopo ? '' : ' ro'}`, role: 'img', 'aria-label': 'Netzplan' });
+    this.svg = svgEl('svg', { class: `net${this.canEditTopo ? '' : ' ro'}`, role: 'img', 'aria-label': 'Network diagram' });
     this.gZones = svgEl('g'); this.gLinks = svgEl('g'); this.gDevs = svgEl('g'); this.gPkts = svgEl('g');
     this.svg.append(this.gZones, this.gLinks, this.gDevs, this.gPkts);
     this.canvasWrap.append(this.svg);
     this.bindCanvas();
     // Player
-    this.playBtn = iconBtn(I.pause, 'Anhalten (Leertaste)', () => this.setPlaying(!this.playing));
+    this.playBtn = iconBtn(I.pause, 'Pause (space)', () => this.setPlaying(!this.playing));
     this.timeEl = h('span', { class: 'time' }, 't = 0.0000 s');
-    const speed = h('input', { type: 'range', min: '0', max: '100', value: String(this.speedToSlider(this.msPerHop)), 'aria-label': 'Tempo' });
+    const speed = h('input', { type: 'range', min: '0', max: '100', value: String(this.speedToSlider(this.msPerHop)), 'aria-label': 'Speed' });
     this.speedLbl = h('span', { class: 'speedlbl' });
     speed.addEventListener('input', () => { this.msPerHop = this.sliderToSpeed(Number(speed.value)); this.showSpeed(); });
     this.showSpeed();
     this.player = h('div', { class: 'player' },
       h('div', { class: 'bar' }, this.playBtn,
-        iconBtn(I.step, 'Nächstes Ereignis (Pfeil rechts)', () => this.stepOnce()),
-        iconBtn(I.ffwd, '5 Sekunden vorspulen, ohne Animation (z. B. für STP-Timer)', () => this.fastForward(5000)),
-        iconBtn(I.reset, 'Zustand zurücksetzen: Tabellen, Pakete und Protokoll leeren', () => this.resetState()),
+        iconBtn(I.step, 'Next event (right arrow)', () => this.stepOnce()),
+        iconBtn(I.ffwd, 'Fast-forward 5 seconds without animation (e.g. for STP timers)', () => this.fastForward(5000)),
+        iconBtn(I.reset, 'Reset state: clear tables, packets and log', () => this.resetState()),
         this.timeEl),
-      h('div', { class: 'bar' }, h('span', { class: 'speedlbl', style: { paddingLeft: '6px' } }, 'Tempo'), speed, this.speedLbl),
-      this.bpduBar = h('div', { class: 'bar hidden' }, this.bpduBtn = h('button', { class: 'tog on', title: 'BPDUs im Netzplan zeigen oder ausblenden', onclick: () => this.toggleBpdu() }, 'BPDUs')),
+      h('div', { class: 'bar' }, h('span', { class: 'speedlbl', style: { paddingLeft: '6px' } }, 'Speed'), speed, this.speedLbl),
+      this.bpduBar = h('div', { class: 'bar hidden' }, this.bpduBtn = h('button', { class: 'tog on', title: 'Show or hide BPDUs in the network diagram', onclick: () => this.toggleBpdu() }, 'BPDUs')),
       h('span', { class: 'grow' }),
-      h('div', { class: 'bar' }, iconBtn(I.fit, 'Ansicht einpassen', () => this.fit(true))));
+      h('div', { class: 'bar' }, iconBtn(I.fit, 'Fit view', () => this.fit(true))));
     this.canvasWrap.append(this.player);
     this.overlay = h('div', { class: 'hint-overlay hidden' });
     this.stormEl = h('div', { class: 'storm hidden', role: 'alert' });
     this.canvasWrap.append(this.overlay, this.stormEl);
-    // Seitenpanel
+    // Side panel
     this.side = h('div', { class: 'side' });
     // Dock
     this.logEl = h('div', { class: 'log', role: 'log' });
-    this.filterSel = h('select', { class: 'input', 'aria-label': 'Protokoll filtern' });
+    this.filterSel = h('select', { class: 'input', 'aria-label': 'Filter log' });
     this.filterSel.addEventListener('change', () => { this.logFilter = this.filterSel.value; if (this.logFilter !== 'trace') this.setTrace(null); this.renderLog(); });
     this.inspEl = h('div', { class: 'inspector' });
     this.dock = h('div', { class: 'dock' },
-      h('div', { class: 'dock-col' }, h('div', { class: 'dock-head' }, 'Ereignisse', h('span', { class: 'grow' }), this.filterSel,
-        iconBtn(I.trash, 'Protokoll leeren', () => { this.sim.log = []; this.renderLog(); })), this.logEl),
-      h('div', { class: 'dock-col' }, h('div', { class: 'dock-head' }, 'Paketinspektor'), this.inspEl));
+      h('div', { class: 'dock-col' }, h('div', { class: 'dock-head' }, 'Events', h('span', { class: 'grow' }), this.filterSel,
+        iconBtn(I.trash, 'Clear log', () => { this.sim.log = []; this.renderLog(); })), this.logEl),
+      h('div', { class: 'dock-col' }, h('div', { class: 'dock-head' }, 'Packet inspector'), this.inspEl));
     this.el.append(this.palette, this.canvasWrap, this.side, this.dock);
     this.root.append(this.el);
     renderInspector(this.inspEl, null);
   }
   speedToSlider(ms) { return Math.round(100 - (Math.log(ms / 60) / Math.log(4000 / 60)) * 100); }
   sliderToSpeed(v) { return Math.round(60 * Math.pow(4000 / 60, (100 - v) / 100)); }
-  showSpeed() { this.speedLbl.textContent = `${(this.msPerHop / 1000).toFixed(this.msPerHop < 1000 ? 2 : 1)} s pro Kabel`; }
+  showSpeed() { this.speedLbl.textContent = `${(this.msPerHop / 1000).toFixed(this.msPerHop < 1000 ? 2 : 1)} s per cable`; }
 
-  // ------------------------------------------------------------ Laden
+  // ------------------------------------------------------------ Loading
   load(topo, first = false) {
     this.unsub?.();
     this.topo = topo;
@@ -146,7 +146,7 @@ export class Lab {
     this.setTrace(null);
     this.renderLog(); this.renderSide(); renderInspector(this.inspEl, null);
     this.showStorm(null); this.render();
-    toast('Zustand zurückgesetzt: ARP- und MAC-Tabellen sind leer');
+    toast('State reset: ARP and MAC tables are empty');
     this.emit('reset');
   }
   onSim(type, data) {
@@ -161,7 +161,7 @@ export class Lab {
     this.emit('sim', { type, data });
   }
 
-  // ------------------------------------------------------------ Darstellung Netzplan
+  // ------------------------------------------------------------ Drawing the network diagram
   devPos(d) { return { x: d.x ?? 0, y: d.y ?? 0 }; }
   render() {
     const topo = this.sim.topo;
@@ -178,7 +178,7 @@ export class Lab {
       g.append(line, hit);
       const lbl = (P, Q, name) => {
         const dx = Q.x - P.x, dy = Q.y - P.y, len = Math.hypot(dx, dy) || 1;
-        // Nach unten weg: unter Name und Adresse des Geräts hindurch
+        // Pointing down: pass below the device's name and address
         const down = dy / len > 0.7;
         const off = Math.min(down ? 86 : 58, len * (down ? 0.45 : 0.32));
         const t = svgEl('text', { class: 'iflbl', x: P.x + dx / len * off + (-dy / len) * 9, y: P.y + dy / len * off + (dx / len) * 9 + 3, 'text-anchor': 'middle' });
@@ -192,7 +192,7 @@ export class Lab {
         if (!ps) continue;
         const dx = Q.x - P.x, dy = Q.y - P.y, len = Math.hypot(dx, dy) || 1, off = Math.min(42, len * 0.22);
         const dot = svgEl('g', { class: `stp-dot st-${ps.state}`, transform: `translate(${(P.x + dx / len * off).toFixed(1)},${(P.y + dy / len * off).toFixed(1)})` });
-        const tt = svgEl('title'); tt.textContent = `${P.name} ${end.if}: ${STP_TEXT.ROLE_DE[ps.role]}, ${STP_TEXT.STATE_DE[ps.state]}${ps.edge ? ', Edge-Port' : ''}`;
+        const tt = svgEl('title'); tt.textContent = `${P.name} ${end.if}: ${STP_TEXT.ROLE[ps.role]}, ${STP_TEXT.STATE[ps.state]}${ps.edge ? ', edge port' : ''}`;
         const letter = svgEl('text', { 'text-anchor': 'middle', y: 2.7 }); letter.textContent = { root: 'R', designated: 'D', alternate: 'A', disabled: '' }[ps.role];
         dot.append(tt, svgEl('circle', { r: 6 }), letter);
         g.append(dot);
@@ -216,7 +216,7 @@ export class Lab {
       const ip = this.primaryIp(d);
       if (ip) { const t = svgEl('text', { class: 'ip', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = ip; g.append(t); }
       const st = d.type === 'switch' ? this.sim.dev(d.id)?.bridge?.stpTable() : null;
-      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = st.isRoot ? `Root Bridge, Prio ${d.stp.priority}` : `STP, Prio ${d.stp.priority}`; g.append(t); }
+      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = st.isRoot ? `Root bridge, prio ${d.stp.priority}` : `STP, Prio ${d.stp.priority}`; g.append(t); }
       g.addEventListener('pointerdown', e => this.devPointerDown(e, d));
       g.addEventListener('dblclick', () => { this.select({ kind: 'dev', id: d.id }); this.setTab('console'); });
       g.addEventListener('keydown', e => { if (e.key === 'Enter') this.select({ kind: 'dev', id: d.id }); });
@@ -232,7 +232,7 @@ export class Lab {
     if (d.type === 'router') {
       const n = Object.values(d.ifaces).filter(i => isIp(i.ip)).length;
       const sub = Object.values(d.ifaces).filter(i => i.parent).length;
-      return sub ? `${sub} Subinterface${sub > 1 ? 's' : ''}` : n ? `${n} Adressen` : '';
+      return sub ? `${sub} Subinterface${sub > 1 ? 's' : ''}` : n ? `${n} addresses` : '';
     }
     return '';
   }
@@ -258,7 +258,7 @@ export class Lab {
     return { x: this.view.x + (e.clientX - r.left) / r.width * this.view.w, y: this.view.y + (e.clientY - r.top) / r.height * this.view.h };
   }
 
-  // ------------------------------------------------------------ Interaktion
+  // ------------------------------------------------------------ Interaction
   bindCanvas() {
     this.svg.addEventListener('pointerdown', e => {
       if (e.target !== this.svg) return;
@@ -321,10 +321,10 @@ export class Lab {
     const a = this.connectFrom, b = d.id;
     const pa = this.pickPort(a, b), pb = this.pickPort(b, a);
     const A = this.sim.dev(a), B = this.sim.dev(b);
-    if (!pa || !pb) { toast(`${!pa ? A.name : B.name} hat keinen freien Port mehr`); this.connectFrom = null; this.render(); return; }
+    if (!pa || !pb) { toast(`${!pa ? A.name : B.name} has no free port left`); this.connectFrom = null; this.render(); return; }
     const l = this.sim.addLink({ id: newId('l'), a: { dev: a, if: pa }, b: { dev: b, if: pb }, mtu: 1500, up: true });
     this.connectFrom = null;
-    toast(`${A.name} ${pa} ↔ ${B.name} ${pb} verbunden`);
+    toast(`${A.name} ${pa} ↔ ${B.name} ${pb} connected`);
     this.render();
     this.emit('linked', l);
   }
@@ -352,12 +352,12 @@ export class Lab {
     this.select({ kind: 'dev', id: cfg.id });
     this.emit('added', cfg);
   }
-  // ------------------------------------------------------------ Bereiche
+  // ------------------------------------------------------------ Areas
   zoneEl(z) {
     const sel = this.sel?.kind === 'zone' && this.sel.id === z.id;
     const g = svgEl('g', { class: `zone-g c-${zoneColor(z)}${sel ? ' sel' : ''}`, 'data-id': z.id });
     g.append(svgEl('rect', { class: 'zone', x: z.x, y: z.y, width: z.w, height: z.h, rx: 14 }));
-    const label = z.label || 'Bereich';
+    const label = z.label || 'Area';
     const tw = Math.min(z.w - 16, label.length * 6.3 + 18);
     const tab = svgEl('rect', { class: 'zone-tab', x: z.x + 8, y: z.y + 8, width: Math.max(30, tw), height: 20, rx: 6 });
     const t = svgEl('text', { class: 'zone-t', x: z.x + 17, y: z.y + 22 }); t.textContent = label;
@@ -402,7 +402,7 @@ export class Lab {
     if (x === undefined) { x = this.view.x + this.view.w / 2; y = this.view.y + this.view.h / 2; }
     const used = new Set((this.sim.topo.zones || []).map(zz => zoneColor(zz)));
     const color = (ZONE_COLORS.find(([k]) => !used.has(k)) || ZONE_COLORS[0])[0];
-    const z = { id: newId('z'), x: Math.round((x - w / 2) / 12) * 12, y: Math.round((y - hh / 2) / 12) * 12, w, h: hh, label: `Bereich ${(this.sim.topo.zones || []).length + 1}`, color };
+    const z = { id: newId('z'), x: Math.round((x - w / 2) / 12) * 12, y: Math.round((y - hh / 2) / 12) * 12, w, h: hh, label: `Area ${(this.sim.topo.zones || []).length + 1}`, color };
     this.sim.topo.zones.push(z);
     this.render();
     this.select({ kind: 'zone', id: z.id });
@@ -411,7 +411,7 @@ export class Lab {
   renderZoneSide() {
     const z = this.sim.topo.zones.find(x => x.id === this.sel.id);
     if (!z) { this.sel = null; return this.renderSide(); }
-    const name = h('input', { class: 'input', value: z.label || '', placeholder: 'z. B. VLAN 10, Büro, Underlay', disabled: this.canEditTopo ? null : true });
+    const name = h('input', { class: 'input', value: z.label || '', placeholder: 'e.g. VLAN 10, office, underlay', disabled: this.canEditTopo ? null : true });
     name.addEventListener('input', () => { z.label = name.value; this.render(); });
     name.addEventListener('change', () => this.emit('moved'));
     const sw = h('div', { class: 'swatches' });
@@ -422,20 +422,20 @@ export class Lab {
       sw.append(b);
     }
     const inside = this.sim.topo.devices.filter(d => d.x >= z.x && d.x <= z.x + z.w && d.y >= z.y && d.y <= z.y + z.h);
-    this.side.append(h('div', { class: 'side-head' }, h('span', { html: I.area }), h('div', { class: 'grow', style: { fontWeight: 650 } }, 'Bereich'),
-      this.canEditTopo ? iconBtn(I.trash, 'Bereich entfernen (Entf), die Geräte bleiben', () => this.deleteSelected(), 'danger') : null), h('div'),
+    this.side.append(h('div', { class: 'side-head' }, h('span', { html: I.area }), h('div', { class: 'grow', style: { fontWeight: 650 } }, 'Area'),
+      this.canEditTopo ? iconBtn(I.trash, 'Remove area (Del), the devices stay', () => this.deleteSelected(), 'danger') : null), h('div'),
       h('div', { class: 'side-body' },
-        h('h4', {}, 'Beschriftung'), name,
-        h('h4', {}, 'Farbe'), sw,
-        h('h4', {}, 'Inhalt'),
-        h('p', { class: 'small' }, inside.length ? inside.map(d => d.name).join(', ') : 'Keine Geräte in diesem Bereich.'),
-        h('p', { class: 'small muted' }, 'Bereiche dienen nur der Ordnung und haben keinen Einfluss auf die Simulation. Am Reiter verschieben (Geräte darin wandern mit), an der Ecke unten rechts die Grösse ändern.')));
+        h('h4', {}, 'Label'), name,
+        h('h4', {}, 'Color'), sw,
+        h('h4', {}, 'Contents'),
+        h('p', { class: 'small' }, inside.length ? inside.map(d => d.name).join(', ') : 'No devices in this area.'),
+        h('p', { class: 'small muted' }, 'Areas are only for organizing and have no effect on the simulation. Move them by the tab (devices inside move along), resize them at the bottom right corner.')));
   }
 
   deleteSelected() {
     if (!this.canEditTopo || !this.sel) return;
     if (this.sel.kind === 'zone') { this.sim.topo.zones = this.sim.topo.zones.filter(z => z.id !== this.sel.id); this.select(null); this.render(); this.emit('deleted'); return; }
-    if (this.sel.kind === 'dev') { const n = this.sim.dev(this.sel.id)?.name; this.sim.removeDevice(this.sel.id); toast(`${n} entfernt`); }
+    if (this.sel.kind === 'dev') { const n = this.sim.dev(this.sel.id)?.name; this.sim.removeDevice(this.sel.id); toast(`${n} removed`); }
     else this.sim.removeLink(this.sel.id);
     this.select(null);
     this.emit('deleted');
@@ -464,13 +464,13 @@ export class Lab {
   }
   updateOverlay() {
     let msg = '';
-    if (this.connectMode) msg = this.connectFrom ? 'Jetzt das zweite Gerät anklicken' : 'Kabel: erstes Gerät anklicken (Esc beendet)';
-    else if (!this.sim.topo.devices.length && this.canEditTopo) msg = 'Ziehe Geräte aus der linken Leiste auf den Plan';
+    if (this.connectMode) msg = this.connectFrom ? 'Now click the second device' : 'Cable: click the first device (Esc cancels)';
+    else if (!this.sim.topo.devices.length && this.canEditTopo) msg = 'Drag devices from the left bar onto the canvas';
     this.overlay.textContent = msg;
     this.overlay.classList.toggle('hidden', !msg);
   }
 
-  // ------------------------------------------------------------ Seitenpanel
+  // ------------------------------------------------------------ Side panel
   setTab(t) { this.tab = t; this.renderSide(); if (t === 'console') setTimeout(() => this.consoleEl?.focusInput(), 30); }
   refreshSideSoon() {
     if (this.sideTimer) return;
@@ -482,20 +482,20 @@ export class Lab {
     this.consoleEl = null;
     if (!this.sel) {
       side.append(h('div', { class: 'side-head' }, h('div', {},
-        h('div', { style: { fontWeight: 650 } }, this.sim.topo.name || 'Netz'),
-        h('div', { class: 'small muted' }, `${this.sim.topo.devices.length} Geräte, ${this.sim.topo.links.length} Kabel`))));
+        h('div', { style: { fontWeight: 650 } }, this.sim.topo.name || 'Network'),
+        h('div', { class: 'small muted' }, `${this.sim.topo.devices.length} devices, ${this.sim.topo.links.length} cables`))));
       side.append(h('div'));
       side.append(h('div', { class: 'side-body' },
-        h('h4', {}, 'So bedienst du das Labor'),
+        h('h4', {}, 'How to use the lab'),
         h('ul', { class: 'small', style: { paddingLeft: '18px', margin: 0, display: 'grid', gap: '6px' } },
-          this.canEditTopo ? h('li', {}, 'Geräte aus der linken Leiste auf den Plan ziehen.') : null,
-          this.canEditTopo ? h('li', {}, 'Kabel (Taste K): erst ein Gerät, dann das zweite anklicken. Freie Ports werden automatisch gewählt.') : null,
-          this.canEditTopo ? h('li', {}, 'Bereiche ordnen den Plan: farbige Rechtecke mit Beschriftung, am Reiter verschieben, an der Ecke vergrössern.') : null,
-          h('li', {}, 'Gerät anklicken: Konfiguration, Tabellen und Konsole erscheinen hier. Doppelklick öffnet direkt die Konsole.'),
-          h('li', {}, 'In der Konsole z. B. ping 10.0.0.2 eingeben und zuschauen, wie die Pakete reisen.'),
-          h('li', {}, 'Leertaste hält die Zeit an, Pfeil rechts geht ein Ereignis weiter. Mit dem Tempo-Regler stellst du den Zeitraffer ein.'),
-          h('li', {}, 'Ein Paket anklicken zerlegt es im Paketinspektor in seine Schichten.')),
-        h('h4', {}, 'Farben der Schichten'),
+          this.canEditTopo ? h('li', {}, 'Drag devices from the left bar onto the canvas.') : null,
+          this.canEditTopo ? h('li', {}, 'Cable (key K): click one device, then the second. Free ports are chosen automatically.') : null,
+          this.canEditTopo ? h('li', {}, 'Areas organize the canvas: colored rectangles with a label, move them by the tab, resize them at the corner.') : null,
+          h('li', {}, 'Click a device: configuration, tables and console appear here. Double-click opens the console directly.'),
+          h('li', {}, 'Type e.g. ping 10.0.0.2 in the console and watch the packets travel.'),
+          h('li', {}, 'Space pauses time, the right arrow advances one event. The speed slider sets the slow motion.'),
+          h('li', {}, 'Clicking a packet takes it apart into its layers in the packet inspector.')),
+        h('h4', {}, 'Layer colors'),
         h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN']]
           .map(([k, n]) => h('span', { class: 'chip' }, h('i', { class: `bg-${k}`, style: { width: '10px', height: '10px', borderRadius: '2px', display: 'inline-block' } }), n)))));
       return;
@@ -504,18 +504,18 @@ export class Lab {
     if (this.sel.kind === 'zone') return this.renderZoneSide();
     const dev = this.sim.dev(this.sel.id);
     if (!dev) { this.sel = null; return this.renderSide(); }
-    const nameIn = h('input', { class: 'name', value: dev.name, 'aria-label': 'Gerätename', disabled: this.canEditTopo ? null : true });
+    const nameIn = h('input', { class: 'name', value: dev.name, 'aria-label': 'Device name', disabled: this.canEditTopo ? null : true });
     nameIn.addEventListener('change', () => {
       const v = nameIn.value.trim().replace(/\s+/g, '-');
-      if (!v || this.sim.topo.devices.some(d => d !== dev.cfg && d.name === v)) { nameIn.value = dev.name; return toast('Name leer oder schon vergeben'); }
+      if (!v || this.sim.topo.devices.some(d => d !== dev.cfg && d.name === v)) { nameIn.value = dev.name; return toast('Name empty or already taken'); }
       dev.cfg.name = v; this.render(); this.emit('renamed');
     });
     side.append(h('div', { class: 'side-head' },
       h('span', { class: 'devglyph', html: `<svg viewBox="0 0 40 40" width="34" height="34">${DEV_ICON[dev.type]}</svg>` }),
       h('div', { class: 'grow' }, nameIn, h('div', { class: 'small muted', style: { paddingLeft: '5px' } }, TYPE_NAMES[dev.type])),
-      this.canEditTopo ? iconBtn(I.trash, 'Gerät entfernen (Entf)', () => this.deleteSelected(), 'danger') : null));
+      this.canEditTopo ? iconBtn(I.trash, 'Remove device (Del)', () => this.deleteSelected(), 'danger') : null));
     const tabs = h('div', { class: 'tabs', role: 'tablist' });
-    for (const [k, label, icon] of [['config', 'Konfiguration', I.sliders], ['tables', 'Tabellen', I.table], ['console', 'Konsole', I.terminal]]) {
+    for (const [k, label, icon] of [['config', 'Configuration', I.sliders], ['tables', 'Tables', I.table], ['console', 'Console', I.terminal]]) {
       tabs.append(h('button', { class: this.tab === k ? 'cur' : '', role: 'tab', 'aria-selected': this.tab === k ? 'true' : 'false', html: icon + label, onclick: () => this.setTab(k) }));
     }
     side.append(tabs);
@@ -536,17 +536,17 @@ export class Lab {
       l.mtu = v; mtu.classList.remove('bad'); this.render(); this.sim.emit('config', null); this.emit('config', { link: l.id, msg: `MTU ${v}` });
     });
     const up = h('input', { type: 'checkbox', checked: l.up ? true : null, disabled: this.canConfig ? null : true });
-    up.addEventListener('change', () => { this.sim.setLinkUp(l, up.checked); this.render(); this.emit('config', { link: l.id, msg: up.checked ? 'Link an' : 'Link aus' }); });
-    this.side.append(h('div', { class: 'side-head' }, h('span', { html: I.cable }), h('div', { class: 'grow', style: { fontWeight: 650 } }, 'Kabel'),
-      this.canEditTopo ? iconBtn(I.trash, 'Kabel entfernen (Entf)', () => this.deleteSelected(), 'danger') : null), h('div'),
+    up.addEventListener('change', () => { this.sim.setLinkUp(l, up.checked); this.render(); this.emit('config', { link: l.id, msg: up.checked ? 'Link on' : 'Link off' }); });
+    this.side.append(h('div', { class: 'side-head' }, h('span', { html: I.cable }), h('div', { class: 'grow', style: { fontWeight: 650 } }, 'Cable'),
+      this.canEditTopo ? iconBtn(I.trash, 'Remove cable (Del)', () => this.deleteSelected(), 'danger') : null), h('div'),
       h('div', { class: 'side-body' },
-        h('dl', { class: 'kv' }, h('dt', {}, 'Seite A'), h('dd', {}, `${A.name} ${l.a.if}`), h('dt', {}, 'Seite B'), h('dd', {}, `${B.name} ${l.b.if}`)),
-        h('h4', {}, 'MTU (Byte Nutzlast pro Frame)'), mtu,
-        h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'Beide Enden verwenden diese MTU. Frames mit grösserer Nutzlast gehen auf diesem Kabel verloren.'),
-        h('label', { class: 'row', style: { marginTop: '10px' } }, up, 'Link aktiv (Kabel eingesteckt)')));
+        h('dl', { class: 'kv' }, h('dt', {}, 'Side A'), h('dd', {}, `${A.name} ${l.a.if}`), h('dt', {}, 'Side B'), h('dd', {}, `${B.name} ${l.b.if}`)),
+        h('h4', {}, 'MTU (payload bytes per frame)'), mtu,
+        h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'Both ends use this MTU. Frames with a larger payload are lost on this cable.'),
+        h('label', { class: 'row', style: { marginTop: '10px' } }, up, 'Link up (cable plugged in)')));
   }
 
-  // ------------------------------------------------------------ Protokoll
+  // ------------------------------------------------------------ Log
   queueLog(e) {
     this.pendingLog ??= [];
     this.pendingLog.push(e);
@@ -568,15 +568,15 @@ export class Lab {
     return row;
   }
   renderLog() {
-    const opts = [['all', 'Alle Ereignisse'], ['nosend', 'Nur Entscheidungen']];
-    if (this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled) || this.logFilter === 'stp' || this.logFilter === 'bpdu') opts.push(['stp', 'Nur Spanning Tree'], ['bpdu', 'Alles, auch BPDU-Versand']);
-    if (this.traceId) opts.push(['trace', 'Verfolgtes Paket']);
-    for (const d of this.sim.topo.devices) opts.push(['dev:' + d.id, `Nur ${d.name}`]);
+    const opts = [['all', 'All events'], ['nosend', 'Decisions only']];
+    if (this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled) || this.logFilter === 'stp' || this.logFilter === 'bpdu') opts.push(['stp', 'Spanning tree only'], ['bpdu', 'Everything, including BPDUs sent']);
+    if (this.traceId) opts.push(['trace', 'Traced packet']);
+    for (const d of this.sim.topo.devices) opts.push(['dev:' + d.id, `Only ${d.name}`]);
     this.filterSel.innerHTML = '';
     for (const [v, t] of opts) this.filterSel.append(h('option', { value: v, selected: v === this.logFilter ? true : null }, t));
     this.logEl.innerHTML = '';
     const list = this.sim.log.filter(e => this.logVisible(e)).slice(-600);
-    if (!list.length) this.logEl.append(h('div', { class: 'empty', style: { padding: '10px' } }, 'Noch nichts passiert. Öffne die Konsole eines Geräts und sende einen ping.'));
+    if (!list.length) this.logEl.append(h('div', { class: 'empty', style: { padding: '10px' } }, 'Nothing has happened yet. Open the console of a device and send a ping.'));
     for (const e of list) this.logEl.append(this.logRow(e));
     this.logEl.scrollTop = this.logEl.scrollHeight;
   }
@@ -596,20 +596,20 @@ export class Lab {
   }
   setTrace(t) {
     this.traceId = t;
-    if (t) { this.logFilter = 'trace'; toast('Protokoll zeigt nur noch dieses Paket, beteiligte Geräte sind markiert'); }
+    if (t) { this.logFilter = 'trace'; toast('The log now shows only this packet, the devices involved are highlighted'); }
     else if (this.logFilter === 'trace') this.logFilter = 'all';
     this.render(); this.renderLog();
   }
 
-  // ------------------------------------------------------------ Zeit und Animation
+  // ------------------------------------------------------------ Time and animation
   setPlaying(p) {
     this.playing = p;
     this.playBtn.innerHTML = p ? I.pause : I.play;
-    this.playBtn.title = p ? 'Anhalten (Leertaste)' : 'Abspielen (Leertaste)';
+    this.playBtn.title = p ? 'Pause (space)' : 'Play (space)';
   }
   stepOnce() {
     this.setPlaying(false);
-    if (!this.sim.step()) toast('Keine weiteren Ereignisse');
+    if (!this.sim.step()) toast('No further events');
     this.drawPackets();
   }
   loop(ts) {
@@ -673,12 +673,12 @@ export class Lab {
   }
 
   fastForward(ms) {
-    if (this.sim.halted) return toast('Die Simulation ist angehalten. Setze den Zustand zurück.');
+    if (this.sim.halted) return toast('The simulation is halted. Reset the state.');
     this.sim.runFor(ms);
     this.drawPackets();
     this.render();
     if (this.tab === 'tables') this.renderSide();
-    toast(`${ms / 1000} s vorgespult, jetzt t = ${(this.sim.time / 1000).toFixed(1)} s`);
+    toast(`Fast-forwarded ${ms / 1000} s, now t = ${(this.sim.time / 1000).toFixed(1)} s`);
   }
   toggleBpdu() { this.showBpdu = !this.showBpdu; this.bpduBtn.classList.toggle('on', this.showBpdu); this.drawPackets(); }
   updateBpduBar() { this.bpduBar?.classList.toggle('hidden', !this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled)); }
@@ -690,12 +690,12 @@ export class Lab {
     this.stormEl.innerHTML = '';
     this.stormEl.classList.toggle('hidden', !info);
     if (!info) return;
-    this.stormEl.append(h('div', {}, h('b', {}, 'Simulation angehalten. '), info.text),
-      h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => this.resetState() }, 'Zustand zurücksetzen'),
-        h('span', { class: 'small muted' }, 'Danach die Schleife entfernen oder Spanning Tree einschalten.')));
+    this.stormEl.append(h('div', {}, h('b', {}, 'Simulation halted. '), info.text),
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => this.resetState() }, 'Reset state'),
+        h('span', { class: 'small muted' }, 'Then remove the loop or turn on spanning tree.')));
   }
 
-  // ------------------------------------------------------------ Hilfen für Lektionen
+  // ------------------------------------------------------------ Helpers for lessons
   run(devName, cmd) {
     const d = this.sim.dev(devName);
     if (!d) return;

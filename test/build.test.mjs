@@ -1,4 +1,4 @@
-// Prüft jede Aufgabe «Frame konstruieren» gegen den Frame, den die Simulation wirklich erzeugt
+// Checks every "build a frame" exercise against the frame the simulation actually produces
 import { Sim } from '../src/js/engine.js';
 import { MODULES } from '../src/js/course/index.js';
 import { runCommand } from '../src/js/cli.js';
@@ -45,16 +45,16 @@ for (const m of MODULES) for (const l of m.lessons) for (const st of l.steps) {
   n++;
   try {
     const real = REAL[l.id];
-    assert.ok(real, `keine Referenz für ${l.id}`);
+    assert.ok(real, `no reference for ${l.id}`);
     const frame = real();
-    assert.ok(frame, `${l.id}: kein Frame in der Simulation gefunden`);
+    assert.ok(frame, `${l.id}: no frame found in the simulation`);
     const b = toBuild(frame);
     const r = checkBuild(st.expected, b);
-    assert.ok(r.ok, `${l.id}: Simulation und Musterlösung weichen ab: ${JSON.stringify(r)} ${JSON.stringify(b)}`);
-    // Leere Antwort darf nie als richtig gelten
+    assert.ok(r.ok, `${l.id}: simulation and reference solution differ: ${JSON.stringify(r)} ${JSON.stringify(b)}`);
+    // An empty answer must never count as correct
     assert.ok(!checkBuild(st.expected, []).ok);
-    // Jedes Pflichtfeld muss im Widget auswählbar sein
+    // Every required field must be selectable in the widget
     console.log('ok  ', l.id, st.title);
   } catch (e) { bad++; console.log('FAIL', e.message); process.exitCode = 1; }
 }
-console.log(`\n${n - bad} von ${n} Frame-Aufgaben stimmen mit der Simulation überein`);
+console.log(`\n${n - bad} of ${n} frame exercises match the simulation`);
