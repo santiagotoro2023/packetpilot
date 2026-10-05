@@ -1,0 +1,708 @@
+// Labor: Netzplan-Editor, Animation, Seitenpanel, Protokoll und Inspektor
+import { Sim, PORTS, TYPE_NAMES, TIMING, newId, normalizeDevice, traceOf, STP_TEXT } from './engine.js';
+import { layerKinds, shortLabel } from './packets.js';
+import { isIp } from './net.js';
+import { h, svgEl, toast, iconBtn } from './ui.js';
+import { I, DEV_ICON } from './icons.js';
+import { renderInspector } from './inspector.js';
+import { configPanel, tablesPanel, consolePanel } from './panels.js';
+
+const CARD_W = 76, CARD_H = 60;
+const NAME_PREFIX = { pc: 'pc', server: 'srv', router: 'r', switch: 'sw', vtep: 'vtep' };
+export const ZONE_COLORS = [['blue', 'Blau'], ['violet', 'Violett'], ['green', 'Grün'], ['orange', 'Orange'], ['pink', 'Pink'], ['yellow', 'Gelb'], ['gray', 'Grau']];
+const KIND_COLOR = { vlan: 'violet', overlay: 'pink', underlay: 'blue' };
+export const zoneColor = z => z.color || KIND_COLOR[z.kind] || 'gray';
+
+export class Lab {
+  /**
+   * @param {HTMLElement} root
+   * @param {object} opts { topo, edit: 'full'|'config'|'view', palette: [...types], compact, onEvent, consolePresets }
+   */
+  constructor(root, opts = {}) {
+    this.root = root;
+    this.opts = { edit: 'full', palette: ['pc', 'server', 'switch', 'router', 'vtep'], ...opts };
+    this.listeners = new Set();
+    if (opts.onEvent) this.listeners.add(opts.onEvent);
+    this.sel = null; this.connectFrom = null; this.connectMode = false;
+    this.playing = true; this.msPerHop = opts.msPerHop || 550; this.lastTs = 0; this.idleUntil = 0;
+    this.traceId = null; this.logFilter = 'all'; this.selectedLog = null; this.showBpdu = true;
+    this.view = { x: 0, y: 0, w: 900, h: 520 };
+    this.pktEls = new Map();
+    this.tab = 'config';
+    this.build();
+    this.load(opts.topo || { name: 'Neues Netz', devices: [], links: [] }, true);
+    this.raf = requestAnimationFrame(t => this.loop(t));
+    this.keyHandler = e => this.onKey(e);
+    window.addEventListener('keydown', this.keyHandler);
+    this.ro = new ResizeObserver(() => this.fit(false));
+    this.ro.observe(this.canvasWrap);
+  }
+  emit(type, data) { for (const fn of this.listeners) fn(type, data, this); }
+  destroy() {
+    cancelAnimationFrame(this.raf);
+    window.removeEventListener('keydown', this.keyHandler);
+    this.ro.disconnect();
+    this.unsub?.();
+    this.root.innerHTML = '';
+  }
+  get canEditTopo() { return this.opts.edit === 'full'; }
+  get canConfig() { return this.opts.edit !== 'view'; }
+
+  // ------------------------------------------------------------ Aufbau
+  build() {
+    const o = this.opts;
+    this.root.innerHTML = '';
+    this.el = h('div', { class: `lab${o.compact ? ' compact' : ''}${this.canEditTopo ? '' : ' no-palette'}` });
+    // Palette
+    this.palette = h('div', { class: 'palette', 'aria-label': 'Geräte' });
+    if (this.canEditTopo) {
+      for (const t of o.palette) {
+        const it = h('button', { class: 'pal-item', draggable: 'true', title: `${TYPE_NAMES[t]} hinzufügen (ziehen oder klicken)` },
+          h('span', { html: `<svg viewBox="0 0 40 40">${DEV_ICON[t]}</svg>` }), TYPE_NAMES[t]);
+        it.addEventListener('dragstart', e => { e.dataTransfer.setData('text/pp-device', t); e.dataTransfer.effectAllowed = 'copy'; });
+        it.addEventListener('click', () => this.addDevice(t));
+        this.palette.append(it);
+      }
+      this.palette.append(h('div', { class: 'pal-sep' }));
+      this.cableBtn = h('button', { class: 'pal-item', title: 'Kabel ziehen: erst ein Gerät, dann das zweite anklicken (Taste K)', html: `<span>${I.cable}</span>Kabel`,
+        onclick: () => this.setConnect(!this.connectMode) });
+      this.palette.append(this.cableBtn);
+      const area = h('button', { class: 'pal-item', draggable: 'true', title: 'Bereich zum Ordnen: farbiges Rechteck mit Beschriftung (ziehen oder klicken)', html: `<span>${I.area}</span>Bereich` });
+      area.addEventListener('dragstart', e => { e.dataTransfer.setData('text/pp-device', 'zone'); e.dataTransfer.effectAllowed = 'copy'; });
+      area.addEventListener('click', () => this.addZone());
+      this.palette.append(area);
+    }
+    // Canvas
+    this.canvasWrap = h('div', { class: 'canvas-wrap' });
+    this.svg = svgEl('svg', { class: `net${this.canEditTopo ? '' : ' ro'}`, role: 'img', 'aria-label': 'Netzplan' });
+    this.gZones = svgEl('g'); this.gLinks = svgEl('g'); this.gDevs = svgEl('g'); this.gPkts = svgEl('g');
+    this.svg.append(this.gZones, this.gLinks, this.gDevs, this.gPkts);
+    this.canvasWrap.append(this.svg);
+    this.bindCanvas();
+    // Player
+    this.playBtn = iconBtn(I.pause, 'Anhalten (Leertaste)', () => this.setPlaying(!this.playing));
+    this.timeEl = h('span', { class: 'time' }, 't = 0.0000 s');
+    const speed = h('input', { type: 'range', min: '0', max: '100', value: String(this.speedToSlider(this.msPerHop)), 'aria-label': 'Tempo' });
+    this.speedLbl = h('span', { class: 'speedlbl' });
+    speed.addEventListener('input', () => { this.msPerHop = this.sliderToSpeed(Number(speed.value)); this.showSpeed(); });
+    this.showSpeed();
+    this.player = h('div', { class: 'player' },
+      h('div', { class: 'bar' }, this.playBtn,
+        iconBtn(I.step, 'Nächstes Ereignis (Pfeil rechts)', () => this.stepOnce()),
+        iconBtn(I.ffwd, '5 Sekunden vorspulen, ohne Animation (z. B. für STP-Timer)', () => this.fastForward(5000)),
+        iconBtn(I.reset, 'Zustand zurücksetzen: Tabellen, Pakete und Protokoll leeren', () => this.resetState()),
+        this.timeEl),
+      h('div', { class: 'bar' }, h('span', { class: 'speedlbl', style: { paddingLeft: '6px' } }, 'Tempo'), speed, this.speedLbl),
+      this.bpduBar = h('div', { class: 'bar hidden' }, this.bpduBtn = h('button', { class: 'tog on', title: 'BPDUs im Netzplan zeigen oder ausblenden', onclick: () => this.toggleBpdu() }, 'BPDUs')),
+      h('span', { class: 'grow' }),
+      h('div', { class: 'bar' }, iconBtn(I.fit, 'Ansicht einpassen', () => this.fit(true))));
+    this.canvasWrap.append(this.player);
+    this.overlay = h('div', { class: 'hint-overlay hidden' });
+    this.stormEl = h('div', { class: 'storm hidden', role: 'alert' });
+    this.canvasWrap.append(this.overlay, this.stormEl);
+    // Seitenpanel
+    this.side = h('div', { class: 'side' });
+    // Dock
+    this.logEl = h('div', { class: 'log', role: 'log' });
+    this.filterSel = h('select', { class: 'input', 'aria-label': 'Protokoll filtern' });
+    this.filterSel.addEventListener('change', () => { this.logFilter = this.filterSel.value; if (this.logFilter !== 'trace') this.setTrace(null); this.renderLog(); });
+    this.inspEl = h('div', { class: 'inspector' });
+    this.dock = h('div', { class: 'dock' },
+      h('div', { class: 'dock-col' }, h('div', { class: 'dock-head' }, 'Ereignisse', h('span', { class: 'grow' }), this.filterSel,
+        iconBtn(I.trash, 'Protokoll leeren', () => { this.sim.log = []; this.renderLog(); })), this.logEl),
+      h('div', { class: 'dock-col' }, h('div', { class: 'dock-head' }, 'Paketinspektor'), this.inspEl));
+    this.el.append(this.palette, this.canvasWrap, this.side, this.dock);
+    this.root.append(this.el);
+    renderInspector(this.inspEl, null);
+  }
+  speedToSlider(ms) { return Math.round(100 - (Math.log(ms / 60) / Math.log(4000 / 60)) * 100); }
+  sliderToSpeed(v) { return Math.round(60 * Math.pow(4000 / 60, (100 - v) / 100)); }
+  showSpeed() { this.speedLbl.textContent = `${(this.msPerHop / 1000).toFixed(this.msPerHop < 1000 ? 2 : 1)} s pro Kabel`; }
+
+  // ------------------------------------------------------------ Laden
+  load(topo, first = false) {
+    this.unsub?.();
+    this.topo = topo;
+    topo.devices.forEach(normalizeDevice);
+    topo.links.forEach(l => { l.mtu ??= 1500; l.up ??= true; l.id ??= newId('l'); });
+    topo.zones ??= [];
+    topo.zones.forEach(z => { z.id ??= newId('z'); });
+    this.sim = new Sim(topo);
+    this.unsub = this.sim.on((type, data) => this.onSim(type, data));
+    this.sel = null; this.traceId = null; this.selectedLog = null;
+    this.pktEls.forEach(e => e.remove()); this.pktEls.clear();
+    this.render();
+    this.fit(true);
+    this.updateBpduBar();
+    this.showStorm(null);
+    this.renderSide();
+    this.renderLog();
+    renderInspector(this.inspEl, null);
+    if (!first) this.emit('loaded');
+  }
+  resetState() {
+    this.sim.reset();
+    this.pktEls.forEach(e => e.remove()); this.pktEls.clear();
+    this.setTrace(null);
+    this.renderLog(); this.renderSide(); renderInspector(this.inspEl, null);
+    this.showStorm(null); this.render();
+    toast('Zustand zurückgesetzt: ARP- und MAC-Tabellen sind leer');
+    this.emit('reset');
+  }
+  onSim(type, data) {
+    if (type === 'log') {
+      this.queueLog(data);
+      if (data.tag && (data.tag.startsWith('stp-') || data.tag === 'link-up' || data.tag === 'link-down')) this.renderSoon();
+    }
+    if (type === 'halted') this.showStorm(data);
+    if (type === 'console' && this.sel?.kind === 'dev' && this.sel.id === data.devId && this.tab === 'console') this.consoleEl?.refresh();
+    if (type === 'config') { this.render(); this.refreshSideSoon(); this.updateBpduBar(); }
+    if (type === 'topology') this.render();
+    this.emit('sim', { type, data });
+  }
+
+  // ------------------------------------------------------------ Darstellung Netzplan
+  devPos(d) { return { x: d.x ?? 0, y: d.y ?? 0 }; }
+  render() {
+    const topo = this.sim.topo;
+    this.gLinks.innerHTML = ''; this.gDevs.innerHTML = ''; this.gZones.innerHTML = '';
+    for (const z of topo.zones || []) this.gZones.append(this.zoneEl(z));
+    const byId = new Map(topo.devices.map(d => [d.id, d]));
+    for (const l of topo.links) {
+      const A = byId.get(l.a.dev), B = byId.get(l.b.dev);
+      if (!A || !B) continue;
+      const g = svgEl('g', { class: `lnk-g${this.sel?.kind === 'link' && this.sel.id === l.id ? ' sel' : ''}`, 'data-id': l.id });
+      const line = svgEl('line', { class: `lnk${l.up ? '' : ' down'}${l.mtu > 1500 ? ' jumbo' : ''}`, x1: A.x, y1: A.y, x2: B.x, y2: B.y });
+      const hit = svgEl('line', { class: 'lnk-hit', x1: A.x, y1: A.y, x2: B.x, y2: B.y });
+      hit.addEventListener('pointerdown', e => { e.stopPropagation(); this.select({ kind: 'link', id: l.id }); });
+      g.append(line, hit);
+      const lbl = (P, Q, name) => {
+        const dx = Q.x - P.x, dy = Q.y - P.y, len = Math.hypot(dx, dy) || 1;
+        // Nach unten weg: unter Name und Adresse des Geräts hindurch
+        const down = dy / len > 0.7;
+        const off = Math.min(down ? 86 : 58, len * (down ? 0.45 : 0.32));
+        const t = svgEl('text', { class: 'iflbl', x: P.x + dx / len * off + (-dy / len) * 9, y: P.y + dy / len * off + (dx / len) * 9 + 3, 'text-anchor': 'middle' });
+        t.textContent = name; return t;
+      };
+      g.append(lbl(A, B, l.a.if), lbl(B, A, l.b.if));
+      for (const [P, Q, end] of [[A, B, l.a], [B, A, l.b]]) {
+        const br = this.sim.dev(end.dev)?.bridge;
+        if (!br?.stp || P.type !== 'switch') continue;
+        const ps = br.stp.ports.get(end.if);
+        if (!ps) continue;
+        const dx = Q.x - P.x, dy = Q.y - P.y, len = Math.hypot(dx, dy) || 1, off = Math.min(42, len * 0.22);
+        const dot = svgEl('g', { class: `stp-dot st-${ps.state}`, transform: `translate(${(P.x + dx / len * off).toFixed(1)},${(P.y + dy / len * off).toFixed(1)})` });
+        const tt = svgEl('title'); tt.textContent = `${P.name} ${end.if}: ${STP_TEXT.ROLE_DE[ps.role]}, ${STP_TEXT.STATE_DE[ps.state]}${ps.edge ? ', Edge-Port' : ''}`;
+        const letter = svgEl('text', { 'text-anchor': 'middle', y: 2.7 }); letter.textContent = { root: 'R', designated: 'D', alternate: 'A', disabled: '' }[ps.role];
+        dot.append(tt, svgEl('circle', { r: 6 }), letter);
+        g.append(dot);
+      }
+      if (l.mtu !== 1500) {
+        const t = svgEl('text', { class: 'mtulbl', x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 - 7, 'text-anchor': 'middle' });
+        t.textContent = `MTU ${l.mtu}`; g.append(t);
+      }
+      this.gLinks.append(g);
+    }
+    const traceDevs = this.traceId ? new Set(this.sim.log.filter(e => e.trace === this.traceId).map(e => e.devId)) : null;
+    for (const d of topo.devices) {
+      const sel = this.sel?.kind === 'dev' && this.sel.id === d.id;
+      const g = svgEl('g', { class: `dev t-${d.type}${sel ? ' sel' : ''}${this.connectFrom === d.id ? ' pend' : ''}${traceDevs?.has(d.id) ? ' trace' : ''}`,
+        transform: `translate(${d.x - CARD_W / 2},${d.y - CARD_H / 2})`, tabindex: '0', 'data-id': d.id, role: 'button', 'aria-label': `${TYPE_NAMES[d.type]} ${d.name}` });
+      g.append(svgEl('rect', { class: 'card', width: CARD_W, height: CARD_H, rx: 10 }));
+      const ic = svgEl('g', { transform: `translate(${CARD_W / 2 - 20},${CARD_H / 2 - 22})` });
+      ic.innerHTML = DEV_ICON[d.type];
+      g.append(ic);
+      const nm = svgEl('text', { class: 'nm', x: CARD_W / 2, y: CARD_H + 15 }); nm.textContent = d.name; g.append(nm);
+      const ip = this.primaryIp(d);
+      if (ip) { const t = svgEl('text', { class: 'ip', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = ip; g.append(t); }
+      const st = d.type === 'switch' ? this.sim.dev(d.id)?.bridge?.stpTable() : null;
+      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = st.isRoot ? `Root Bridge, Prio ${d.stp.priority}` : `STP, Prio ${d.stp.priority}`; g.append(t); }
+      g.addEventListener('pointerdown', e => this.devPointerDown(e, d));
+      g.addEventListener('dblclick', () => { this.select({ kind: 'dev', id: d.id }); this.setTab('console'); });
+      g.addEventListener('keydown', e => { if (e.key === 'Enter') this.select({ kind: 'dev', id: d.id }); });
+      this.gDevs.append(g);
+    }
+    this.updateOverlay();
+  }
+  primaryIp(d) {
+    if (d.type === 'pc' || d.type === 'server') {
+      const i = d.ifaces.eth1; return isIp(i.ip) ? `${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}` : '';
+    }
+    if (d.type === 'vtep') return isIp(d.ifaces.lo?.ip) ? `lo ${d.ifaces.lo.ip}` : '';
+    if (d.type === 'router') {
+      const n = Object.values(d.ifaces).filter(i => isIp(i.ip)).length;
+      const sub = Object.values(d.ifaces).filter(i => i.parent).length;
+      return sub ? `${sub} Subinterface${sub > 1 ? 's' : ''}` : n ? `${n} Adressen` : '';
+    }
+    return '';
+  }
+  fit(force) {
+    const r = this.canvasWrap.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const ds = this.sim?.topo.devices || [];
+    if (!force && this.fitted) { this.view.h = this.view.w * r.height / r.width; this.applyView(); return; }
+    this.fitted = true;
+    if (!ds.length) { this.view = { x: 0, y: 0, w: r.width, h: r.height }; this.applyView(); return; }
+    const xs = ds.map(d => d.x), ys = ds.map(d => d.y);
+    let minX = Math.min(...xs) - 90, maxX = Math.max(...xs) + 90, minY = Math.min(...ys) - 100, maxY = Math.max(...ys) + 80;
+    for (const z of this.sim.topo.zones || []) { minX = Math.min(minX, z.x - 20); minY = Math.min(minY, z.y - 20); maxX = Math.max(maxX, z.x + z.w + 20); maxY = Math.max(maxY, z.y + z.h + 20); }
+    let w = Math.max(maxX - minX, 420), hh = Math.max(maxY - minY, 260);
+    const ar = r.width / r.height;
+    if (w / hh > ar) hh = w / ar; else w = hh * ar;
+    this.view = { x: (minX + maxX) / 2 - w / 2, y: (minY + maxY) / 2 - hh / 2 - 16, w, h: hh };
+    this.applyView();
+  }
+  applyView() { this.svg.setAttribute('viewBox', `${this.view.x} ${this.view.y} ${this.view.w} ${this.view.h}`); }
+  toSvg(e) {
+    const r = this.svg.getBoundingClientRect();
+    return { x: this.view.x + (e.clientX - r.left) / r.width * this.view.w, y: this.view.y + (e.clientY - r.top) / r.height * this.view.h };
+  }
+
+  // ------------------------------------------------------------ Interaktion
+  bindCanvas() {
+    this.svg.addEventListener('pointerdown', e => {
+      if (e.target !== this.svg) return;
+      this.select(null);
+      if (this.connectMode) { this.connectFrom = null; this.render(); }
+      const start = { x: e.clientX, y: e.clientY, vx: this.view.x, vy: this.view.y };
+      const r = this.svg.getBoundingClientRect();
+      const move = ev => {
+        this.view.x = start.vx - (ev.clientX - start.x) / r.width * this.view.w;
+        this.view.y = start.vy - (ev.clientY - start.y) / r.height * this.view.h;
+        this.applyView();
+      };
+      const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+      window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+    });
+    this.svg.addEventListener('wheel', e => {
+      e.preventDefault();
+      const p = this.toSvg(e);
+      const k = e.deltaY > 0 ? 1.12 : 1 / 1.12;
+      const w = Math.min(4000, Math.max(240, this.view.w * k));
+      const f = w / this.view.w;
+      this.view = { x: p.x - (p.x - this.view.x) * f, y: p.y - (p.y - this.view.y) * f, w, h: this.view.h * f };
+      this.applyView();
+    }, { passive: false });
+    this.canvasWrap.addEventListener('dragover', e => { if (this.canEditTopo) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+    this.canvasWrap.addEventListener('drop', e => {
+      const t = e.dataTransfer.getData('text/pp-device');
+      if (!t || !this.canEditTopo) return;
+      e.preventDefault();
+      const p = this.toSvg(e);
+      if (t === 'zone') return this.addZone(Math.round(p.x / 12) * 12, Math.round(p.y / 12) * 12);
+      this.addDevice(t, Math.round(p.x / 12) * 12, Math.round(p.y / 12) * 12);
+    });
+  }
+  devPointerDown(e, d) {
+    e.stopPropagation();
+    if (this.connectMode) return this.connectClick(d);
+    this.select({ kind: 'dev', id: d.id });
+    if (!this.canEditTopo && this.opts.edit !== 'config') return;
+    const start = this.toSvg(e), ox = d.x, oy = d.y;
+    let moved = false;
+    const move = ev => {
+      const p = this.toSvg(ev);
+      const nx = Math.round((ox + p.x - start.x) / 12) * 12, ny = Math.round((oy + p.y - start.y) / 12) * 12;
+      if (nx !== d.x || ny !== d.y) { d.x = nx; d.y = ny; moved = true; this.render(); }
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); if (moved) this.emit('moved'); };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  }
+  setConnect(on) {
+    if (!this.canEditTopo) return;
+    this.connectMode = on; this.connectFrom = null;
+    this.cableBtn?.classList.toggle('on', on);
+    this.canvasWrap.classList.toggle('connecting', on);
+    this.render();
+  }
+  connectClick(d) {
+    if (!this.connectFrom) { this.connectFrom = d.id; this.render(); return; }
+    if (this.connectFrom === d.id) { this.connectFrom = null; this.render(); return; }
+    const a = this.connectFrom, b = d.id;
+    const pa = this.pickPort(a, b), pb = this.pickPort(b, a);
+    const A = this.sim.dev(a), B = this.sim.dev(b);
+    if (!pa || !pb) { toast(`${!pa ? A.name : B.name} hat keinen freien Port mehr`); this.connectFrom = null; this.render(); return; }
+    const l = this.sim.addLink({ id: newId('l'), a: { dev: a, if: pa }, b: { dev: b, if: pb }, mtu: 1500, up: true });
+    this.connectFrom = null;
+    toast(`${A.name} ${pa} ↔ ${B.name} ${pb} verbunden`);
+    this.render();
+    this.emit('linked', l);
+  }
+  pickPort(devId, otherId) {
+    const d = this.sim.dev(devId), o = this.sim.dev(otherId);
+    const free = PORTS[d.type].filter(p => !this.sim.linkAt(devId, p));
+    if (d.type === 'vtep') {
+      const wantsUplink = o.type === 'router' || o.type === 'vtep';
+      if (wantsUplink && free.includes('eth1')) return 'eth1';
+      return free.find(p => p !== 'eth1') || free[0] || null;
+    }
+    return free[0] || null;
+  }
+  addDevice(type, x, y) {
+    if (!this.canEditTopo) return;
+    const pre = NAME_PREFIX[type];
+    let n = 1;
+    while (this.sim.topo.devices.some(d => d.name === pre + n)) n++;
+    if (x === undefined) {
+      x = Math.round((this.view.x + this.view.w / 2 + (Math.random() - .5) * 120) / 12) * 12;
+      y = Math.round((this.view.y + this.view.h / 2 + (Math.random() - .5) * 80) / 12) * 12;
+    }
+    const cfg = normalizeDevice({ id: newId(), type, name: pre + n, x, y });
+    this.sim.addDevice(cfg);
+    this.select({ kind: 'dev', id: cfg.id });
+    this.emit('added', cfg);
+  }
+  // ------------------------------------------------------------ Bereiche
+  zoneEl(z) {
+    const sel = this.sel?.kind === 'zone' && this.sel.id === z.id;
+    const g = svgEl('g', { class: `zone-g c-${zoneColor(z)}${sel ? ' sel' : ''}`, 'data-id': z.id });
+    g.append(svgEl('rect', { class: 'zone', x: z.x, y: z.y, width: z.w, height: z.h, rx: 14 }));
+    const label = z.label || 'Bereich';
+    const tw = Math.min(z.w - 16, label.length * 6.3 + 18);
+    const tab = svgEl('rect', { class: 'zone-tab', x: z.x + 8, y: z.y + 8, width: Math.max(30, tw), height: 20, rx: 6 });
+    const t = svgEl('text', { class: 'zone-t', x: z.x + 17, y: z.y + 22 }); t.textContent = label;
+    g.append(tab, t);
+    if (this.canEditTopo) {
+      tab.addEventListener('pointerdown', e => this.zonePointer(e, z, 'move'));
+      tab.addEventListener('dblclick', () => { this.select({ kind: 'zone', id: z.id }); setTimeout(() => this.side.querySelector('input')?.focus(), 30); });
+      const rs = svgEl('rect', { class: 'zone-rs', x: z.x + z.w - 13, y: z.y + z.h - 13, width: 11, height: 11, rx: 3 });
+      rs.addEventListener('pointerdown', e => this.zonePointer(e, z, 'resize'));
+      g.append(rs);
+    }
+    return g;
+  }
+  zonePointer(e, z, mode) {
+    e.stopPropagation();
+    this.select({ kind: 'zone', id: z.id });
+    const start = this.toSvg(e), o = { x: z.x, y: z.y, w: z.w, h: z.h };
+    const inside = mode === 'move' ? this.sim.topo.devices.filter(d => d.x >= z.x && d.x <= z.x + z.w && d.y >= z.y && d.y <= z.y + z.h).map(d => [d, d.x, d.y]) : [];
+    const snap = v => Math.round(v / 12) * 12;
+    let moved = false;
+    const move = ev => {
+      const p = this.toSvg(ev), dx = p.x - start.x, dy = p.y - start.y;
+      if (mode === 'move') {
+        const nx = snap(o.x + dx), ny = snap(o.y + dy);
+        if (nx === z.x && ny === z.y) return;
+        const mx = nx - o.x, my = ny - o.y;
+        z.x = nx; z.y = ny;
+        for (const [d, x, y] of inside) { d.x = x + mx; d.y = y + my; }
+      } else {
+        const nw = Math.max(120, snap(o.w + dx)), nh = Math.max(72, snap(o.h + dy));
+        if (nw === z.w && nh === z.h) return;
+        z.w = nw; z.h = nh;
+      }
+      moved = true; this.render();
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); if (moved) this.emit('moved'); };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  }
+  addZone(x, y) {
+    if (!this.canEditTopo) return;
+    const w = 312, hh = 204;
+    if (x === undefined) { x = this.view.x + this.view.w / 2; y = this.view.y + this.view.h / 2; }
+    const used = new Set((this.sim.topo.zones || []).map(zz => zoneColor(zz)));
+    const color = (ZONE_COLORS.find(([k]) => !used.has(k)) || ZONE_COLORS[0])[0];
+    const z = { id: newId('z'), x: Math.round((x - w / 2) / 12) * 12, y: Math.round((y - hh / 2) / 12) * 12, w, h: hh, label: `Bereich ${(this.sim.topo.zones || []).length + 1}`, color };
+    this.sim.topo.zones.push(z);
+    this.render();
+    this.select({ kind: 'zone', id: z.id });
+    this.emit('added', z);
+  }
+  renderZoneSide() {
+    const z = this.sim.topo.zones.find(x => x.id === this.sel.id);
+    if (!z) { this.sel = null; return this.renderSide(); }
+    const name = h('input', { class: 'input', value: z.label || '', placeholder: 'z. B. VLAN 10, Büro, Underlay', disabled: this.canEditTopo ? null : true });
+    name.addEventListener('input', () => { z.label = name.value; this.render(); });
+    name.addEventListener('change', () => this.emit('moved'));
+    const sw = h('div', { class: 'swatches' });
+    for (const [k, t] of ZONE_COLORS) {
+      const b = h('button', { class: `swatch${zoneColor(z) === k ? ' cur' : ''}`, title: t, 'aria-label': t, style: { background: k === 'gray' ? 'var(--ink-3)' : `var(--l-${{ blue: 'eth', violet: 'vlan', green: 'ip', orange: 'arp', pink: 'vxlan', yellow: 'stp' }[k]})` },
+        onclick: () => { z.color = k; delete z.kind; this.render(); this.renderSide(); this.emit('moved'); } });
+      if (!this.canEditTopo) b.disabled = true;
+      sw.append(b);
+    }
+    const inside = this.sim.topo.devices.filter(d => d.x >= z.x && d.x <= z.x + z.w && d.y >= z.y && d.y <= z.y + z.h);
+    this.side.append(h('div', { class: 'side-head' }, h('span', { html: I.area }), h('div', { class: 'grow', style: { fontWeight: 650 } }, 'Bereich'),
+      this.canEditTopo ? iconBtn(I.trash, 'Bereich entfernen (Entf), die Geräte bleiben', () => this.deleteSelected(), 'danger') : null), h('div'),
+      h('div', { class: 'side-body' },
+        h('h4', {}, 'Beschriftung'), name,
+        h('h4', {}, 'Farbe'), sw,
+        h('h4', {}, 'Inhalt'),
+        h('p', { class: 'small' }, inside.length ? inside.map(d => d.name).join(', ') : 'Keine Geräte in diesem Bereich.'),
+        h('p', { class: 'small muted' }, 'Bereiche dienen nur der Ordnung und haben keinen Einfluss auf die Simulation. Am Reiter verschieben (Geräte darin wandern mit), an der Ecke unten rechts die Grösse ändern.')));
+  }
+
+  deleteSelected() {
+    if (!this.canEditTopo || !this.sel) return;
+    if (this.sel.kind === 'zone') { this.sim.topo.zones = this.sim.topo.zones.filter(z => z.id !== this.sel.id); this.select(null); this.render(); this.emit('deleted'); return; }
+    if (this.sel.kind === 'dev') { const n = this.sim.dev(this.sel.id)?.name; this.sim.removeDevice(this.sel.id); toast(`${n} entfernt`); }
+    else this.sim.removeLink(this.sel.id);
+    this.select(null);
+    this.emit('deleted');
+  }
+  onKey(e) {
+    if (!this.root.isConnected) return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (['input', 'textarea', 'select'].includes(tag)) return;
+    if (e.key === ' ') { e.preventDefault(); this.setPlaying(!this.playing); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); this.stepOnce(); }
+    else if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel) { e.preventDefault(); this.deleteSelected(); }
+    else if (e.key === 'k' || e.key === 'K') this.setConnect(!this.connectMode);
+    else if (e.key === 'Escape') { this.setConnect(false); this.select(null); }
+  }
+  select(s) {
+    const same = JSON.stringify(s) === JSON.stringify(this.sel);
+    this.sel = s;
+    this.markSelection();
+    if (!same) this.renderSide();
+    if (s) this.emit('select', s);
+  }
+  markSelection() {
+    this.gDevs.querySelectorAll('.dev').forEach(g => g.classList.toggle('sel', this.sel?.kind === 'dev' && g.dataset.id === this.sel.id));
+    this.gLinks.querySelectorAll('.lnk-g').forEach(g => g.classList.toggle('sel', this.sel?.kind === 'link' && g.dataset.id === this.sel.id));
+    this.gZones.querySelectorAll('.zone-g').forEach(g => g.classList.toggle('sel', this.sel?.kind === 'zone' && g.dataset.id === this.sel.id));
+  }
+  updateOverlay() {
+    let msg = '';
+    if (this.connectMode) msg = this.connectFrom ? 'Jetzt das zweite Gerät anklicken' : 'Kabel: erstes Gerät anklicken (Esc beendet)';
+    else if (!this.sim.topo.devices.length && this.canEditTopo) msg = 'Ziehe Geräte aus der linken Leiste auf den Plan';
+    this.overlay.textContent = msg;
+    this.overlay.classList.toggle('hidden', !msg);
+  }
+
+  // ------------------------------------------------------------ Seitenpanel
+  setTab(t) { this.tab = t; this.renderSide(); if (t === 'console') setTimeout(() => this.consoleEl?.focusInput(), 30); }
+  refreshSideSoon() {
+    if (this.sideTimer) return;
+    this.sideTimer = setTimeout(() => { this.sideTimer = null; if (this.tab === 'tables') this.renderSide(); }, 250);
+  }
+  renderSide() {
+    const side = this.side;
+    side.innerHTML = '';
+    this.consoleEl = null;
+    if (!this.sel) {
+      side.append(h('div', { class: 'side-head' }, h('div', {},
+        h('div', { style: { fontWeight: 650 } }, this.sim.topo.name || 'Netz'),
+        h('div', { class: 'small muted' }, `${this.sim.topo.devices.length} Geräte, ${this.sim.topo.links.length} Kabel`))));
+      side.append(h('div'));
+      side.append(h('div', { class: 'side-body' },
+        h('h4', {}, 'So bedienst du das Labor'),
+        h('ul', { class: 'small', style: { paddingLeft: '18px', margin: 0, display: 'grid', gap: '6px' } },
+          this.canEditTopo ? h('li', {}, 'Geräte aus der linken Leiste auf den Plan ziehen.') : null,
+          this.canEditTopo ? h('li', {}, 'Kabel (Taste K): erst ein Gerät, dann das zweite anklicken. Freie Ports werden automatisch gewählt.') : null,
+          this.canEditTopo ? h('li', {}, 'Bereiche ordnen den Plan: farbige Rechtecke mit Beschriftung, am Reiter verschieben, an der Ecke vergrössern.') : null,
+          h('li', {}, 'Gerät anklicken: Konfiguration, Tabellen und Konsole erscheinen hier. Doppelklick öffnet direkt die Konsole.'),
+          h('li', {}, 'In der Konsole z. B. ping 10.0.0.2 eingeben und zuschauen, wie die Pakete reisen.'),
+          h('li', {}, 'Leertaste hält die Zeit an, Pfeil rechts geht ein Ereignis weiter. Mit dem Tempo-Regler stellst du den Zeitraffer ein.'),
+          h('li', {}, 'Ein Paket anklicken zerlegt es im Paketinspektor in seine Schichten.')),
+        h('h4', {}, 'Farben der Schichten'),
+        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN']]
+          .map(([k, n]) => h('span', { class: 'chip' }, h('i', { class: `bg-${k}`, style: { width: '10px', height: '10px', borderRadius: '2px', display: 'inline-block' } }), n)))));
+      return;
+    }
+    if (this.sel.kind === 'link') return this.renderLinkSide();
+    if (this.sel.kind === 'zone') return this.renderZoneSide();
+    const dev = this.sim.dev(this.sel.id);
+    if (!dev) { this.sel = null; return this.renderSide(); }
+    const nameIn = h('input', { class: 'name', value: dev.name, 'aria-label': 'Gerätename', disabled: this.canEditTopo ? null : true });
+    nameIn.addEventListener('change', () => {
+      const v = nameIn.value.trim().replace(/\s+/g, '-');
+      if (!v || this.sim.topo.devices.some(d => d !== dev.cfg && d.name === v)) { nameIn.value = dev.name; return toast('Name leer oder schon vergeben'); }
+      dev.cfg.name = v; this.render(); this.emit('renamed');
+    });
+    side.append(h('div', { class: 'side-head' },
+      h('span', { class: 'devglyph', html: `<svg viewBox="0 0 40 40" width="34" height="34">${DEV_ICON[dev.type]}</svg>` }),
+      h('div', { class: 'grow' }, nameIn, h('div', { class: 'small muted', style: { paddingLeft: '5px' } }, TYPE_NAMES[dev.type])),
+      this.canEditTopo ? iconBtn(I.trash, 'Gerät entfernen (Entf)', () => this.deleteSelected(), 'danger') : null));
+    const tabs = h('div', { class: 'tabs', role: 'tablist' });
+    for (const [k, label, icon] of [['config', 'Konfiguration', I.sliders], ['tables', 'Tabellen', I.table], ['console', 'Konsole', I.terminal]]) {
+      tabs.append(h('button', { class: this.tab === k ? 'cur' : '', role: 'tab', 'aria-selected': this.tab === k ? 'true' : 'false', html: icon + label, onclick: () => this.setTab(k) }));
+    }
+    side.append(tabs);
+    const body = h('div', { class: 'side-body' });
+    if (this.tab === 'config') body.append(configPanel(dev, { sim: this.sim, locked: !this.canConfig, rerender: () => this.renderSide(), changed: msg => { this.sim.configChanged(dev.id); this.emit('config', { dev: dev.id, msg }); } }));
+    if (this.tab === 'tables') body.append(tablesPanel(dev, this.sim));
+    if (this.tab === 'console') { this.consoleEl = consolePanel(dev, this.sim, this.opts.consolePresets?.[dev.name] || []); body.append(this.consoleEl); body.style.overflow = 'hidden'; }
+    side.append(body);
+  }
+  renderLinkSide() {
+    const l = this.sim.topo.links.find(x => x.id === this.sel.id);
+    if (!l) { this.sel = null; return this.renderSide(); }
+    const A = this.sim.dev(l.a.dev), B = this.sim.dev(l.b.dev);
+    const mtu = h('input', { class: 'input mono', type: 'number', min: '576', max: '9216', value: l.mtu, disabled: this.canConfig ? null : true });
+    mtu.addEventListener('change', () => {
+      const v = Number(mtu.value);
+      if (!(v >= 576 && v <= 9216)) { mtu.classList.add('bad'); return; }
+      l.mtu = v; mtu.classList.remove('bad'); this.render(); this.sim.emit('config', null); this.emit('config', { link: l.id, msg: `MTU ${v}` });
+    });
+    const up = h('input', { type: 'checkbox', checked: l.up ? true : null, disabled: this.canConfig ? null : true });
+    up.addEventListener('change', () => { this.sim.setLinkUp(l, up.checked); this.render(); this.emit('config', { link: l.id, msg: up.checked ? 'Link an' : 'Link aus' }); });
+    this.side.append(h('div', { class: 'side-head' }, h('span', { html: I.cable }), h('div', { class: 'grow', style: { fontWeight: 650 } }, 'Kabel'),
+      this.canEditTopo ? iconBtn(I.trash, 'Kabel entfernen (Entf)', () => this.deleteSelected(), 'danger') : null), h('div'),
+      h('div', { class: 'side-body' },
+        h('dl', { class: 'kv' }, h('dt', {}, 'Seite A'), h('dd', {}, `${A.name} ${l.a.if}`), h('dt', {}, 'Seite B'), h('dd', {}, `${B.name} ${l.b.if}`)),
+        h('h4', {}, 'MTU (Byte Nutzlast pro Frame)'), mtu,
+        h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'Beide Enden verwenden diese MTU. Frames mit grösserer Nutzlast gehen auf diesem Kabel verloren.'),
+        h('label', { class: 'row', style: { marginTop: '10px' } }, up, 'Link aktiv (Kabel eingesteckt)')));
+  }
+
+  // ------------------------------------------------------------ Protokoll
+  queueLog(e) {
+    this.pendingLog ??= [];
+    this.pendingLog.push(e);
+    if (!this.logTimer) this.logTimer = setTimeout(() => { this.logTimer = null; const p = this.pendingLog; this.pendingLog = []; this.appendLog(p); }, 60);
+  }
+  logVisible(e) {
+    if (this.logFilter === 'all') return e.tag !== 'bpdu-sent';
+    if (this.logFilter === 'bpdu') return true;
+    if (this.logFilter === 'stp') return e.stp && e.tag !== 'bpdu-sent' || e.tag === 'loop-detected' || e.tag === 'storm' || e.tag === 'mac-flap';
+    if (this.logFilter === 'nosend') return e.kind !== 'send';
+    if (this.logFilter === 'trace') return e.trace === this.traceId;
+    if (this.logFilter.startsWith('dev:')) return e.devId === this.logFilter.slice(4);
+    return true;
+  }
+  logRow(e) {
+    const row = h('div', { class: `e k-${e.kind}${e.frame ? ' has-frame' : ''}${this.selectedLog === e.seq ? ' sel' : ''}`, 'data-seq': e.seq },
+      h('span', { class: 't' }, (e.t / 1000).toFixed(4)), h('span', { class: 'd', title: e.dev }, e.dev), h('span', { class: 'x' }, e.text));
+    if (e.frame) row.addEventListener('click', () => this.inspect(e));
+    return row;
+  }
+  renderLog() {
+    const opts = [['all', 'Alle Ereignisse'], ['nosend', 'Nur Entscheidungen']];
+    if (this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled) || this.logFilter === 'stp' || this.logFilter === 'bpdu') opts.push(['stp', 'Nur Spanning Tree'], ['bpdu', 'Alles, auch BPDU-Versand']);
+    if (this.traceId) opts.push(['trace', 'Verfolgtes Paket']);
+    for (const d of this.sim.topo.devices) opts.push(['dev:' + d.id, `Nur ${d.name}`]);
+    this.filterSel.innerHTML = '';
+    for (const [v, t] of opts) this.filterSel.append(h('option', { value: v, selected: v === this.logFilter ? true : null }, t));
+    this.logEl.innerHTML = '';
+    const list = this.sim.log.filter(e => this.logVisible(e)).slice(-600);
+    if (!list.length) this.logEl.append(h('div', { class: 'empty', style: { padding: '10px' } }, 'Noch nichts passiert. Öffne die Konsole eines Geräts und sende einen ping.'));
+    for (const e of list) this.logEl.append(this.logRow(e));
+    this.logEl.scrollTop = this.logEl.scrollHeight;
+  }
+  appendLog(entries) {
+    const atBottom = this.logEl.scrollTop + this.logEl.clientHeight >= this.logEl.scrollHeight - 30;
+    if (this.logEl.querySelector('.empty')) this.logEl.innerHTML = '';
+    for (const e of entries) if (this.logVisible(e)) this.logEl.append(this.logRow(e));
+    while (this.logEl.childElementCount > 700) this.logEl.firstChild.remove();
+    if (atBottom) this.logEl.scrollTop = this.logEl.scrollHeight;
+  }
+  inspect(e) {
+    this.selectedLog = e.seq;
+    this.logEl.querySelectorAll('.e.sel').forEach(x => x.classList.remove('sel'));
+    this.logEl.querySelector(`[data-seq="${e.seq}"]`)?.classList.add('sel');
+    renderInspector(this.inspEl, e, { onTrace: t => this.setTrace(t) });
+    this.emit('inspect', e);
+  }
+  setTrace(t) {
+    this.traceId = t;
+    if (t) { this.logFilter = 'trace'; toast('Protokoll zeigt nur noch dieses Paket, beteiligte Geräte sind markiert'); }
+    else if (this.logFilter === 'trace') this.logFilter = 'all';
+    this.render(); this.renderLog();
+  }
+
+  // ------------------------------------------------------------ Zeit und Animation
+  setPlaying(p) {
+    this.playing = p;
+    this.playBtn.innerHTML = p ? I.pause : I.play;
+    this.playBtn.title = p ? 'Anhalten (Leertaste)' : 'Abspielen (Leertaste)';
+  }
+  stepOnce() {
+    this.setPlaying(false);
+    if (!this.sim.step()) toast('Keine weiteren Ereignisse');
+    this.drawPackets();
+  }
+  loop(ts) {
+    const dt = Math.min(100, ts - (this.lastTs || ts));
+    this.lastTs = ts;
+    if (this.playing) {
+      const sim = this.sim;
+      const visible = this.showBpdu ? sim.inflight.length : sim.inflight.filter(f => f.frame.type !== 'stp').length;
+      if (!visible && sim.inflight.length) sim.runUntil(Math.max(...sim.inflight.map(f => f.t1)));
+      if (visible) {
+        sim.runUntil(sim.time + dt * (TIMING.linkDelay / this.msPerHop));
+        this.idleUntil = 0;
+      } else {
+        const nt = sim.nextTime();
+        if (nt !== null) {
+          if (nt - sim.time < TIMING.linkDelay * 0.5) sim.runUntil(nt);
+          else if (!this.idleUntil) this.idleUntil = ts + Math.min(500, this.msPerHop * 0.6);
+          else if (ts >= this.idleUntil) { this.idleUntil = 0; sim.runUntil(nt); }
+        }
+      }
+    }
+    this.drawPackets();
+    this.timeEl.textContent = `t = ${(this.sim.time / 1000).toFixed(4)} s`;
+    this.raf = requestAnimationFrame(t => this.loop(t));
+  }
+  drawPackets() {
+    const sim = this.sim, seen = new Set();
+    const byId = new Map(sim.topo.devices.map(d => [d.id, d]));
+    const groups = new Map();
+    for (const f of sim.inflight) {
+      if (!this.showBpdu && f.frame.type === 'stp') continue;
+      const key = f.link.id + (f.from === f.link.a.dev ? 'a' : 'b');
+      groups.set(key, (groups.get(key) || 0) + 1);
+      const idx = groups.get(key) - 1;
+      const A = byId.get(f.from), B = byId.get(f.to);
+      if (!A || !B) continue;
+      const p = Math.min(1, Math.max(0, (sim.time - f.t0) / (f.t1 - f.t0)));
+      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1;
+      const x = A.x + dx * p + (-dy / len) * (8 + idx * 4), y = A.y + dy * p + (dx / len) * (8 + idx * 4);
+      let g = this.pktEls.get(f.id);
+      if (!g) {
+        g = svgEl('g', { class: 'pkt', role: 'button', 'aria-label': shortLabel(f.frame) });
+        const kinds = layerKinds(f.frame);
+        const W = 12 + kinds.length * 7, H = 19;
+        g.append(svgEl('rect', { class: 'box', x: -W / 2, y: -H / 2, width: W, height: H, rx: 3, fill: 'var(--panel)' }));
+        kinds.forEach((k, i) => g.append(svgEl('rect', { x: -W / 2 + 3.5 + i * 7, y: -H / 2 + 3, width: 6, height: H - 6, rx: 1, fill: `var(--l-${k})` })));
+        const t = svgEl('text', { x: 0, y: H / 2 + 12 }); t.textContent = shortLabel(f.frame);
+        g.append(t);
+        g.addEventListener('pointerdown', e => {
+          e.stopPropagation();
+          this.setPlaying(false);
+          this.inspect({ seq: -1, t: sim.time, dev: `${byId.get(f.from)?.name} → ${byId.get(f.to)?.name}`, frame: f.frame, trace: traceOf(f.frame) });
+        });
+        this.gPkts.append(g);
+        this.pktEls.set(f.id, g);
+      }
+      g.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)})`);
+      seen.add(f.id);
+    }
+    for (const [id, g] of this.pktEls) if (!seen.has(id)) { g.remove(); this.pktEls.delete(id); }
+  }
+
+  fastForward(ms) {
+    if (this.sim.halted) return toast('Die Simulation ist angehalten. Setze den Zustand zurück.');
+    this.sim.runFor(ms);
+    this.drawPackets();
+    this.render();
+    if (this.tab === 'tables') this.renderSide();
+    toast(`${ms / 1000} s vorgespult, jetzt t = ${(this.sim.time / 1000).toFixed(1)} s`);
+  }
+  toggleBpdu() { this.showBpdu = !this.showBpdu; this.bpduBtn.classList.toggle('on', this.showBpdu); this.drawPackets(); }
+  updateBpduBar() { this.bpduBar?.classList.toggle('hidden', !this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled)); }
+  renderSoon() {
+    if (this.renderTimer) return;
+    this.renderTimer = setTimeout(() => { this.renderTimer = null; this.render(); }, 80);
+  }
+  showStorm(info) {
+    this.stormEl.innerHTML = '';
+    this.stormEl.classList.toggle('hidden', !info);
+    if (!info) return;
+    this.stormEl.append(h('div', {}, h('b', {}, 'Simulation angehalten. '), info.text),
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => this.resetState() }, 'Zustand zurücksetzen'),
+        h('span', { class: 'small muted' }, 'Danach die Schleife entfernen oder Spanning Tree einschalten.')));
+  }
+
+  // ------------------------------------------------------------ Hilfen für Lektionen
+  run(devName, cmd) {
+    const d = this.sim.dev(devName);
+    if (!d) return;
+    import('./cli.js').then(m => { m.runCommand(d, cmd); if (this.sel?.id === d.id) this.consoleEl?.refresh(); });
+  }
+  selectByName(name, tab) {
+    const d = this.sim.dev(name);
+    if (d) { this.tab = tab || this.tab; this.select({ kind: 'dev', id: d.id }); this.renderSide(); }
+  }
+}
