@@ -6,24 +6,30 @@ import { inNet, parseCidr, isGroupMac, isLocalMac } from './net.js';
 const shuffle = a => { const b = [...a]; for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
 const norm = s => String(s).trim().toLowerCase().replace(/\s+/g, '').replace(/,/g, '.');
 
-export function renderWidget(step, el, done) {
+/**
+ * memo: { get() → saved state or undefined, set(state) } keeps partial answers across
+ * page changes. Every widget stores plain JSON and restores it on the next render.
+ */
+export function renderWidget(step, el, done, memo = { get: () => undefined, set: () => {} }) {
   const fn = { quiz, label, stack, mac, lpm, build }[step.type];
   const wrap = h('div', { class: 'widget' });
   if (step.title) wrap.append(h('h2', {}, step.title));
   if (step.intro) wrap.append(h('div', { class: 'theory', style: { padding: 0, margin: 0 }, html: step.intro }));
   el.append(wrap);
-  fn(step, wrap, done);
+  const saved = memo.get() || {};
+  fn(step, wrap, done, saved, () => memo.set(saved));
 }
 
 // ---------------------------------------------------------------- Quiz
-function quiz(step, el, done) {
+function quiz(step, el, done, saved, save) {
   const state = step.questions.map(() => false);
+  saved.q ??= {};
   const check = () => { if (state.every(Boolean)) done(); };
   step.questions.forEach((q, qi) => {
     const box = h('div', { class: 'quiz-q' }, h('div', { style: { fontWeight: 600 }, html: q.q }));
     const explain = h('div', { class: 'explain hidden', html: q.explain || '' });
     if (q.input) {
-      const inp = h('input', { class: 'input mono', type: 'text', 'aria-label': 'Answer' });
+      const inp = h('input', { class: 'input mono', type: 'text', 'aria-label': 'Answer', value: saved.q[qi] ?? '' });
       const fb = h('span', { class: 'feedback' });
       const test = () => {
         const ok = q.input.some(a => norm(a) === norm(inp.value));
@@ -31,21 +37,29 @@ function quiz(step, el, done) {
         fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
         if (ok) { state[qi] = true; explain.classList.remove('hidden'); inp.disabled = true; check(); }
       };
+      inp.addEventListener('input', () => { saved.q[qi] = inp.value; save(); });
       inp.addEventListener('keydown', e => { if (e.key === 'Enter') test(); });
       box.append(h('div', { class: 'row', style: { marginTop: '10px' } }, inp, q.unit ? h('span', { class: 'muted' }, q.unit) : null,
         h('button', { class: 'btn', onclick: test }, 'Check'), fb));
+      // A previously correct answer is shown as solved again
+      if (inp.value && q.input.some(a => norm(a) === norm(inp.value))) test();
     } else {
       const opts = h('div', { class: 'opts', role: 'radiogroup' });
+      const labels = [];
+      const pick = (lab, oi) => {
+        opts.querySelectorAll('label').forEach(l => l.classList.remove('right', 'wrong'));
+        if (oi === q.correct) { lab.classList.add('right'); state[qi] = true; explain.classList.remove('hidden'); check(); }
+        else { lab.classList.add('wrong'); explain.classList.add('hidden'); }
+      };
       q.options.forEach((o, oi) => {
         const lab = h('label', {}, h('input', { type: 'radio', name: `q${step.id}-${qi}` }), h('span', { html: o }));
-        lab.querySelector('input').addEventListener('change', () => {
-          opts.querySelectorAll('label').forEach(l => l.classList.remove('right', 'wrong'));
-          if (oi === q.correct) { lab.classList.add('right'); state[qi] = true; explain.classList.remove('hidden'); check(); }
-          else { lab.classList.add('wrong'); explain.classList.add('hidden'); }
-        });
+        lab.querySelector('input').addEventListener('change', () => { saved.q[qi] = oi; save(); pick(lab, oi); });
+        labels.push(lab);
         opts.append(lab);
       });
       box.append(opts);
+      const prev = saved.q[qi];
+      if (typeof prev === 'number' && labels[prev]) { labels[prev].querySelector('input').checked = true; pick(labels[prev], prev); }
     }
     box.append(explain);
     el.append(box);
@@ -53,7 +67,7 @@ function quiz(step, el, done) {
 }
 
 // ---------------------------------------------------------------- Label the frame
-function label(step, el, done) {
+function label(step, el, done, saved, save) {
   const rows = step.rows || [step.slots];
   const all = rows.flat();
   const labels = shuffle([...all.map(s => s.label), ...(step.distractors || [])]);
@@ -61,6 +75,9 @@ function label(step, el, done) {
   const chips = h('div', { class: 'chips', 'aria-label': 'Terms' });
   const fill = new Map();
   const chipEls = new Map();
+  // Placements are stored by slot index, the shuffled order of the chips does not matter
+  const persist = () => { saved.fill = all.map(s => fill.get(s) ?? null); save(); };
+  (saved.fill || []).forEach((l, i) => { if (l && all[i] && labels.includes(l)) fill.set(all[i], l); });
   const drawChips = () => {
     chips.innerHTML = '';
     const used = new Set(fill.values());
@@ -78,7 +95,7 @@ function label(step, el, done) {
   const put = (slot, se, l) => {
     for (const [k, v] of fill) if (v === l) fill.delete(k);
     fill.set(slot, l); picked = null;
-    drawSlots(); drawChips();
+    persist(); drawSlots(); drawChips();
   };
   const drawSlots = () => {
     for (const { slot, se } of slotEls) {
@@ -95,7 +112,7 @@ function label(step, el, done) {
     const rowEl = h('div', { class: 'slotrow' });
     for (const slot of r) {
       const se = h('button', { class: 'slot', style: { width: `${slot.w || 90}px` }, 'aria-label': 'Field' });
-      se.addEventListener('click', () => { if (picked) put(slot, se, picked); else if (fill.has(slot)) { fill.delete(slot); drawSlots(); drawChips(); } });
+      se.addEventListener('click', () => { if (picked) put(slot, se, picked); else if (fill.has(slot)) { fill.delete(slot); persist(); drawSlots(); drawChips(); } });
       se.addEventListener('dragover', e => { e.preventDefault(); se.classList.add('over'); });
       se.addEventListener('dragleave', () => se.classList.remove('over'));
       se.addEventListener('drop', e => { e.preventDefault(); put(slot, se, e.dataTransfer.getData('text/plain')); });
@@ -106,27 +123,32 @@ function label(step, el, done) {
   }
   const fb = h('div', { class: 'feedback' });
   const explain = h('div', { class: 'explain hidden', html: step.explain || '' });
+  const checkAll = () => {
+    let right = 0;
+    for (const { slot, se } of slotEls) {
+      const ok = fill.get(slot) === slot.label;
+      se.classList.toggle('right', ok); se.classList.toggle('wrong', !!fill.get(slot) && !ok);
+      if (ok) right++;
+    }
+    const allOk = right === slotEls.length;
+    fb.textContent = allOk ? 'Everything placed correctly.' : `${right} of ${slotEls.length} correct. Wrong fields are marked red.`;
+    fb.className = 'feedback ' + (allOk ? 'ok' : 'bad');
+    if (allOk) { explain.classList.remove('hidden'); done(); }
+  };
   el.append(h('p', { class: 'muted small' }, 'Click or drag a term and drop it on a field. Clicking a filled field clears it.'),
     chips, grid,
-    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: () => {
-      let right = 0;
-      for (const { slot, se } of slotEls) {
-        const ok = fill.get(slot) === slot.label;
-        se.classList.toggle('right', ok); se.classList.toggle('wrong', !!fill.get(slot) && !ok);
-        if (ok) right++;
-      }
-      const all = right === slotEls.length;
-      fb.textContent = all ? 'Everything placed correctly.' : `${right} of ${slotEls.length} correct. Wrong fields are marked red.`;
-      fb.className = 'feedback ' + (all ? 'ok' : 'bad');
-      if (all) { explain.classList.remove('hidden'); done(); }
-    } }, 'Check'), fb), explain);
+    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: checkAll }, 'Check'), fb), explain);
   drawChips(); drawSlots();
+  if (fill.size === slotEls.length && slotEls.every(({ slot }) => fill.get(slot) === slot.label)) checkAll();
 }
 
 // ---------------------------------------------------------------- Order
-function stack(step, el, done) {
-  let order = shuffle(step.items.map((_, i) => i));
-  if (order.every((v, i) => v === i)) order = order.reverse();
+function stack(step, el, done, saved, save) {
+  const n = step.items.length;
+  const valid = Array.isArray(saved.order) && saved.order.length === n && [...saved.order].sort((a, b) => a - b).every((v, i) => v === i);
+  let order = valid ? [...saved.order] : shuffle(step.items.map((_, i) => i));
+  if (!valid && order.every((v, i) => v === i)) order = order.reverse();
+  const persist = () => { saved.order = [...order]; save(); };
   const list = h('div', { class: 'stack-list' });
   const fb = h('div', { class: 'feedback' });
   const explain = h('div', { class: 'explain hidden', html: step.explain || '' });
@@ -139,23 +161,25 @@ function stack(step, el, done) {
         h('span', { html: I.grip, style: { color: 'var(--ink-3)' } }),
         h('div', {}, h('b', {}, it.name), it.size ? h('span', { class: 'muted small' }, `  ${it.size}`) : null),
         h('div', { class: 'row', style: { gap: '2px' } },
-          h('button', { class: 'btn icon ghost', title: 'move up', html: I.up, disabled: pos === 0 ? true : null, onclick: () => { [order[pos - 1], order[pos]] = [order[pos], order[pos - 1]]; draw(); } }),
-          h('button', { class: 'btn icon ghost', title: 'move down', html: I.down, disabled: pos === order.length - 1 ? true : null, onclick: () => { [order[pos + 1], order[pos]] = [order[pos], order[pos + 1]]; draw(); } })));
+          h('button', { class: 'btn icon ghost', title: 'move up', html: I.up, disabled: pos === 0 ? true : null, onclick: () => { [order[pos - 1], order[pos]] = [order[pos], order[pos - 1]]; persist(); draw(); } }),
+          h('button', { class: 'btn icon ghost', title: 'move down', html: I.down, disabled: pos === order.length - 1 ? true : null, onclick: () => { [order[pos + 1], order[pos]] = [order[pos], order[pos + 1]]; persist(); draw(); } })));
       row.addEventListener('dragstart', () => { dragIdx = pos; row.classList.add('dragging'); });
       row.addEventListener('dragend', () => row.classList.remove('dragging'));
       row.addEventListener('dragover', e => e.preventDefault());
-      row.addEventListener('drop', e => { e.preventDefault(); if (dragIdx === null) return; const [m] = order.splice(dragIdx, 1); order.splice(pos, 0, m); dragIdx = null; draw(); });
+      row.addEventListener('drop', e => { e.preventDefault(); if (dragIdx === null) return; const [m] = order.splice(dragIdx, 1); order.splice(pos, 0, m); dragIdx = null; persist(); draw(); });
       list.append(row);
     });
   };
+  const checkOrder = () => {
+    const ok = order.every((v, i) => v === i);
+    fb.textContent = ok ? 'Correct.' : 'Not quite yet. Remember: which layer goes onto the wire first?';
+    fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
+    if (ok) { explain.classList.remove('hidden'); done(); }
+  };
   draw();
   el.append(h('p', { class: 'muted small' }, step.hint || 'Drag the blocks into the right order or use the arrows.'), list,
-    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: () => {
-      const ok = order.every((v, i) => v === i);
-      fb.textContent = ok ? 'Correct.' : 'Not quite yet. Remember: which layer goes onto the wire first?';
-      fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
-      if (ok) { explain.classList.remove('hidden'); done(); }
-    } }, 'Check'), fb), explain);
+    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: checkOrder }, 'Check'), fb), explain);
+  if (valid && order.every((v, i) => v === i)) checkOrder();
 }
 
 // ---------------------------------------------------------------- MAC decoder
@@ -166,8 +190,8 @@ export function classifyMac(m) {
   if (isGroupMac(m)) return 'Multicast';
   return isLocalMac(m) ? 'Unicast, locally administered' : 'Unicast, from the manufacturer';
 }
-function mac(step, el, done) {
-  const inp = h('input', { class: 'input mono', value: '00:50:56:a3:1f:7c', 'aria-label': 'MAC address', style: { width: '210px' } });
+function mac(step, el, done, saved, save) {
+  const inp = h('input', { class: 'input mono', value: saved.probe ?? '00:50:56:a3:1f:7c', 'aria-label': 'MAC address', style: { width: '210px' } });
   const out = h('div');
   const draw = () => {
     out.innerHTML = '';
@@ -184,21 +208,24 @@ function mac(step, el, done) {
         h('tr', {}, h('th', {}, 'OUI'), h('td', {}, `${m.slice(0, 8)}${oui ? '  ' + oui : '  (not in the short list)'}`)),
         h('tr', {}, h('th', {}, 'Result'), h('td', {}, classifyMac(m)))));
   };
-  inp.addEventListener('input', draw);
+  inp.addEventListener('input', () => { saved.probe = inp.value; save(); draw(); });
   el.append(h('div', { class: 'row' }, h('label', { class: 'field' }, 'Try a MAC address', inp)), out);
   draw();
   const qs = step.classify || [];
   const state = qs.map(() => false);
+  saved.sel ??= {};
   const box = h('div', { class: 'quiz-q', style: { marginTop: '16px' } }, h('div', { style: { fontWeight: 600 } }, 'Classify these addresses:'));
   qs.forEach((m, i) => {
     const s = h('select', { class: 'input' }, ['please choose', 'Unicast, from the manufacturer', 'Unicast, locally administered', 'Multicast', 'Broadcast'].map(o => h('option', {}, o)));
     const fb = h('span', { class: 'feedback' });
-    s.addEventListener('change', () => {
+    const test = () => {
       const ok = s.value === classifyMac(m);
       fb.textContent = ok ? 'Correct' : 'No'; fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
       state[i] = ok;
       if (state.every(Boolean)) done();
-    });
+    };
+    s.addEventListener('change', () => { saved.sel[i] = s.value; save(); test(); });
+    if (saved.sel[i] && saved.sel[i] !== 'please choose') { s.value = saved.sel[i]; test(); }
     box.append(h('div', { class: 'row', style: { marginTop: '8px' } }, h('code', { style: { width: '150px' } }, m), s, fb));
   });
   if (qs.length) el.append(box); else done();
@@ -213,23 +240,25 @@ export function lpmAnswer(table, ip) {
   }
   return best ? best.nh : 'no route';
 }
-function lpm(step, el, done) {
+function lpm(step, el, done, saved, save) {
   const t = h('table', { class: 'rtable' }, h('tr', {}, h('th', {}, 'Destination'), h('th', {}, 'Next hop')),
     step.table.map(([p, n]) => h('tr', {}, h('td', {}, p), h('td', {}, n))));
   const nhs = [...new Set(step.table.map(x => x[1])), ...(step.table.some(x => x[0].endsWith('/0')) ? [] : ['no route'])];
   const state = step.dests.map(() => false);
+  saved.sel ??= {};
   const qs = h('div', { style: { display: 'grid', gap: '8px', marginTop: '14px' } });
   step.dests.forEach((ip, i) => {
     const s = h('select', { class: 'input' }, h('option', {}, 'please choose'), nhs.map(n => h('option', {}, n)));
     const fb = h('span', { class: 'feedback' });
-    s.addEventListener('change', () => {
-      const ans = lpmAnswer(step.table, ip);
-      const ok = s.value === ans;
+    const test = () => {
+      const ok = s.value === lpmAnswer(step.table, ip);
       fb.textContent = ok ? 'Correct' : 'No, check which entries match and which one is the longest';
       fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
       state[i] = ok;
       if (state.every(Boolean)) done();
-    });
+    };
+    s.addEventListener('change', () => { saved.sel[i] = s.value; save(); test(); });
+    if (saved.sel[i] && nhs.includes(saved.sel[i])) { s.value = saved.sel[i]; test(); }
     qs.append(h('div', { class: 'row' }, h('span', {}, 'Packet to'), h('code', { style: { width: '120px' } }, ip), h('span', {}, 'goes to'), s, fb));
   });
   el.append(t, qs);
@@ -272,9 +301,12 @@ export function checkBuild(expected, frame) {
   else if (!res.msgs.length) res.msgs.push('The layers are correct, the fields marked red are not yet.');
   return res;
 }
-function build(step, el, done) {
-  const frame = [];
+function build(step, el, done, saved, save) {
   const allowed = step.blocks || ['eth', 'vlan', 'arp', 'stp', 'ip', 'icmp', 'udp', 'tcp', 'dns', 'http', 'data'];
+  // The frame array is the saved state itself, so every edit only needs save()
+  if (!Array.isArray(saved.frame)) saved.frame = [];
+  saved.frame = saved.frame.filter(l => l && BUILD_BLOCKS[l.block] && allowed.includes(l.block));
+  const frame = saved.frame;
   const addr = step.addresses || {};
   const macs = [...(addr.mac || []), ['ff:ff:ff:ff:ff:ff', 'Broadcast'], ['00:00:00:00:00:00', 'unknown (zeros)'], ['01:80:c2:00:00:00', 'STP multicast']];
   const ips = [...(addr.ip || []), ['0.0.0.0', 'no address']];
@@ -282,7 +314,7 @@ function build(step, el, done) {
   const pal = h('div', { class: 'fb-pal bld-pal' });
   for (const k of allowed) {
     const b = BUILD_BLOCKS[k];
-    pal.append(h('button', { class: 'fb-blk', style: { '--lc': `var(--l-${b.kind})` }, onclick: () => { frame.push({ block: k, fields: {} }); draw(); } }, b.name, h('span', { class: 'sz', html: I.plus })));
+    pal.append(h('button', { class: 'fb-blk', style: { '--lc': `var(--l-${b.kind})` }, onclick: () => { frame.push({ block: k, fields: {} }); result = null; save(); draw(); } }, b.name, h('span', { class: 'sz', html: I.plus })));
   }
   const area = h('div', { class: 'bld-frame' });
   const fb = h('div', { class: 'feedback' });
@@ -296,8 +328,8 @@ function build(step, el, done) {
       const lr = result?.layers[i];
       const card = h('div', { class: 'bld-layer' + (lr?.wrongBlock ? ' wrong' : ''), style: { '--lc': `var(--l-${b.kind})` } });
       card.append(h('div', { class: 'bld-head' }, h('b', {}, `${i + 1}. ${b.name}`), h('span', { class: 'grow' }),
-        h('button', { class: 'btn icon ghost', title: 'move up', html: I.up, disabled: i === 0 ? true : null, onclick: () => { [frame[i - 1], frame[i]] = [frame[i], frame[i - 1]]; result = null; draw(); } }),
-        h('button', { class: 'btn icon ghost', title: 'remove', html: I.trash, onclick: () => { frame.splice(i, 1); result = null; draw(); } })));
+        h('button', { class: 'btn icon ghost', title: 'move up', html: I.up, disabled: i === 0 ? true : null, onclick: () => { [frame[i - 1], frame[i]] = [frame[i], frame[i - 1]]; result = null; save(); draw(); } }),
+        h('button', { class: 'btn icon ghost', title: 'remove', html: I.trash, onclick: () => { frame.splice(i, 1); result = null; save(); draw(); } })));
       if (b.fields.length) {
         const g = h('div', { class: 'bld-fields' });
         for (const [k, label, t] of b.fields) {
@@ -306,7 +338,7 @@ function build(step, el, done) {
           if (opts) {
             inp = h('select', { class: 'input mono' }, h('option', { value: '' }, 'choose'), opts.map(([v, l]) => h('option', { value: v, selected: layer.fields[k] === v ? true : null }, l)));
           } else inp = h('input', { class: 'input mono', type: t === 'num' ? 'number' : 'text', value: layer.fields[k] ?? '', placeholder: t === 'num' ? 'number' : '' });
-          inp.addEventListener('change', () => { layer.fields[k] = inp.value; result = null; card.querySelectorAll('.bad').forEach(x => x.classList.remove('bad')); });
+          inp.addEventListener(opts ? 'change' : 'input', () => { layer.fields[k] = inp.value; result = null; save(); card.querySelectorAll('.bad').forEach(x => x.classList.remove('bad')); });
           if (lr?.bad?.includes(k)) inp.classList.add('bad');
           g.append(h('label', { class: 'field' }, label, inp));
         }
@@ -315,15 +347,18 @@ function build(step, el, done) {
       area.append(card);
     });
   };
+  const checkFrame = () => {
+    result = checkBuild(step.expected, frame);
+    draw();
+    fb.textContent = result.msgs.join(' ');
+    fb.className = 'feedback ' + (result.ok ? 'ok' : 'bad');
+    if (result.ok) { explain.classList.remove('hidden'); done(); }
+  };
   draw();
   el.append(h('div', { class: 'quiz-q', html: step.task }),
     h('div', { class: 'bld' }, pal, area),
-    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: () => {
-      result = checkBuild(step.expected, frame);
-      draw();
-      fb.textContent = result.msgs.join(' ');
-      fb.className = 'feedback ' + (result.ok ? 'ok' : 'bad');
-      if (result.ok) { explain.classList.remove('hidden'); done(); }
-    } }, 'Check'), h('button', { class: 'btn ghost', onclick: () => { frame.length = 0; result = null; fb.textContent = ''; draw(); } }, 'Clear'), fb), explain);
+    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: checkFrame }, 'Check'),
+      h('button', { class: 'btn ghost', onclick: () => { frame.length = 0; result = null; fb.textContent = ''; save(); draw(); } }, 'Clear'), fb), explain);
+  if (frame.length && checkBuild(step.expected, frame).ok) checkFrame();
 }
 export { esc };

@@ -218,6 +218,15 @@ export function parseVlanList(s) {
 class Device {
   constructor(sim, cfg) { this.sim = sim; this.cfg = cfg; this.id = cfg.id; this.consoleLines = []; }
   get name() { return this.cfg.name; }
+  /** Commands started from the console that are still running (ping, traceroute, curl …) */
+  running() { return this.l3 ? [...this.l3.sessions] : []; }
+  interrupt() {
+    const list = this.running();
+    if (!list.length) return false;
+    this.print('^C');
+    for (const s of list) s.interrupt();
+    return true;
+  }
   get type() { return this.cfg.type; }
   mac(ifname) {
     const base = this.cfg.ifaces?.[ifname]?.parent || ifname;
@@ -695,8 +704,10 @@ let IDENT = 100;
 const pad2 = n => String(n).padStart(2);
 class Session {
   constructor(l3) { this.l3 = l3; this.dev = l3.dev; this.sim = l3.sim; this.done = false; }
-  begin() { this.l3.sessions.add(this); }
-  end() { this.done = true; this.l3.sessions.delete(this); }
+  begin() { this.l3.sessions.add(this); this.sim.emit('console', { devId: this.dev.id }); }
+  end() { this.done = true; this.l3.sessions.delete(this); this.sim.emit('console', { devId: this.dev.id }); }
+  // Ctrl+C in the console: stop timers and wrap up like the real tool would
+  interrupt() { this.sim.cancel(this.timer); this.finish ? this.finish(false) : this.end(); }
 }
 
 class PingSession extends Session {
@@ -732,6 +743,11 @@ class PingSession extends Session {
     }
     if (this.seq < this.count) this.sim.schedule(T.pingInterval, () => this.sendNext());
     else this.checkEnd();
+  }
+  interrupt() {
+    for (const o of this.open.values()) this.sim.cancel(o.ev);
+    this.open.clear();
+    this.finish();
   }
   take(seq) { const o = this.open.get(seq); if (!o) return null; this.open.delete(seq); this.sim.cancel(o.ev); return o; }
   onEchoReply(ip) {
@@ -960,6 +976,8 @@ class TcpClient extends Session {
 class DigSession extends Session {
   constructor(l3, server, name, then = null) { super(l3); Object.assign(this, { server, name, then }); this.sport = 49152 + Math.floor(this.sim.random() * 16000); this.id = Math.floor(this.sim.random() * 65535); }
   print(t) { if (!this.then) this.dev.print(t); }
+  // A name lookup for curl or ping is cancelled silently, the command after it never starts
+  interrupt() { this.sim.cancel(this.timer); if (this.then) { this.then = null; this.end(); } else this.finish(false); }
   start() {
     this.begin();
     this.print(`$ dig @${this.server} ${this.name}`);

@@ -1,6 +1,6 @@
 // Storage in the browser, robust against blocked storage
 const KEY = 'packetpilot.v1';
-let mem = { progress: {}, nets: {}, prefs: {} };
+let mem = { progress: {}, nets: {}, prefs: {}, answers: {} };
 try {
   const raw = localStorage.getItem(KEY);
   if (raw) mem = { ...mem, ...JSON.parse(raw) };
@@ -19,7 +19,10 @@ export const store = {
   markLesson(lessonId) { const p = (mem.progress[lessonId] ??= { steps: {}, done: false }); p.done = true; persist(); },
   lessonDone(lessonId) { return !!mem.progress[lessonId]?.done; },
   lessonSteps(lessonId) { return Object.keys(mem.progress[lessonId]?.steps || {}).length; },
-  resetProgress() { mem.progress = {}; persist(); },
+  resetProgress() { mem.progress = {}; mem.answers = {}; persist(); },
+  // Partial answers of an exercise or lab step, so they survive navigation and reloads
+  answer(key) { return mem.answers?.[key]; },
+  saveAnswer(key, value) { (mem.answers ??= {})[key] = value; persist(); },
   nets() { return mem.nets; },
   saveNet(name, topo) { mem.nets[name] = { topo, saved: Date.now() }; persist(); },
   deleteNet(name) { delete mem.nets[name]; persist(); },
@@ -27,7 +30,7 @@ export const store = {
   importAll(json) {
     const d = JSON.parse(json);
     if (typeof d !== 'object' || !d) throw new Error('Not a valid PacketPilot file');
-    mem = { progress: d.progress || {}, nets: d.nets || {}, prefs: d.prefs || mem.prefs };
+    mem = { progress: d.progress || {}, nets: d.nets || {}, prefs: d.prefs || mem.prefs, answers: d.answers || {} };
     persist();
   }
 };

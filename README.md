@@ -28,7 +28,7 @@ PacketPilot then runs at `https://<server>:8080/`, secured with a self-signed ce
 
 The script installs nginx (and openssl, if missing) from the Debian packages, writes the files to `/opt/packetpilot/www` and creates `/etc/nginx/sites-available/packetpilot`. The certificate and key live in `/opt/packetpilot/tls/`. The certificate covers the hostname, `localhost` and all IP addresses of the server and is valid for 825 days. Updates keep it, so browsers don't warn again; it is only replaced when it expires within 30 days or with `--new-cert`. To use your own certificate, replace `packetpilot.crt` and `packetpilot.key` there and run `systemctl reload nginx`. If `ufw` is active, the port is opened. At runtime PacketPilot loads nothing from the internet, so it also works in isolated lab networks.
 
-Each browser stores progress, settings and your own networks locally. They can be exported and imported as JSON from the home page.
+Each browser stores progress, partial answers (including the network you edited in a lab step), settings and your own networks locally. They can be exported and imported as JSON from the home page.
 
 ## What's inside
 
@@ -51,10 +51,11 @@ Exercise types: theory, quizzes with explanations, labeling headers by drag and 
 - Simulation of Ethernet, 802.1Q, ARP (including gratuitous ARP, ARP probe and Neighbor Unreachability Detection), MAC learning, **spanning tree (802.1D)** with root election, roles, states, timers, PortFast and topology change, detection of loops and broadcast storms, IPv4 forwarding, static routing, **router subinterfaces**, ICMP, fragmentation and Path MTU Discovery, **UDP, DNS and TCP** (handshake, segmentation by MSS, RST, timeouts, retransmission after PMTUD), rules on routers (allow, drop, reject, with protocol and port), MSS clamping and VXLAN with head-end replication and flood and learn
 - Services per server (TCP and UDP, freely chosen ports) and DNS records, DNS server per host
 - Slow motion with a speed slider, pause, single step and fast-forward, BPDUs can be shown or hidden
+- Resizable panels: drag the edges of the side panel, the event log and the packet inspector (double-click resets), sizes are remembered
 - Packets as envelopes with colored stripes per layer, a click takes them apart in the packet inspector
 - STP state right in the diagram: dots on every switch port show role and state
 - Event log with plain-language explanations, filter per device, spanning tree only, tracing a single packet across all hops
-- Console per device: `ping`, `traceroute`, `arping [-U|-A|-D]`, `curl`, `nc -zv`, `nc -u`, `dig`, `ss`, `ip addr`, `ip route`, `ip neigh`, `ip link` (create subinterfaces, disconnect ports), `bridge fdb`, `show spanning-tree`, `spanning-tree …`, `show ip route`, `show vxlan`
+- Console per device (Ctrl+C or the Stop button ends a running command): `ping`, `traceroute`, `arping [-U|-A|-D]`, `curl`, `nc -zv`, `nc -u`, `dig`, `ss`, `ip addr`, `ip route`, `ip neigh`, `ip link` (create subinterfaces, disconnect ports), `bridge fdb`, `show spanning-tree`, `spanning-tree …`, `show ip route`, `show vxlan`
 - Example networks, saving your own networks, export and import as JSON
 
 **Frame builder**: stack headers freely, have the order checked and compute sizes, overhead and MTU requirements.
@@ -71,7 +72,7 @@ node test/build.test.mjs                # check the frame exercises against the 
 bash build.sh                           # regenerate packetpilot-install.sh
 ```
 
-`test/ui.test.mjs`, `test/features.test.mjs` and `test/lesson.test.mjs` require Playwright with Chromium.
+`test/ui.test.mjs`, `test/features.test.mjs`, `test/lesson.test.mjs` and `test/persist.test.mjs` require Playwright with Chromium and the local server from above.
 
 ```
 src/

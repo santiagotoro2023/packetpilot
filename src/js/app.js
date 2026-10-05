@@ -1,5 +1,5 @@
 // PacketPilot: views and navigation
-import { h, toast, download, pickFile } from './ui.js';
+import { h, toast, download, pickFile, resizer } from './ui.js';
 import { I } from './icons.js';
 import { store } from './store.js';
 import { MODULES, UPCOMING, findLesson, nextLesson } from './course/index.js';
@@ -130,9 +130,10 @@ function viewLesson(id, stepIdx) {
     body.append(h('article', { class: 'theory' }, h('h2', { style: { marginTop: 0 } }, step.title), h('div', { html: step.html })));
     markDone();
   } else if (step.type === 'lab') {
-    labStep(step, body, markDone, done0, l.id + ':' + cur);
+    labStep(step, body, markDone, done0, `${l.id}/${cur}`);
   } else {
-    renderWidget({ ...step, id: l.id + cur }, body, markDone);
+    const key = `${l.id}/${cur}`;
+    renderWidget({ ...step, id: l.id + cur }, body, markDone, { get: () => clone(store.answer(key)), set: v => store.saveAnswer(key, v) });
     if (done0) { nextBtn.disabled = false; status.textContent = 'Already done, but you can solve it again'; }
   }
 }
@@ -141,15 +142,35 @@ function labStep(step, body, markDone, already, key) {
   body.classList.add('is-lab');
   const col = h('div', { class: 'goalcol' });
   const labRoot = h('div', { style: { minHeight: 0, minWidth: 0 } });
-  body.append(col, labRoot);
+  // The goal column can be widened or narrowed, the width is remembered for all lessons
+  const setGoalW = w => w ? body.style.setProperty('--goal-w', w + 'px') : body.style.removeProperty('--goal-w');
+  const place = () => { rz.style.left = `${col.offsetWidth - 5}px`; rz.style.top = '0'; rz.style.height = `${body.clientHeight}px`; };
+  const rz = resizer('col', {
+    onMove: e => { const r = body.getBoundingClientRect(); const w = Math.round(Math.min(Math.max(e.clientX - r.left, 240), Math.max(240, Math.min(720, r.width - 520)))); store.prefs.goalW = w; setGoalW(w); place(); },
+    onEnd: () => store.setPref('goalW', store.prefs.goalW),
+    onReset: () => { store.setPref('goalW', null); setGoalW(null); place(); } });
+  setGoalW(store.prefs.goalW);
+  body.append(col, labRoot, rz);
+  const bodyRo = new ResizeObserver(place);
+  bodyRo.observe(body);
+  cleanup.push(() => bodyRo.disconnect());
   const ctx = { inspected: [] };
-  const goalState = step.goals.map(() => false);
-  const lab = new Lab(labRoot, { topo: step.topo(), edit: step.edit || 'config', compact: true, consolePresets: step.presets,
+  // Saved progress of this step: goals already met, typed answers, hints shown and the edited network
+  const saved = clone(store.answer(key)) || {};
+  saved.ask ??= {};
+  const save = () => store.saveAnswer(key, saved);
+  const goalState = step.goals.map((_, i) => !!saved.met?.includes(i));
+  let topoTimer;
+  const saveTopo = () => { clearTimeout(topoTimer); topoTimer = setTimeout(() => { saved.topo = clone(lab.sim.topo); save(); }, 300); };
+  const topoChanged = (type, data) => ['config', 'added', 'deleted', 'linked', 'moved', 'renamed'].includes(type) || (type === 'sim' && ['config', 'topology'].includes(data.type));
+  const lab = new Lab(labRoot, { topo: saved.topo ? clone(saved.topo) : step.topo(), edit: step.edit || 'config', compact: true, consolePresets: step.presets,
     onEvent: (type, data) => {
       if (type === 'inspect') ctx.inspected.push(data);
+      if (topoChanged(type, data)) saveTopo();
       if (type === 'sim' && data.type === 'tick') return;
       if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; evaluate(); }); }
     } });
+  cleanup.push(() => clearTimeout(topoTimer));
   let pending = false;
   cleanup.push(() => lab.destroy());
   col.append(h('h2', {}, step.title), h('div', { class: 'theory', style: { padding: 0 }, html: step.intro || '' }));
@@ -157,7 +178,7 @@ function labStep(step, body, markDone, already, key) {
   const items = step.goals.map((g, i) => {
     const li = h('li', {}, h('span', { class: 'st', html: I.circle }), h('div', { class: 'txt' }, h('span', { html: g.text })));
     if (g.ask) {
-      const inp = h('input', { class: 'input mono', placeholder: g.placeholder || 'Answer', 'aria-label': 'Answer' });
+      const inp = h('input', { class: 'input mono', placeholder: g.placeholder || 'Answer', 'aria-label': 'Answer', value: saved.ask[i] ?? '', disabled: goalState[i] ? true : null });
       const fb = h('span', { class: 'small' });
       const test = () => {
         const exp = g.expect(lab.sim).map(x => String(x).toLowerCase().trim());
@@ -166,6 +187,7 @@ function labStep(step, body, markDone, already, key) {
         fb.style.color = 'var(--err)';
         if (ok) { goalState[i] = true; inp.disabled = true; evaluate(); }
       };
+      inp.addEventListener('input', () => { saved.ask[i] = inp.value; save(); });
       inp.addEventListener('keydown', e => { if (e.key === 'Enter') test(); });
       li.querySelector('.txt').append(h('div', { class: 'ask' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, inp, h('button', { class: 'btn', onclick: test }, 'Check')), fb));
     }
@@ -177,13 +199,15 @@ function labStep(step, body, markDone, already, key) {
   if (step.hints?.length) {
     let shown = 0;
     const btn = h('button', { class: 'btn ghost', html: I.bulb + 'Show a hint' });
-    btn.addEventListener('click', () => { hintBox.append(h('div', { class: 'hint' }, step.hints[shown++])); if (shown >= step.hints.length) btn.remove(); });
+    const more = () => { hintBox.append(h('div', { class: 'hint' }, step.hints[shown++])); if (shown >= step.hints.length) btn.remove(); };
+    btn.addEventListener('click', () => { more(); saved.hints = shown; save(); });
     col.append(btn, hintBox);
+    while (shown < Math.min(saved.hints || 0, step.hints.length)) more();
   }
   const outro = h('div');
   col.append(outro);
   col.append(h('div', { class: 'row', style: { marginTop: '16px' } },
-    h('button', { class: 'btn ghost', html: I.reset + 'Reload network', onclick: () => { lab.load(step.topo()); ctx.inspected = []; } })));
+    h('button', { class: 'btn ghost', html: I.reset + 'Reload network', onclick: () => { clearTimeout(topoTimer); lab.load(step.topo()); ctx.inspected = []; delete saved.topo; save(); } })));
   let finished = false;
   function evaluate() {
     step.goals.forEach((g, i) => {
@@ -191,6 +215,8 @@ function labStep(step, body, markDone, already, key) {
       items[i].classList.toggle('ok', goalState[i]);
       items[i].querySelector('.st').innerHTML = goalState[i] ? I.check : I.circle;
     });
+    const met = goalState.flatMap((ok, i) => ok ? [i] : []);
+    if (met.length !== (saved.met || []).length) { saved.met = met; save(); }
     if (!finished && goalState.every(Boolean)) {
       finished = true;
       outro.append(h('div', { class: 'done-banner' }, 'All goals reached.'));

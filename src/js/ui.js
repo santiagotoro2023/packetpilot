@@ -46,3 +46,31 @@ export function pickFile(accept = '.json') {
     i.click();
   });
 }
+/**
+ * Drag handle for resizing panels. axis 'col' drags horizontally, 'row' vertically.
+ * onMove(event) gets every pointer move, onEnd() runs once on release, onReset() on double-click.
+ */
+export function resizer(axis, { onMove, onEnd, onReset, title = 'Drag to resize, double-click to reset' }) {
+  const el = h('div', { class: `rz rz-${axis}`, title, role: 'separator', 'aria-orientation': axis === 'col' ? 'vertical' : 'horizontal' });
+  el.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('active');
+    document.body.classList.add('resizing', axis);
+    const move = ev => onMove(ev);
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      el.classList.remove('active');
+      document.body.classList.remove('resizing', axis);
+      onEnd?.();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  });
+  if (onReset) el.addEventListener('dblclick', onReset);
+  return el;
+}

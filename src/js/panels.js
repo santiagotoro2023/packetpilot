@@ -371,12 +371,21 @@ export function tablesPanel(dev, sim) {
 // ---------------------------------------------------------------- Console
 export function consolePanel(dev, sim, presets = []) {
   const pre = h('pre', { 'aria-live': 'polite' });
-  const draw = () => { pre.textContent = dev.consoleLines.join('\n') || 'Type help for an overview of the commands.'; pre.scrollTop = pre.scrollHeight; };
-  draw();
+  const stop = h('button', { class: 'btn danger-soft hidden', title: 'Stop the running command (Ctrl+C)', onclick: () => { dev.interrupt(); draw(); input.focus(); } }, 'Stop');
+  const draw = () => {
+    pre.textContent = dev.consoleLines.join('\n') || 'Type help for an overview of the commands.';
+    pre.scrollTop = pre.scrollHeight;
+    stop.classList.toggle('hidden', !dev.running().length);
+  };
   const input = h('input', { class: 'input', placeholder: dev.l3 ? 'e.g. ping 192.168.20.20' : 'e.g. bridge fdb', spellcheck: 'false', autocomplete: 'off' });
   const hist = []; let hi = 0;
   const run = cmd => { if (!cmd.trim()) return; hist.push(cmd); hi = hist.length; runCommand(dev, cmd); draw(); };
   input.addEventListener('keydown', e => {
+    // Ctrl+C stops a running command, unless text is selected for copying
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && input.selectionStart === input.selectionEnd) {
+      if (dev.interrupt()) { e.preventDefault(); input.value = ''; draw(); }
+      return;
+    }
     if (e.key === 'Enter') { run(input.value); input.value = ''; }
     if (e.key === 'ArrowUp' && hi > 0) { input.value = hist[--hi]; e.preventDefault(); }
     if (e.key === 'ArrowDown') { hi = Math.min(hist.length, hi + 1); input.value = hist[hi] || ''; }
@@ -386,7 +395,8 @@ export function consolePanel(dev, sim, presets = []) {
   if (dev.type === 'switch') defaults.push('show spanning-tree');
   if (dev.type === 'pc' || dev.type === 'server') defaults.push('ss -tuln');
   for (const q of [...presets, ...defaults]) quick.append(h('button', { class: 'btn', onclick: () => run(q) }, q));
-  const el = h('div', { class: 'console' }, pre, h('div', { class: 'in' }, input, h('button', { class: 'btn primary', onclick: () => { run(input.value); input.value = ''; input.focus(); } }, 'Run')), quick);
+  draw();
+  const el = h('div', { class: 'console' }, pre, h('div', { class: 'in' }, input, stop, h('button', { class: 'btn primary', onclick: () => { run(input.value); input.value = ''; input.focus(); } }, 'Run')), quick);
   el.refresh = draw;
   el.focusInput = () => input.focus();
   return el;

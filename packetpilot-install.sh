@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 1.2.0
+#  PacketPilot 1.3.0
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -20,7 +20,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="1.2.0"
+PP_VERSION="1.3.0"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -162,6 +162,7 @@ p { margin: 0 0 .8em; }
 .btn.ghost { border-color: transparent; background: transparent; }
 .btn.icon { padding: 6px; }
 .btn.danger { color: var(--err); }
+.btn.danger-soft { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, var(--line)); }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
 .btn.on { border-color: var(--select); color: var(--select); box-shadow: inset 0 0 0 1px var(--select); }
 .input, select.input { border: 1px solid var(--line); background: var(--panel); border-radius: var(--r-s); padding: 5px 8px; min-width: 0; }
@@ -208,7 +209,7 @@ p { margin: 0 0 .8em; }
 .steps button.cur { border-color: var(--ink); color: var(--ink); font-weight: 700; }
 .steps button.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
 .lesson-body { overflow: auto; min-height: 0; }
-.lesson-body.is-lab { overflow: hidden; display: grid; grid-template-columns: 340px 1fr; }
+.lesson-body.is-lab { position: relative; overflow: hidden; display: grid; grid-template-columns: var(--goal-w, 340px) minmax(0, 1fr); }
 .lesson-nav { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 20px; border-top: 1px solid var(--line); background: var(--panel); }
 .theory { max-width: 760px; margin: 0 auto; padding: 30px 28px 48px; }
 .theory p, .theory li { max-width: 70ch; }
@@ -265,9 +266,20 @@ p { margin: 0 0 .8em; }
 .feedback.ok { color: var(--ok); } .feedback.bad { color: var(--err); }
 
 /* ---------- Lab ---------- */
-.lab { display: grid; grid-template-columns: 58px minmax(0, 1fr) 340px; grid-template-rows: minmax(0, 1fr) 230px; height: 100%; min-height: 0; }
-.lab.compact { grid-template-columns: 52px minmax(0, 1fr) 300px; grid-template-rows: minmax(0, 1fr) 210px; }
-.lab.no-palette { grid-template-columns: 0 minmax(0, 1fr) 320px; }
+.lab { position: relative; display: grid; grid-template-columns: 58px minmax(0, 1fr) var(--side-w, 340px); grid-template-rows: minmax(0, 1fr) var(--dock-h, 230px); height: 100%; min-height: 0; }
+.lab.compact { grid-template-columns: 52px minmax(0, 1fr) var(--side-w, 300px); grid-template-rows: minmax(0, 1fr) var(--dock-h, 210px); }
+.lab.no-palette { grid-template-columns: 0 minmax(0, 1fr) var(--side-w, 320px); }
+/* Drag handles between the panels; double-click restores the default size */
+.rz { position: absolute; z-index: 6; touch-action: none; }
+.rz::after { content: ""; position: absolute; background: var(--l-eth); opacity: 0; transition: opacity .12s; border-radius: 2px; }
+.rz:hover::after, .rz.active::after { opacity: .55; }
+.rz-col { width: 9px; cursor: col-resize; }
+.rz-col::after { left: 3px; width: 3px; top: 0; bottom: 0; }
+.rz-row { height: 9px; cursor: row-resize; }
+.rz-row::after { top: 3px; height: 3px; left: 0; right: 0; }
+body.resizing { user-select: none; }
+body.resizing.col { cursor: col-resize; } body.resizing.row { cursor: row-resize; }
+
 .palette { grid-row: 1 / 3; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; gap: 4px; padding: 8px 5px; overflow: hidden; }
 .pal-item { display: grid; place-items: center; gap: 0; padding: 5px 0 4px; border-radius: var(--r-s); cursor: grab; font-size: .66rem; color: var(--ink-2); border: 1px solid transparent; background: none; }
 .pal-item:hover { border-color: var(--line); background: var(--panel-2); }
@@ -317,7 +329,7 @@ p { margin: 0 0 .8em; }
 .console .quick { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .console .quick button { font-size: .74rem; padding: 2px 8px; }
 
-.dock { grid-column: 2; grid-row: 2; border-top: 1px solid var(--line); background: var(--panel); display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); min-height: 0; }
+.dock { grid-column: 2; grid-row: 2; border-top: 1px solid var(--line); background: var(--panel); display: grid; grid-template-columns: minmax(0, var(--dock-a, 1.25fr)) minmax(0, var(--dock-b, 1fr)); min-height: 0; }
 .lab.no-palette .dock { grid-column: 2; }
 .dock-col { display: grid; grid-template-rows: auto 1fr; min-height: 0; min-width: 0; }
 .dock-col + .dock-col { border-left: 1px solid var(--line); }
@@ -460,8 +472,8 @@ svg.net .dev .stpbadge { font-size: 10px; fill: var(--l-stp); font-weight: 650; 
 .fb-stats span { font-size: .8rem; color: var(--ink-2); }
 
 @media (max-width: 1100px) {
-  .lab { grid-template-columns: 52px minmax(0, 1fr) 290px; }
-  .lesson-body.is-lab { grid-template-columns: 290px 1fr; }
+  .lab { grid-template-columns: 52px minmax(0, 1fr) var(--side-w, 290px); }
+  .lesson-body.is-lab { grid-template-columns: var(--goal-w, 290px) minmax(0, 1fr); }
   .hero { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
@@ -471,6 +483,7 @@ svg.net .dev .stpbadge { font-size: 10px; fill: var(--l-stp); font-weight: 650; 
   .main { order: 1; }
   .lab, .lab.compact { grid-template-columns: 0 1fr; grid-template-rows: 1fr 200px auto; height: auto; min-height: 100%; }
   .palette { display: none; }
+  .rz { display: none; }
   .side { grid-column: 1 / 3; grid-row: 3; max-height: 60vh; border-left: 0; border-top: 1px solid var(--line); }
   .dock { grid-column: 1 / 3; grid-template-columns: 1fr; }
   .lesson-body.is-lab { grid-template-columns: 1fr; overflow: auto; }
@@ -521,7 +534,7 @@ __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/app.js" <<'__PACKETPILOT_FILE_END__'
 // PacketPilot: views and navigation
-import { h, toast, download, pickFile } from './ui.js';
+import { h, toast, download, pickFile, resizer } from './ui.js';
 import { I } from './icons.js';
 import { store } from './store.js';
 import { MODULES, UPCOMING, findLesson, nextLesson } from './course/index.js';
@@ -652,9 +665,10 @@ function viewLesson(id, stepIdx) {
     body.append(h('article', { class: 'theory' }, h('h2', { style: { marginTop: 0 } }, step.title), h('div', { html: step.html })));
     markDone();
   } else if (step.type === 'lab') {
-    labStep(step, body, markDone, done0, l.id + ':' + cur);
+    labStep(step, body, markDone, done0, `${l.id}/${cur}`);
   } else {
-    renderWidget({ ...step, id: l.id + cur }, body, markDone);
+    const key = `${l.id}/${cur}`;
+    renderWidget({ ...step, id: l.id + cur }, body, markDone, { get: () => clone(store.answer(key)), set: v => store.saveAnswer(key, v) });
     if (done0) { nextBtn.disabled = false; status.textContent = 'Already done, but you can solve it again'; }
   }
 }
@@ -663,15 +677,35 @@ function labStep(step, body, markDone, already, key) {
   body.classList.add('is-lab');
   const col = h('div', { class: 'goalcol' });
   const labRoot = h('div', { style: { minHeight: 0, minWidth: 0 } });
-  body.append(col, labRoot);
+  // The goal column can be widened or narrowed, the width is remembered for all lessons
+  const setGoalW = w => w ? body.style.setProperty('--goal-w', w + 'px') : body.style.removeProperty('--goal-w');
+  const place = () => { rz.style.left = `${col.offsetWidth - 5}px`; rz.style.top = '0'; rz.style.height = `${body.clientHeight}px`; };
+  const rz = resizer('col', {
+    onMove: e => { const r = body.getBoundingClientRect(); const w = Math.round(Math.min(Math.max(e.clientX - r.left, 240), Math.max(240, Math.min(720, r.width - 520)))); store.prefs.goalW = w; setGoalW(w); place(); },
+    onEnd: () => store.setPref('goalW', store.prefs.goalW),
+    onReset: () => { store.setPref('goalW', null); setGoalW(null); place(); } });
+  setGoalW(store.prefs.goalW);
+  body.append(col, labRoot, rz);
+  const bodyRo = new ResizeObserver(place);
+  bodyRo.observe(body);
+  cleanup.push(() => bodyRo.disconnect());
   const ctx = { inspected: [] };
-  const goalState = step.goals.map(() => false);
-  const lab = new Lab(labRoot, { topo: step.topo(), edit: step.edit || 'config', compact: true, consolePresets: step.presets,
+  // Saved progress of this step: goals already met, typed answers, hints shown and the edited network
+  const saved = clone(store.answer(key)) || {};
+  saved.ask ??= {};
+  const save = () => store.saveAnswer(key, saved);
+  const goalState = step.goals.map((_, i) => !!saved.met?.includes(i));
+  let topoTimer;
+  const saveTopo = () => { clearTimeout(topoTimer); topoTimer = setTimeout(() => { saved.topo = clone(lab.sim.topo); save(); }, 300); };
+  const topoChanged = (type, data) => ['config', 'added', 'deleted', 'linked', 'moved', 'renamed'].includes(type) || (type === 'sim' && ['config', 'topology'].includes(data.type));
+  const lab = new Lab(labRoot, { topo: saved.topo ? clone(saved.topo) : step.topo(), edit: step.edit || 'config', compact: true, consolePresets: step.presets,
     onEvent: (type, data) => {
       if (type === 'inspect') ctx.inspected.push(data);
+      if (topoChanged(type, data)) saveTopo();
       if (type === 'sim' && data.type === 'tick') return;
       if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; evaluate(); }); }
     } });
+  cleanup.push(() => clearTimeout(topoTimer));
   let pending = false;
   cleanup.push(() => lab.destroy());
   col.append(h('h2', {}, step.title), h('div', { class: 'theory', style: { padding: 0 }, html: step.intro || '' }));
@@ -679,7 +713,7 @@ function labStep(step, body, markDone, already, key) {
   const items = step.goals.map((g, i) => {
     const li = h('li', {}, h('span', { class: 'st', html: I.circle }), h('div', { class: 'txt' }, h('span', { html: g.text })));
     if (g.ask) {
-      const inp = h('input', { class: 'input mono', placeholder: g.placeholder || 'Answer', 'aria-label': 'Answer' });
+      const inp = h('input', { class: 'input mono', placeholder: g.placeholder || 'Answer', 'aria-label': 'Answer', value: saved.ask[i] ?? '', disabled: goalState[i] ? true : null });
       const fb = h('span', { class: 'small' });
       const test = () => {
         const exp = g.expect(lab.sim).map(x => String(x).toLowerCase().trim());
@@ -688,6 +722,7 @@ function labStep(step, body, markDone, already, key) {
         fb.style.color = 'var(--err)';
         if (ok) { goalState[i] = true; inp.disabled = true; evaluate(); }
       };
+      inp.addEventListener('input', () => { saved.ask[i] = inp.value; save(); });
       inp.addEventListener('keydown', e => { if (e.key === 'Enter') test(); });
       li.querySelector('.txt').append(h('div', { class: 'ask' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, inp, h('button', { class: 'btn', onclick: test }, 'Check')), fb));
     }
@@ -699,13 +734,15 @@ function labStep(step, body, markDone, already, key) {
   if (step.hints?.length) {
     let shown = 0;
     const btn = h('button', { class: 'btn ghost', html: I.bulb + 'Show a hint' });
-    btn.addEventListener('click', () => { hintBox.append(h('div', { class: 'hint' }, step.hints[shown++])); if (shown >= step.hints.length) btn.remove(); });
+    const more = () => { hintBox.append(h('div', { class: 'hint' }, step.hints[shown++])); if (shown >= step.hints.length) btn.remove(); };
+    btn.addEventListener('click', () => { more(); saved.hints = shown; save(); });
     col.append(btn, hintBox);
+    while (shown < Math.min(saved.hints || 0, step.hints.length)) more();
   }
   const outro = h('div');
   col.append(outro);
   col.append(h('div', { class: 'row', style: { marginTop: '16px' } },
-    h('button', { class: 'btn ghost', html: I.reset + 'Reload network', onclick: () => { lab.load(step.topo()); ctx.inspected = []; } })));
+    h('button', { class: 'btn ghost', html: I.reset + 'Reload network', onclick: () => { clearTimeout(topoTimer); lab.load(step.topo()); ctx.inspected = []; delete saved.topo; save(); } })));
   let finished = false;
   function evaluate() {
     step.goals.forEach((g, i) => {
@@ -713,6 +750,8 @@ function labStep(step, body, markDone, already, key) {
       items[i].classList.toggle('ok', goalState[i]);
       items[i].querySelector('.st').innerHTML = goalState[i] ? I.check : I.circle;
     });
+    const met = goalState.flatMap((ok, i) => ok ? [i] : []);
+    if (met.length !== (saved.met || []).length) { saved.met = met; save(); }
     if (!finished && goalState.every(Boolean)) {
       finished = true;
       outro.append(h('div', { class: 'done-banner' }, 'All goals reached.'));
@@ -2344,6 +2383,15 @@ export function parseVlanList(s) {
 class Device {
   constructor(sim, cfg) { this.sim = sim; this.cfg = cfg; this.id = cfg.id; this.consoleLines = []; }
   get name() { return this.cfg.name; }
+  /** Commands started from the console that are still running (ping, traceroute, curl …) */
+  running() { return this.l3 ? [...this.l3.sessions] : []; }
+  interrupt() {
+    const list = this.running();
+    if (!list.length) return false;
+    this.print('^C');
+    for (const s of list) s.interrupt();
+    return true;
+  }
   get type() { return this.cfg.type; }
   mac(ifname) {
     const base = this.cfg.ifaces?.[ifname]?.parent || ifname;
@@ -2821,8 +2869,10 @@ let IDENT = 100;
 const pad2 = n => String(n).padStart(2);
 class Session {
   constructor(l3) { this.l3 = l3; this.dev = l3.dev; this.sim = l3.sim; this.done = false; }
-  begin() { this.l3.sessions.add(this); }
-  end() { this.done = true; this.l3.sessions.delete(this); }
+  begin() { this.l3.sessions.add(this); this.sim.emit('console', { devId: this.dev.id }); }
+  end() { this.done = true; this.l3.sessions.delete(this); this.sim.emit('console', { devId: this.dev.id }); }
+  // Ctrl+C in the console: stop timers and wrap up like the real tool would
+  interrupt() { this.sim.cancel(this.timer); this.finish ? this.finish(false) : this.end(); }
 }
 
 class PingSession extends Session {
@@ -2858,6 +2908,11 @@ class PingSession extends Session {
     }
     if (this.seq < this.count) this.sim.schedule(T.pingInterval, () => this.sendNext());
     else this.checkEnd();
+  }
+  interrupt() {
+    for (const o of this.open.values()) this.sim.cancel(o.ev);
+    this.open.clear();
+    this.finish();
   }
   take(seq) { const o = this.open.get(seq); if (!o) return null; this.open.delete(seq); this.sim.cancel(o.ev); return o; }
   onEchoReply(ip) {
@@ -3086,6 +3141,8 @@ class TcpClient extends Session {
 class DigSession extends Session {
   constructor(l3, server, name, then = null) { super(l3); Object.assign(this, { server, name, then }); this.sport = 49152 + Math.floor(this.sim.random() * 16000); this.id = Math.floor(this.sim.random() * 65535); }
   print(t) { if (!this.then) this.dev.print(t); }
+  // A name lookup for curl or ping is cancelled silently, the command after it never starts
+  interrupt() { this.sim.cancel(this.timer); if (this.then) { this.then = null; this.end(); } else this.finish(false); }
   start() {
     this.begin();
     this.print(`$ dig @${this.server} ${this.name}`);
@@ -3658,7 +3715,7 @@ export const I = {
 export const DEV_ICON = {
   pc: `<rect x="6" y="7" width="28" height="19" rx="2.5" class="dv-fill"/><path d="M15 31h10M20 26v5" class="dv-line"/><path d="M10 11h20v11H10z" class="dv-screen"/>`,
   server: `<rect x="9" y="5" width="22" height="30" rx="2.5" class="dv-fill"/><path d="M12 12h16M12 19h16M12 26h16" class="dv-line"/><circle cx="26" cy="9" r="1.3" class="dv-led"/><circle cx="26" cy="16" r="1.3" class="dv-led"/><circle cx="26" cy="23" r="1.3" class="dv-led"/>`,
-  switch: `<rect x="4" y="12" width="32" height="16" rx="3" class="dv-fill"/><path d="M11 17h18l-3-2.5M29 23H11l3 2.5" class="dv-line"/>`,
+  switch: `<rect x="4" y="9" width="32" height="22" rx="3.5" class="dv-fill"/><path d="M11 16.5h18l-3.5-3.5M29 23.5H11l3.5 3.5" class="dv-line"/>`,
   router: `<circle cx="20" cy="20" r="14" class="dv-fill"/><path d="M20 9v8M20 31v-8M9 20h8M31 20h-8" class="dv-line"/><path d="M17.5 11.5 20 9l2.5 2.5M17.5 28.5 20 31l2.5-2.5M11.5 17.5 9 20l2.5 2.5M28.5 17.5 31 20l-2.5 2.5" class="dv-line"/>`,
   vtep: `<rect x="4" y="11" width="32" height="18" rx="3" class="dv-fill"/><path d="M10 20h20" class="dv-tunnel"/><circle cx="10" cy="20" r="2.4" class="dv-led"/><circle cx="30" cy="20" r="2.4" class="dv-led"/>`
 };
@@ -3704,7 +3761,8 @@ __PACKETPILOT_FILE_END__
 import { Sim, PORTS, TYPE_NAMES, TIMING, newId, normalizeDevice, traceOf, STP_TEXT } from './engine.js';
 import { layerKinds, shortLabel } from './packets.js';
 import { isIp } from './net.js';
-import { h, svgEl, toast, iconBtn } from './ui.js';
+import { h, svgEl, toast, iconBtn, resizer } from './ui.js';
+import { store } from './store.js';
 import { I, DEV_ICON } from './icons.js';
 import { renderInspector } from './inspector.js';
 import { configPanel, tablesPanel, consolePanel } from './panels.js';
@@ -3736,8 +3794,9 @@ export class Lab {
     this.raf = requestAnimationFrame(t => this.loop(t));
     this.keyHandler = e => this.onKey(e);
     window.addEventListener('keydown', this.keyHandler);
-    this.ro = new ResizeObserver(() => this.fit(false));
+    this.ro = new ResizeObserver(() => { this.fit(false); this.placeHandles(); });
     this.ro.observe(this.canvasWrap);
+    this.ro.observe(this.el);
   }
   emit(type, data) { for (const fn of this.listeners) fn(type, data, this); }
   destroy() {
@@ -3814,8 +3873,50 @@ export class Lab {
         iconBtn(I.trash, 'Clear log', () => { this.sim.log = []; this.renderLog(); })), this.logEl),
       h('div', { class: 'dock-col' }, h('div', { class: 'dock-head' }, 'Packet inspector'), this.inspEl));
     this.el.append(this.palette, this.canvasWrap, this.side, this.dock);
+    this.buildResizers();
     this.root.append(this.el);
     renderInspector(this.inspEl, null);
+  }
+
+  // ------------------------------------------------------------ Resizable panels
+  // Side panel width, dock height and the split between log and inspector. Lessons and the
+  // free lab remember their sizes separately, because the lesson layout is narrower.
+  buildResizers() {
+    const key = this.opts.compact ? 'compact' : 'full';
+    this.layout = { ...(store.prefs.layout?.[key] || {}) };
+    const save = () => store.setPref('layout', { ...(store.prefs.layout || {}), [key]: { ...this.layout } });
+    const clamp = (v, lo, hi) => Math.round(Math.min(Math.max(v, lo), Math.max(lo, hi)));
+    const after = () => { this.applyLayout(); this.placeHandles(); };
+    const reset = prop => () => { delete this.layout[prop]; after(); save(); };
+    this.rzSide = resizer('col', { onEnd: save, onReset: reset('sideW'), onMove: e => {
+      const r = this.el.getBoundingClientRect();
+      this.layout.sideW = clamp(r.right - e.clientX, 240, Math.min(760, r.width - this.palette.offsetWidth - 320)); after();
+    } });
+    this.rzDock = resizer('row', { onEnd: save, onReset: reset('dockH'), onMove: e => {
+      const r = this.el.getBoundingClientRect();
+      this.layout.dockH = clamp(r.bottom - e.clientY, 90, r.height - 140); after();
+    } });
+    this.rzSplit = resizer('col', { onEnd: save, onReset: reset('dockSplit'), onMove: e => {
+      const r = this.dock.getBoundingClientRect();
+      this.layout.dockSplit = Math.min(.85, Math.max(.15, (e.clientX - r.left) / r.width)); after();
+    } });
+    this.el.append(this.rzSide, this.rzDock, this.rzSplit);
+    this.applyLayout();
+  }
+  applyLayout() {
+    const s = this.el.style, l = this.layout;
+    const set = (name, v) => v == null ? s.removeProperty(name) : s.setProperty(name, v);
+    set('--side-w', l.sideW ? l.sideW + 'px' : null);
+    set('--dock-h', l.dockH ? l.dockH + 'px' : null);
+    set('--dock-a', l.dockSplit ? l.dockSplit + 'fr' : null);
+    set('--dock-b', l.dockSplit ? (1 - l.dockSplit) + 'fr' : null);
+  }
+  placeHandles() {
+    if (!this.rzSide) return;
+    const d = this.dock, first = d.firstElementChild;
+    Object.assign(this.rzSide.style, { left: `${this.side.offsetLeft - 5}px`, top: '0', height: `${this.el.clientHeight}px` });
+    Object.assign(this.rzDock.style, { left: `${d.offsetLeft}px`, top: `${d.offsetTop - 5}px`, width: `${d.offsetWidth}px` });
+    Object.assign(this.rzSplit.style, { left: `${d.offsetLeft + first.offsetWidth - 4}px`, top: `${d.offsetTop + 4}px`, height: `${Math.max(0, d.offsetHeight - 4)}px` });
   }
   speedToSlider(ms) { return Math.round(100 - (Math.log(ms / 60) / Math.log(4000 / 60)) * 100); }
   sliderToSpeed(v) { return Math.round(60 * Math.pow(4000 / 60, (100 - v) / 100)); }
@@ -3915,10 +4016,9 @@ export class Lab {
       ic.innerHTML = DEV_ICON[d.type];
       g.append(ic);
       const nm = svgEl('text', { class: 'nm', x: CARD_W / 2, y: CARD_H + 15 }); nm.textContent = d.name; g.append(nm);
-      const ip = this.primaryIp(d);
-      if (ip) { const t = svgEl('text', { class: 'ip', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = ip; g.append(t); }
+      this.addrLines(d).forEach((line, i) => { const t = svgEl('text', { class: 'ip', x: CARD_W / 2, y: CARD_H + 28 + i * 12 }); t.textContent = line; g.append(t); });
       const st = d.type === 'switch' ? this.sim.dev(d.id)?.bridge?.stpTable() : null;
-      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = st.isRoot ? `Root bridge, prio ${d.stp.priority}` : `STP, Prio ${d.stp.priority}`; g.append(t); }
+      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = st.isRoot ? `Root bridge, prio ${d.stp.priority}` : `STP, prio ${d.stp.priority}`; g.append(t); }
       g.addEventListener('pointerdown', e => this.devPointerDown(e, d));
       g.addEventListener('dblclick', () => { this.select({ kind: 'dev', id: d.id }); this.setTab('console'); });
       g.addEventListener('keydown', e => { if (e.key === 'Enter') this.select({ kind: 'dev', id: d.id }); });
@@ -3926,17 +4026,17 @@ export class Lab {
     }
     this.updateOverlay();
   }
-  primaryIp(d) {
+  /** Address lines under a device: one for hosts, one per configured interface for routers and VTEPs */
+  addrLines(d) {
     if (d.type === 'pc' || d.type === 'server') {
-      const i = d.ifaces.eth1; return isIp(i.ip) ? `${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}` : '';
+      const i = d.ifaces.eth1; return isIp(i.ip) ? [`${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}`] : [];
     }
-    if (d.type === 'vtep') return isIp(d.ifaces.lo?.ip) ? `lo ${d.ifaces.lo.ip}` : '';
-    if (d.type === 'router') {
-      const n = Object.values(d.ifaces).filter(i => isIp(i.ip)).length;
-      const sub = Object.values(d.ifaces).filter(i => i.parent).length;
-      return sub ? `${sub} Subinterface${sub > 1 ? 's' : ''}` : n ? `${n} addresses` : '';
+    if (d.type === 'router' || d.type === 'vtep') {
+      return Object.entries(d.ifaces).filter(([, i]) => isIp(i.ip))
+        .sort(([a], [b]) => (a === 'lo') - (b === 'lo') || a.localeCompare(b, 'en', { numeric: true }))
+        .map(([n, i]) => `${n} ${i.ip}/${i.prefix}`);
     }
-    return '';
+    return [];
   }
   fit(force) {
     const r = this.canvasWrap.getBoundingClientRect();
@@ -5225,12 +5325,21 @@ export function tablesPanel(dev, sim) {
 // ---------------------------------------------------------------- Console
 export function consolePanel(dev, sim, presets = []) {
   const pre = h('pre', { 'aria-live': 'polite' });
-  const draw = () => { pre.textContent = dev.consoleLines.join('\n') || 'Type help for an overview of the commands.'; pre.scrollTop = pre.scrollHeight; };
-  draw();
+  const stop = h('button', { class: 'btn danger-soft hidden', title: 'Stop the running command (Ctrl+C)', onclick: () => { dev.interrupt(); draw(); input.focus(); } }, 'Stop');
+  const draw = () => {
+    pre.textContent = dev.consoleLines.join('\n') || 'Type help for an overview of the commands.';
+    pre.scrollTop = pre.scrollHeight;
+    stop.classList.toggle('hidden', !dev.running().length);
+  };
   const input = h('input', { class: 'input', placeholder: dev.l3 ? 'e.g. ping 192.168.20.20' : 'e.g. bridge fdb', spellcheck: 'false', autocomplete: 'off' });
   const hist = []; let hi = 0;
   const run = cmd => { if (!cmd.trim()) return; hist.push(cmd); hi = hist.length; runCommand(dev, cmd); draw(); };
   input.addEventListener('keydown', e => {
+    // Ctrl+C stops a running command, unless text is selected for copying
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && input.selectionStart === input.selectionEnd) {
+      if (dev.interrupt()) { e.preventDefault(); input.value = ''; draw(); }
+      return;
+    }
     if (e.key === 'Enter') { run(input.value); input.value = ''; }
     if (e.key === 'ArrowUp' && hi > 0) { input.value = hist[--hi]; e.preventDefault(); }
     if (e.key === 'ArrowDown') { hi = Math.min(hist.length, hi + 1); input.value = hist[hi] || ''; }
@@ -5240,7 +5349,8 @@ export function consolePanel(dev, sim, presets = []) {
   if (dev.type === 'switch') defaults.push('show spanning-tree');
   if (dev.type === 'pc' || dev.type === 'server') defaults.push('ss -tuln');
   for (const q of [...presets, ...defaults]) quick.append(h('button', { class: 'btn', onclick: () => run(q) }, q));
-  const el = h('div', { class: 'console' }, pre, h('div', { class: 'in' }, input, h('button', { class: 'btn primary', onclick: () => { run(input.value); input.value = ''; input.focus(); } }, 'Run')), quick);
+  draw();
+  const el = h('div', { class: 'console' }, pre, h('div', { class: 'in' }, input, stop, h('button', { class: 'btn primary', onclick: () => { run(input.value); input.value = ''; input.focus(); } }, 'Run')), quick);
   el.refresh = draw;
   el.focusInput = () => input.focus();
   return el;
@@ -5437,7 +5547,7 @@ __PACKETPILOT_FILE_END__
   cat > "$W/js/store.js" <<'__PACKETPILOT_FILE_END__'
 // Storage in the browser, robust against blocked storage
 const KEY = 'packetpilot.v1';
-let mem = { progress: {}, nets: {}, prefs: {} };
+let mem = { progress: {}, nets: {}, prefs: {}, answers: {} };
 try {
   const raw = localStorage.getItem(KEY);
   if (raw) mem = { ...mem, ...JSON.parse(raw) };
@@ -5456,7 +5566,10 @@ export const store = {
   markLesson(lessonId) { const p = (mem.progress[lessonId] ??= { steps: {}, done: false }); p.done = true; persist(); },
   lessonDone(lessonId) { return !!mem.progress[lessonId]?.done; },
   lessonSteps(lessonId) { return Object.keys(mem.progress[lessonId]?.steps || {}).length; },
-  resetProgress() { mem.progress = {}; persist(); },
+  resetProgress() { mem.progress = {}; mem.answers = {}; persist(); },
+  // Partial answers of an exercise or lab step, so they survive navigation and reloads
+  answer(key) { return mem.answers?.[key]; },
+  saveAnswer(key, value) { (mem.answers ??= {})[key] = value; persist(); },
   nets() { return mem.nets; },
   saveNet(name, topo) { mem.nets[name] = { topo, saved: Date.now() }; persist(); },
   deleteNet(name) { delete mem.nets[name]; persist(); },
@@ -5464,7 +5577,7 @@ export const store = {
   importAll(json) {
     const d = JSON.parse(json);
     if (typeof d !== 'object' || !d) throw new Error('Not a valid PacketPilot file');
-    mem = { progress: d.progress || {}, nets: d.nets || {}, prefs: d.prefs || mem.prefs };
+    mem = { progress: d.progress || {}, nets: d.nets || {}, prefs: d.prefs || mem.prefs, answers: d.answers || {} };
     persist();
   }
 };
@@ -5519,6 +5632,34 @@ export function pickFile(accept = '.json') {
     i.click();
   });
 }
+/**
+ * Drag handle for resizing panels. axis 'col' drags horizontally, 'row' vertically.
+ * onMove(event) gets every pointer move, onEnd() runs once on release, onReset() on double-click.
+ */
+export function resizer(axis, { onMove, onEnd, onReset, title = 'Drag to resize, double-click to reset' }) {
+  const el = h('div', { class: `rz rz-${axis}`, title, role: 'separator', 'aria-orientation': axis === 'col' ? 'vertical' : 'horizontal' });
+  el.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('active');
+    document.body.classList.add('resizing', axis);
+    const move = ev => onMove(ev);
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      el.classList.remove('active');
+      document.body.classList.remove('resizing', axis);
+      onEnd?.();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  });
+  if (onReset) el.addEventListener('dblclick', onReset);
+  return el;
+}
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/widgets.js" <<'__PACKETPILOT_FILE_END__'
@@ -5530,24 +5671,30 @@ import { inNet, parseCidr, isGroupMac, isLocalMac } from './net.js';
 const shuffle = a => { const b = [...a]; for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
 const norm = s => String(s).trim().toLowerCase().replace(/\s+/g, '').replace(/,/g, '.');
 
-export function renderWidget(step, el, done) {
+/**
+ * memo: { get() → saved state or undefined, set(state) } keeps partial answers across
+ * page changes. Every widget stores plain JSON and restores it on the next render.
+ */
+export function renderWidget(step, el, done, memo = { get: () => undefined, set: () => {} }) {
   const fn = { quiz, label, stack, mac, lpm, build }[step.type];
   const wrap = h('div', { class: 'widget' });
   if (step.title) wrap.append(h('h2', {}, step.title));
   if (step.intro) wrap.append(h('div', { class: 'theory', style: { padding: 0, margin: 0 }, html: step.intro }));
   el.append(wrap);
-  fn(step, wrap, done);
+  const saved = memo.get() || {};
+  fn(step, wrap, done, saved, () => memo.set(saved));
 }
 
 // ---------------------------------------------------------------- Quiz
-function quiz(step, el, done) {
+function quiz(step, el, done, saved, save) {
   const state = step.questions.map(() => false);
+  saved.q ??= {};
   const check = () => { if (state.every(Boolean)) done(); };
   step.questions.forEach((q, qi) => {
     const box = h('div', { class: 'quiz-q' }, h('div', { style: { fontWeight: 600 }, html: q.q }));
     const explain = h('div', { class: 'explain hidden', html: q.explain || '' });
     if (q.input) {
-      const inp = h('input', { class: 'input mono', type: 'text', 'aria-label': 'Answer' });
+      const inp = h('input', { class: 'input mono', type: 'text', 'aria-label': 'Answer', value: saved.q[qi] ?? '' });
       const fb = h('span', { class: 'feedback' });
       const test = () => {
         const ok = q.input.some(a => norm(a) === norm(inp.value));
@@ -5555,21 +5702,29 @@ function quiz(step, el, done) {
         fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
         if (ok) { state[qi] = true; explain.classList.remove('hidden'); inp.disabled = true; check(); }
       };
+      inp.addEventListener('input', () => { saved.q[qi] = inp.value; save(); });
       inp.addEventListener('keydown', e => { if (e.key === 'Enter') test(); });
       box.append(h('div', { class: 'row', style: { marginTop: '10px' } }, inp, q.unit ? h('span', { class: 'muted' }, q.unit) : null,
         h('button', { class: 'btn', onclick: test }, 'Check'), fb));
+      // A previously correct answer is shown as solved again
+      if (inp.value && q.input.some(a => norm(a) === norm(inp.value))) test();
     } else {
       const opts = h('div', { class: 'opts', role: 'radiogroup' });
+      const labels = [];
+      const pick = (lab, oi) => {
+        opts.querySelectorAll('label').forEach(l => l.classList.remove('right', 'wrong'));
+        if (oi === q.correct) { lab.classList.add('right'); state[qi] = true; explain.classList.remove('hidden'); check(); }
+        else { lab.classList.add('wrong'); explain.classList.add('hidden'); }
+      };
       q.options.forEach((o, oi) => {
         const lab = h('label', {}, h('input', { type: 'radio', name: `q${step.id}-${qi}` }), h('span', { html: o }));
-        lab.querySelector('input').addEventListener('change', () => {
-          opts.querySelectorAll('label').forEach(l => l.classList.remove('right', 'wrong'));
-          if (oi === q.correct) { lab.classList.add('right'); state[qi] = true; explain.classList.remove('hidden'); check(); }
-          else { lab.classList.add('wrong'); explain.classList.add('hidden'); }
-        });
+        lab.querySelector('input').addEventListener('change', () => { saved.q[qi] = oi; save(); pick(lab, oi); });
+        labels.push(lab);
         opts.append(lab);
       });
       box.append(opts);
+      const prev = saved.q[qi];
+      if (typeof prev === 'number' && labels[prev]) { labels[prev].querySelector('input').checked = true; pick(labels[prev], prev); }
     }
     box.append(explain);
     el.append(box);
@@ -5577,7 +5732,7 @@ function quiz(step, el, done) {
 }
 
 // ---------------------------------------------------------------- Label the frame
-function label(step, el, done) {
+function label(step, el, done, saved, save) {
   const rows = step.rows || [step.slots];
   const all = rows.flat();
   const labels = shuffle([...all.map(s => s.label), ...(step.distractors || [])]);
@@ -5585,6 +5740,9 @@ function label(step, el, done) {
   const chips = h('div', { class: 'chips', 'aria-label': 'Terms' });
   const fill = new Map();
   const chipEls = new Map();
+  // Placements are stored by slot index, the shuffled order of the chips does not matter
+  const persist = () => { saved.fill = all.map(s => fill.get(s) ?? null); save(); };
+  (saved.fill || []).forEach((l, i) => { if (l && all[i] && labels.includes(l)) fill.set(all[i], l); });
   const drawChips = () => {
     chips.innerHTML = '';
     const used = new Set(fill.values());
@@ -5602,7 +5760,7 @@ function label(step, el, done) {
   const put = (slot, se, l) => {
     for (const [k, v] of fill) if (v === l) fill.delete(k);
     fill.set(slot, l); picked = null;
-    drawSlots(); drawChips();
+    persist(); drawSlots(); drawChips();
   };
   const drawSlots = () => {
     for (const { slot, se } of slotEls) {
@@ -5619,7 +5777,7 @@ function label(step, el, done) {
     const rowEl = h('div', { class: 'slotrow' });
     for (const slot of r) {
       const se = h('button', { class: 'slot', style: { width: `${slot.w || 90}px` }, 'aria-label': 'Field' });
-      se.addEventListener('click', () => { if (picked) put(slot, se, picked); else if (fill.has(slot)) { fill.delete(slot); drawSlots(); drawChips(); } });
+      se.addEventListener('click', () => { if (picked) put(slot, se, picked); else if (fill.has(slot)) { fill.delete(slot); persist(); drawSlots(); drawChips(); } });
       se.addEventListener('dragover', e => { e.preventDefault(); se.classList.add('over'); });
       se.addEventListener('dragleave', () => se.classList.remove('over'));
       se.addEventListener('drop', e => { e.preventDefault(); put(slot, se, e.dataTransfer.getData('text/plain')); });
@@ -5630,27 +5788,32 @@ function label(step, el, done) {
   }
   const fb = h('div', { class: 'feedback' });
   const explain = h('div', { class: 'explain hidden', html: step.explain || '' });
+  const checkAll = () => {
+    let right = 0;
+    for (const { slot, se } of slotEls) {
+      const ok = fill.get(slot) === slot.label;
+      se.classList.toggle('right', ok); se.classList.toggle('wrong', !!fill.get(slot) && !ok);
+      if (ok) right++;
+    }
+    const allOk = right === slotEls.length;
+    fb.textContent = allOk ? 'Everything placed correctly.' : `${right} of ${slotEls.length} correct. Wrong fields are marked red.`;
+    fb.className = 'feedback ' + (allOk ? 'ok' : 'bad');
+    if (allOk) { explain.classList.remove('hidden'); done(); }
+  };
   el.append(h('p', { class: 'muted small' }, 'Click or drag a term and drop it on a field. Clicking a filled field clears it.'),
     chips, grid,
-    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: () => {
-      let right = 0;
-      for (const { slot, se } of slotEls) {
-        const ok = fill.get(slot) === slot.label;
-        se.classList.toggle('right', ok); se.classList.toggle('wrong', !!fill.get(slot) && !ok);
-        if (ok) right++;
-      }
-      const all = right === slotEls.length;
-      fb.textContent = all ? 'Everything placed correctly.' : `${right} of ${slotEls.length} correct. Wrong fields are marked red.`;
-      fb.className = 'feedback ' + (all ? 'ok' : 'bad');
-      if (all) { explain.classList.remove('hidden'); done(); }
-    } }, 'Check'), fb), explain);
+    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: checkAll }, 'Check'), fb), explain);
   drawChips(); drawSlots();
+  if (fill.size === slotEls.length && slotEls.every(({ slot }) => fill.get(slot) === slot.label)) checkAll();
 }
 
 // ---------------------------------------------------------------- Order
-function stack(step, el, done) {
-  let order = shuffle(step.items.map((_, i) => i));
-  if (order.every((v, i) => v === i)) order = order.reverse();
+function stack(step, el, done, saved, save) {
+  const n = step.items.length;
+  const valid = Array.isArray(saved.order) && saved.order.length === n && [...saved.order].sort((a, b) => a - b).every((v, i) => v === i);
+  let order = valid ? [...saved.order] : shuffle(step.items.map((_, i) => i));
+  if (!valid && order.every((v, i) => v === i)) order = order.reverse();
+  const persist = () => { saved.order = [...order]; save(); };
   const list = h('div', { class: 'stack-list' });
   const fb = h('div', { class: 'feedback' });
   const explain = h('div', { class: 'explain hidden', html: step.explain || '' });
@@ -5663,23 +5826,25 @@ function stack(step, el, done) {
         h('span', { html: I.grip, style: { color: 'var(--ink-3)' } }),
         h('div', {}, h('b', {}, it.name), it.size ? h('span', { class: 'muted small' }, `  ${it.size}`) : null),
         h('div', { class: 'row', style: { gap: '2px' } },
-          h('button', { class: 'btn icon ghost', title: 'move up', html: I.up, disabled: pos === 0 ? true : null, onclick: () => { [order[pos - 1], order[pos]] = [order[pos], order[pos - 1]]; draw(); } }),
-          h('button', { class: 'btn icon ghost', title: 'move down', html: I.down, disabled: pos === order.length - 1 ? true : null, onclick: () => { [order[pos + 1], order[pos]] = [order[pos], order[pos + 1]]; draw(); } })));
+          h('button', { class: 'btn icon ghost', title: 'move up', html: I.up, disabled: pos === 0 ? true : null, onclick: () => { [order[pos - 1], order[pos]] = [order[pos], order[pos - 1]]; persist(); draw(); } }),
+          h('button', { class: 'btn icon ghost', title: 'move down', html: I.down, disabled: pos === order.length - 1 ? true : null, onclick: () => { [order[pos + 1], order[pos]] = [order[pos], order[pos + 1]]; persist(); draw(); } })));
       row.addEventListener('dragstart', () => { dragIdx = pos; row.classList.add('dragging'); });
       row.addEventListener('dragend', () => row.classList.remove('dragging'));
       row.addEventListener('dragover', e => e.preventDefault());
-      row.addEventListener('drop', e => { e.preventDefault(); if (dragIdx === null) return; const [m] = order.splice(dragIdx, 1); order.splice(pos, 0, m); dragIdx = null; draw(); });
+      row.addEventListener('drop', e => { e.preventDefault(); if (dragIdx === null) return; const [m] = order.splice(dragIdx, 1); order.splice(pos, 0, m); dragIdx = null; persist(); draw(); });
       list.append(row);
     });
   };
+  const checkOrder = () => {
+    const ok = order.every((v, i) => v === i);
+    fb.textContent = ok ? 'Correct.' : 'Not quite yet. Remember: which layer goes onto the wire first?';
+    fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
+    if (ok) { explain.classList.remove('hidden'); done(); }
+  };
   draw();
   el.append(h('p', { class: 'muted small' }, step.hint || 'Drag the blocks into the right order or use the arrows.'), list,
-    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: () => {
-      const ok = order.every((v, i) => v === i);
-      fb.textContent = ok ? 'Correct.' : 'Not quite yet. Remember: which layer goes onto the wire first?';
-      fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
-      if (ok) { explain.classList.remove('hidden'); done(); }
-    } }, 'Check'), fb), explain);
+    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: checkOrder }, 'Check'), fb), explain);
+  if (valid && order.every((v, i) => v === i)) checkOrder();
 }
 
 // ---------------------------------------------------------------- MAC decoder
@@ -5690,8 +5855,8 @@ export function classifyMac(m) {
   if (isGroupMac(m)) return 'Multicast';
   return isLocalMac(m) ? 'Unicast, locally administered' : 'Unicast, from the manufacturer';
 }
-function mac(step, el, done) {
-  const inp = h('input', { class: 'input mono', value: '00:50:56:a3:1f:7c', 'aria-label': 'MAC address', style: { width: '210px' } });
+function mac(step, el, done, saved, save) {
+  const inp = h('input', { class: 'input mono', value: saved.probe ?? '00:50:56:a3:1f:7c', 'aria-label': 'MAC address', style: { width: '210px' } });
   const out = h('div');
   const draw = () => {
     out.innerHTML = '';
@@ -5708,21 +5873,24 @@ function mac(step, el, done) {
         h('tr', {}, h('th', {}, 'OUI'), h('td', {}, `${m.slice(0, 8)}${oui ? '  ' + oui : '  (not in the short list)'}`)),
         h('tr', {}, h('th', {}, 'Result'), h('td', {}, classifyMac(m)))));
   };
-  inp.addEventListener('input', draw);
+  inp.addEventListener('input', () => { saved.probe = inp.value; save(); draw(); });
   el.append(h('div', { class: 'row' }, h('label', { class: 'field' }, 'Try a MAC address', inp)), out);
   draw();
   const qs = step.classify || [];
   const state = qs.map(() => false);
+  saved.sel ??= {};
   const box = h('div', { class: 'quiz-q', style: { marginTop: '16px' } }, h('div', { style: { fontWeight: 600 } }, 'Classify these addresses:'));
   qs.forEach((m, i) => {
     const s = h('select', { class: 'input' }, ['please choose', 'Unicast, from the manufacturer', 'Unicast, locally administered', 'Multicast', 'Broadcast'].map(o => h('option', {}, o)));
     const fb = h('span', { class: 'feedback' });
-    s.addEventListener('change', () => {
+    const test = () => {
       const ok = s.value === classifyMac(m);
       fb.textContent = ok ? 'Correct' : 'No'; fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
       state[i] = ok;
       if (state.every(Boolean)) done();
-    });
+    };
+    s.addEventListener('change', () => { saved.sel[i] = s.value; save(); test(); });
+    if (saved.sel[i] && saved.sel[i] !== 'please choose') { s.value = saved.sel[i]; test(); }
     box.append(h('div', { class: 'row', style: { marginTop: '8px' } }, h('code', { style: { width: '150px' } }, m), s, fb));
   });
   if (qs.length) el.append(box); else done();
@@ -5737,23 +5905,25 @@ export function lpmAnswer(table, ip) {
   }
   return best ? best.nh : 'no route';
 }
-function lpm(step, el, done) {
+function lpm(step, el, done, saved, save) {
   const t = h('table', { class: 'rtable' }, h('tr', {}, h('th', {}, 'Destination'), h('th', {}, 'Next hop')),
     step.table.map(([p, n]) => h('tr', {}, h('td', {}, p), h('td', {}, n))));
   const nhs = [...new Set(step.table.map(x => x[1])), ...(step.table.some(x => x[0].endsWith('/0')) ? [] : ['no route'])];
   const state = step.dests.map(() => false);
+  saved.sel ??= {};
   const qs = h('div', { style: { display: 'grid', gap: '8px', marginTop: '14px' } });
   step.dests.forEach((ip, i) => {
     const s = h('select', { class: 'input' }, h('option', {}, 'please choose'), nhs.map(n => h('option', {}, n)));
     const fb = h('span', { class: 'feedback' });
-    s.addEventListener('change', () => {
-      const ans = lpmAnswer(step.table, ip);
-      const ok = s.value === ans;
+    const test = () => {
+      const ok = s.value === lpmAnswer(step.table, ip);
       fb.textContent = ok ? 'Correct' : 'No, check which entries match and which one is the longest';
       fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
       state[i] = ok;
       if (state.every(Boolean)) done();
-    });
+    };
+    s.addEventListener('change', () => { saved.sel[i] = s.value; save(); test(); });
+    if (saved.sel[i] && nhs.includes(saved.sel[i])) { s.value = saved.sel[i]; test(); }
     qs.append(h('div', { class: 'row' }, h('span', {}, 'Packet to'), h('code', { style: { width: '120px' } }, ip), h('span', {}, 'goes to'), s, fb));
   });
   el.append(t, qs);
@@ -5796,9 +5966,12 @@ export function checkBuild(expected, frame) {
   else if (!res.msgs.length) res.msgs.push('The layers are correct, the fields marked red are not yet.');
   return res;
 }
-function build(step, el, done) {
-  const frame = [];
+function build(step, el, done, saved, save) {
   const allowed = step.blocks || ['eth', 'vlan', 'arp', 'stp', 'ip', 'icmp', 'udp', 'tcp', 'dns', 'http', 'data'];
+  // The frame array is the saved state itself, so every edit only needs save()
+  if (!Array.isArray(saved.frame)) saved.frame = [];
+  saved.frame = saved.frame.filter(l => l && BUILD_BLOCKS[l.block] && allowed.includes(l.block));
+  const frame = saved.frame;
   const addr = step.addresses || {};
   const macs = [...(addr.mac || []), ['ff:ff:ff:ff:ff:ff', 'Broadcast'], ['00:00:00:00:00:00', 'unknown (zeros)'], ['01:80:c2:00:00:00', 'STP multicast']];
   const ips = [...(addr.ip || []), ['0.0.0.0', 'no address']];
@@ -5806,7 +5979,7 @@ function build(step, el, done) {
   const pal = h('div', { class: 'fb-pal bld-pal' });
   for (const k of allowed) {
     const b = BUILD_BLOCKS[k];
-    pal.append(h('button', { class: 'fb-blk', style: { '--lc': `var(--l-${b.kind})` }, onclick: () => { frame.push({ block: k, fields: {} }); draw(); } }, b.name, h('span', { class: 'sz', html: I.plus })));
+    pal.append(h('button', { class: 'fb-blk', style: { '--lc': `var(--l-${b.kind})` }, onclick: () => { frame.push({ block: k, fields: {} }); result = null; save(); draw(); } }, b.name, h('span', { class: 'sz', html: I.plus })));
   }
   const area = h('div', { class: 'bld-frame' });
   const fb = h('div', { class: 'feedback' });
@@ -5820,8 +5993,8 @@ function build(step, el, done) {
       const lr = result?.layers[i];
       const card = h('div', { class: 'bld-layer' + (lr?.wrongBlock ? ' wrong' : ''), style: { '--lc': `var(--l-${b.kind})` } });
       card.append(h('div', { class: 'bld-head' }, h('b', {}, `${i + 1}. ${b.name}`), h('span', { class: 'grow' }),
-        h('button', { class: 'btn icon ghost', title: 'move up', html: I.up, disabled: i === 0 ? true : null, onclick: () => { [frame[i - 1], frame[i]] = [frame[i], frame[i - 1]]; result = null; draw(); } }),
-        h('button', { class: 'btn icon ghost', title: 'remove', html: I.trash, onclick: () => { frame.splice(i, 1); result = null; draw(); } })));
+        h('button', { class: 'btn icon ghost', title: 'move up', html: I.up, disabled: i === 0 ? true : null, onclick: () => { [frame[i - 1], frame[i]] = [frame[i], frame[i - 1]]; result = null; save(); draw(); } }),
+        h('button', { class: 'btn icon ghost', title: 'remove', html: I.trash, onclick: () => { frame.splice(i, 1); result = null; save(); draw(); } })));
       if (b.fields.length) {
         const g = h('div', { class: 'bld-fields' });
         for (const [k, label, t] of b.fields) {
@@ -5830,7 +6003,7 @@ function build(step, el, done) {
           if (opts) {
             inp = h('select', { class: 'input mono' }, h('option', { value: '' }, 'choose'), opts.map(([v, l]) => h('option', { value: v, selected: layer.fields[k] === v ? true : null }, l)));
           } else inp = h('input', { class: 'input mono', type: t === 'num' ? 'number' : 'text', value: layer.fields[k] ?? '', placeholder: t === 'num' ? 'number' : '' });
-          inp.addEventListener('change', () => { layer.fields[k] = inp.value; result = null; card.querySelectorAll('.bad').forEach(x => x.classList.remove('bad')); });
+          inp.addEventListener(opts ? 'change' : 'input', () => { layer.fields[k] = inp.value; result = null; save(); card.querySelectorAll('.bad').forEach(x => x.classList.remove('bad')); });
           if (lr?.bad?.includes(k)) inp.classList.add('bad');
           g.append(h('label', { class: 'field' }, label, inp));
         }
@@ -5839,16 +6012,19 @@ function build(step, el, done) {
       area.append(card);
     });
   };
+  const checkFrame = () => {
+    result = checkBuild(step.expected, frame);
+    draw();
+    fb.textContent = result.msgs.join(' ');
+    fb.className = 'feedback ' + (result.ok ? 'ok' : 'bad');
+    if (result.ok) { explain.classList.remove('hidden'); done(); }
+  };
   draw();
   el.append(h('div', { class: 'quiz-q', html: step.task }),
     h('div', { class: 'bld' }, pal, area),
-    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: () => {
-      result = checkBuild(step.expected, frame);
-      draw();
-      fb.textContent = result.msgs.join(' ');
-      fb.className = 'feedback ' + (result.ok ? 'ok' : 'bad');
-      if (result.ok) { explain.classList.remove('hidden'); done(); }
-    } }, 'Check'), h('button', { class: 'btn ghost', onclick: () => { frame.length = 0; result = null; fb.textContent = ''; draw(); } }, 'Clear'), fb), explain);
+    h('div', { class: 'row', style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: checkFrame }, 'Check'),
+      h('button', { class: 'btn ghost', onclick: () => { frame.length = 0; result = null; fb.textContent = ''; save(); draw(); } }, 'Clear'), fb), explain);
+  if (frame.length && checkBuild(step.expected, frame).ok) checkFrame();
 }
 export { esc };
 __PACKETPILOT_FILE_END__

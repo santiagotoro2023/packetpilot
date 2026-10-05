@@ -2,7 +2,8 @@
 import { Sim, PORTS, TYPE_NAMES, TIMING, newId, normalizeDevice, traceOf, STP_TEXT } from './engine.js';
 import { layerKinds, shortLabel } from './packets.js';
 import { isIp } from './net.js';
-import { h, svgEl, toast, iconBtn } from './ui.js';
+import { h, svgEl, toast, iconBtn, resizer } from './ui.js';
+import { store } from './store.js';
 import { I, DEV_ICON } from './icons.js';
 import { renderInspector } from './inspector.js';
 import { configPanel, tablesPanel, consolePanel } from './panels.js';
@@ -34,8 +35,9 @@ export class Lab {
     this.raf = requestAnimationFrame(t => this.loop(t));
     this.keyHandler = e => this.onKey(e);
     window.addEventListener('keydown', this.keyHandler);
-    this.ro = new ResizeObserver(() => this.fit(false));
+    this.ro = new ResizeObserver(() => { this.fit(false); this.placeHandles(); });
     this.ro.observe(this.canvasWrap);
+    this.ro.observe(this.el);
   }
   emit(type, data) { for (const fn of this.listeners) fn(type, data, this); }
   destroy() {
@@ -112,8 +114,50 @@ export class Lab {
         iconBtn(I.trash, 'Clear log', () => { this.sim.log = []; this.renderLog(); })), this.logEl),
       h('div', { class: 'dock-col' }, h('div', { class: 'dock-head' }, 'Packet inspector'), this.inspEl));
     this.el.append(this.palette, this.canvasWrap, this.side, this.dock);
+    this.buildResizers();
     this.root.append(this.el);
     renderInspector(this.inspEl, null);
+  }
+
+  // ------------------------------------------------------------ Resizable panels
+  // Side panel width, dock height and the split between log and inspector. Lessons and the
+  // free lab remember their sizes separately, because the lesson layout is narrower.
+  buildResizers() {
+    const key = this.opts.compact ? 'compact' : 'full';
+    this.layout = { ...(store.prefs.layout?.[key] || {}) };
+    const save = () => store.setPref('layout', { ...(store.prefs.layout || {}), [key]: { ...this.layout } });
+    const clamp = (v, lo, hi) => Math.round(Math.min(Math.max(v, lo), Math.max(lo, hi)));
+    const after = () => { this.applyLayout(); this.placeHandles(); };
+    const reset = prop => () => { delete this.layout[prop]; after(); save(); };
+    this.rzSide = resizer('col', { onEnd: save, onReset: reset('sideW'), onMove: e => {
+      const r = this.el.getBoundingClientRect();
+      this.layout.sideW = clamp(r.right - e.clientX, 240, Math.min(760, r.width - this.palette.offsetWidth - 320)); after();
+    } });
+    this.rzDock = resizer('row', { onEnd: save, onReset: reset('dockH'), onMove: e => {
+      const r = this.el.getBoundingClientRect();
+      this.layout.dockH = clamp(r.bottom - e.clientY, 90, r.height - 140); after();
+    } });
+    this.rzSplit = resizer('col', { onEnd: save, onReset: reset('dockSplit'), onMove: e => {
+      const r = this.dock.getBoundingClientRect();
+      this.layout.dockSplit = Math.min(.85, Math.max(.15, (e.clientX - r.left) / r.width)); after();
+    } });
+    this.el.append(this.rzSide, this.rzDock, this.rzSplit);
+    this.applyLayout();
+  }
+  applyLayout() {
+    const s = this.el.style, l = this.layout;
+    const set = (name, v) => v == null ? s.removeProperty(name) : s.setProperty(name, v);
+    set('--side-w', l.sideW ? l.sideW + 'px' : null);
+    set('--dock-h', l.dockH ? l.dockH + 'px' : null);
+    set('--dock-a', l.dockSplit ? l.dockSplit + 'fr' : null);
+    set('--dock-b', l.dockSplit ? (1 - l.dockSplit) + 'fr' : null);
+  }
+  placeHandles() {
+    if (!this.rzSide) return;
+    const d = this.dock, first = d.firstElementChild;
+    Object.assign(this.rzSide.style, { left: `${this.side.offsetLeft - 5}px`, top: '0', height: `${this.el.clientHeight}px` });
+    Object.assign(this.rzDock.style, { left: `${d.offsetLeft}px`, top: `${d.offsetTop - 5}px`, width: `${d.offsetWidth}px` });
+    Object.assign(this.rzSplit.style, { left: `${d.offsetLeft + first.offsetWidth - 4}px`, top: `${d.offsetTop + 4}px`, height: `${Math.max(0, d.offsetHeight - 4)}px` });
   }
   speedToSlider(ms) { return Math.round(100 - (Math.log(ms / 60) / Math.log(4000 / 60)) * 100); }
   sliderToSpeed(v) { return Math.round(60 * Math.pow(4000 / 60, (100 - v) / 100)); }
@@ -213,10 +257,9 @@ export class Lab {
       ic.innerHTML = DEV_ICON[d.type];
       g.append(ic);
       const nm = svgEl('text', { class: 'nm', x: CARD_W / 2, y: CARD_H + 15 }); nm.textContent = d.name; g.append(nm);
-      const ip = this.primaryIp(d);
-      if (ip) { const t = svgEl('text', { class: 'ip', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = ip; g.append(t); }
+      this.addrLines(d).forEach((line, i) => { const t = svgEl('text', { class: 'ip', x: CARD_W / 2, y: CARD_H + 28 + i * 12 }); t.textContent = line; g.append(t); });
       const st = d.type === 'switch' ? this.sim.dev(d.id)?.bridge?.stpTable() : null;
-      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = st.isRoot ? `Root bridge, prio ${d.stp.priority}` : `STP, Prio ${d.stp.priority}`; g.append(t); }
+      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = st.isRoot ? `Root bridge, prio ${d.stp.priority}` : `STP, prio ${d.stp.priority}`; g.append(t); }
       g.addEventListener('pointerdown', e => this.devPointerDown(e, d));
       g.addEventListener('dblclick', () => { this.select({ kind: 'dev', id: d.id }); this.setTab('console'); });
       g.addEventListener('keydown', e => { if (e.key === 'Enter') this.select({ kind: 'dev', id: d.id }); });
@@ -224,17 +267,17 @@ export class Lab {
     }
     this.updateOverlay();
   }
-  primaryIp(d) {
+  /** Address lines under a device: one for hosts, one per configured interface for routers and VTEPs */
+  addrLines(d) {
     if (d.type === 'pc' || d.type === 'server') {
-      const i = d.ifaces.eth1; return isIp(i.ip) ? `${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}` : '';
+      const i = d.ifaces.eth1; return isIp(i.ip) ? [`${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}`] : [];
     }
-    if (d.type === 'vtep') return isIp(d.ifaces.lo?.ip) ? `lo ${d.ifaces.lo.ip}` : '';
-    if (d.type === 'router') {
-      const n = Object.values(d.ifaces).filter(i => isIp(i.ip)).length;
-      const sub = Object.values(d.ifaces).filter(i => i.parent).length;
-      return sub ? `${sub} Subinterface${sub > 1 ? 's' : ''}` : n ? `${n} addresses` : '';
+    if (d.type === 'router' || d.type === 'vtep') {
+      return Object.entries(d.ifaces).filter(([, i]) => isIp(i.ip))
+        .sort(([a], [b]) => (a === 'lo') - (b === 'lo') || a.localeCompare(b, 'en', { numeric: true }))
+        .map(([n, i]) => `${n} ${i.ip}/${i.prefix}`);
     }
-    return '';
+    return [];
   }
   fit(force) {
     const r = this.canvasWrap.getBoundingClientRect();
