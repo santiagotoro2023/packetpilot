@@ -21,7 +21,7 @@ export function renderInspector(el, entry, { onTrace } = {}) {
   if (entry.trace && onTrace) el.append(h('div', { class: 'row', style: { margin: '6px 0' } },
     h('button', { class: 'btn', onclick: () => onTrace(entry.trace) }, 'Trace this packet\'s path')));
   for (const l of layers) {
-    const d = h('details', { class: `layer lc-${l.kind}${l.depth ? ' inner' : ''}`, open: l.depth === 0 && ['ip', 'arp', 'vxlan', 'icmp'].includes(l.kind) ? true : null });
+    const d = h('details', { class: `layer lc-${l.kind}${l.depth ? ' inner' : ''}`, open: l.depth === 0 && ['ip', 'arp', 'vxlan', 'icmp', 'rt'].includes(l.kind) ? true : null });
     d.append(h('summary', {}, l.name, h('span', { class: 'b' }, `${l.bytes} bytes`)));
     const t = h('table');
     for (const [k, v, hint] of l.fields) t.append(h('tr', {}, h('td', {}, k), h('td', { class: 'v' }, v), h('td', { class: 'h' }, hint || '')));

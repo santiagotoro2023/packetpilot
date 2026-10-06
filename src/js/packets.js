@@ -1,6 +1,8 @@
 // Building, describing and dissecting frames
 import { ETH_HDR, VLAN_TAG, IP_HDR, UDP_HDR, ICMP_HDR, VXLAN_HDR, ARP_LEN, FCS, PROTO, LLC_LEN, BPDU_LEN,
-  ipTotalLen, frameLen, frameWireLen, isGroupMac, isLocalMac, BCAST, STP_MAC, tcpHdrLen, dnsLen, udpPayloadLen } from './net.js';
+  ipTotalLen, frameLen, frameWireLen, isGroupMac, isLocalMac, BCAST, STP_MAC, tcpHdrLen, dnsLen, udpPayloadLen, PROTO_NAME, ospfLen, DHCP_LEN } from './net.js';
+
+const DHCP_NAME = { DISCOVER: 'Discover', OFFER: 'Offer', REQUEST: 'Request', ACK: 'ACK', NAK: 'NAK', RELEASE: 'Release' };
 
 let FRAME_SEQ = 1, TRACE_SEQ = 1, IP_ID = 1000;
 export const nextTrace = () => TRACE_SEQ++;
@@ -70,6 +72,9 @@ export function shortLabel(f) {
   }
   if (l4.kind === 'udp' && l4.payload?.kind === 'vxlan') return 'VXLAN';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dns') return 'DNS';
+  if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return 'DHCP ' + (DHCP_NAME[l4.payload.op] || '');
+  if (l4.kind === 'vrrp') return 'VRRP';
+  if (l4.kind === 'ospf') return l4.type === 'hello' ? 'Hello' : 'LSU';
   if (l4.kind === 'udp') return 'UDP';
   if (l4.kind === 'tcp') {
     const fl = l4.flags;
@@ -94,6 +99,7 @@ export function layerKinds(f) {
     const l4 = cur.payload.l4;
     if (!l4 || (cur.payload.frag && !cur.payload.frag.first)) { out.push('frag'); break; }
     if (l4.kind === 'icmp') { out.push('icmp'); break; }
+    if (l4.kind === 'vrrp' || l4.kind === 'ospf') { out.push('rt'); break; }
     if (l4.kind === 'udp') {
       out.push('udp');
       if (l4.payload?.kind === 'vxlan') { out.push('vxlan'); cur = l4.payload.frame; continue; }
@@ -129,6 +135,16 @@ export function summary(f) {
     else s = `ICMP ${icmpName(l4.type, l4.code)}${l4.mtu ? ` (MTU ${l4.mtu})` : ''} ${base}`;
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'vxlan') {
     s = `VXLAN ${base}, VNI ${l4.payload.vni}, UDP ${l4.sport} > ${l4.dport}  ⟶  ${summary(l4.payload.frame)}`;
+  } else if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') {
+    const d = l4.payload;
+    const what = { DISCOVER: `Discover from ${d.chaddr}`, OFFER: `Offer ${d.yiaddr} to ${d.chaddr}`, REQUEST: `Request ${d.requested || d.ciaddr} for ${d.chaddr}`,
+      ACK: `ACK ${d.yiaddr} for ${d.chaddr}`, NAK: `NAK for ${d.chaddr}`, RELEASE: `Release ${d.ciaddr} from ${d.chaddr}` }[d.op] || d.op;
+    s = `DHCP ${what} (${base}${d.giaddr && d.giaddr !== '0.0.0.0' ? ', relayed via ' + d.giaddr : ''})`;
+  } else if (l4.kind === 'vrrp') {
+    s = `VRRP advertisement ${base}: group ${l4.vrid}, priority ${l4.prio}, virtual IP ${(l4.vips || []).join(', ')}`;
+  } else if (l4.kind === 'ospf') {
+    s = l4.type === 'hello' ? `OSPF Hello from router ${l4.rid} (${base}), sees ${l4.nbrs.length ? l4.nbrs.join(', ') : 'no neighbor yet'}`
+      : `OSPF LS Update from router ${l4.rid} (${base}): ${l4.lsas.length} LSA${l4.lsas.length === 1 ? '' : 's'} (${l4.lsas.map(l => l.rid).join(', ')})`;
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'dns') {
     const d = l4.payload;
     s = d.qr ? `DNS response ${base}: ${d.qname} ${d.rcode === 'NOERROR' ? '→ ' + d.answers.map(a => a.ip).join(', ') : d.rcode}`
@@ -198,7 +214,7 @@ export function dissect(f, depth = 0) {
     ['Flags', flags, ip.df ? 'Don\'t Fragment: routers must not fragment' : 'Routers may fragment'],
     ['Fragment Offset', `${ip.fragOffset} bytes`, ''],
     ['TTL', String(ip.ttl), 'Every router subtracts 1'],
-    ['Protocol', `${ip.proto} (${ip.proto === 1 ? 'ICMP' : ip.proto === 17 ? 'UDP' : ip.proto === 6 ? 'TCP' : '?'})`, ''],
+    ['Protocol', `${ip.proto} (${PROTO_NAME[ip.proto] || '?'})`, ''],
     ['Header Checksum', hex4(ip.checksum), 'Recomputed at every hop'],
     ['Source IP', ip.src, 'Stays the same end to end'],
     ['Destination IP', ip.dst, '']
@@ -225,6 +241,29 @@ export function dissect(f, depth = 0) {
       ['Flags', tcpFlags(l4.flags), ''], ['Window', String(l4.win), 'How many bytes the peer may send unacknowledged'],
       ...(l4.mss ? [['MSS option', String(l4.mss), 'Largest segment this host accepts']] : [])] });
     if (l4.dataLen) layers.push({ kind: 'data', depth, name: 'Application data', bytes: l4.dataLen, fields: [['Content', `${l4.dataLen} bytes${l4.app ? ': ' + l4.app : ''}`, '']] });
+  } else if (l4.kind === 'vrrp') {
+    layers.push({ kind: 'rt', depth, name: `${pre}VRRP advertisement`, bytes: 8 + 4 * (l4.vips?.length || 1), fields: [
+      ['Version / Type', `${l4.version || 3} / 1 (Advertisement)`, ''], ['Virtual router ID', String(l4.vrid), 'Group number, also the last byte of the virtual MAC'],
+      ['Priority', String(l4.prio), 'The highest priority becomes master. 0 means: master resigns'],
+      ['Advertisement interval', `${l4.adv} s`, 'Backups take over after about 3 missed advertisements'],
+      ['Virtual IP', (l4.vips || []).join(', '), 'The gateway address the hosts use']] });
+  } else if (l4.kind === 'ospf') {
+    const fields = [['Version / Type', l4.type === 'hello' ? '2 / 1 (Hello)' : '2 / 4 (Link State Update)', ''], ['Router ID', l4.rid, 'Unique ID of the sending router'], ['Area', l4.area || '0.0.0.0', 'Backbone area']];
+    if (l4.type === 'hello') fields.push(['Hello / dead interval', `${l4.hello} / ${l4.dead} s`, 'Must match on both sides, or no adjacency forms'],
+      ['Network mask', `/${l4.prefix}`, 'Must match the receiving interface'], ['Neighbors seen', l4.nbrs.join(', ') || 'none', 'When a router finds its own ID here, the link is 2-Way']);
+    else for (const l of l4.lsas) fields.push([`Router LSA ${l.rid}`, `seq ${l.seq}`, l.links.map(k => k.type === 'router' ? `→ ${k.rid} (${k.cost})` : `${k.net}/${k.len} (${k.cost})`).join(', ')]);
+    layers.push({ kind: 'rt', depth, name: `${pre}OSPF ${l4.type === 'hello' ? 'Hello' : 'LS Update'}`, bytes: ospfLen(l4), fields });
+  } else if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') {
+    const d = l4.payload;
+    layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), l4.sport === 68 ? 'DHCP client' : 'DHCP server or relay'], ['Destination port', String(l4.dport), l4.dport === 67 ? 'DHCP server or relay' : 'DHCP client'], ['Length', `${UDP_HDR + DHCP_LEN} bytes`, '']] });
+    layers.push({ kind: 'data', depth, name: `DHCP ${DHCP_NAME[d.op] || d.op}`, bytes: DHCP_LEN, fields: [
+      ['Message type', d.op, { DISCOVER: 'Is there a server?', OFFER: 'Here is an address', REQUEST: 'I take that address', ACK: 'Confirmed, use it', NAK: 'Refused, start over', RELEASE: 'I no longer need it' }[d.op] || ''],
+      ['Transaction ID', '0x' + (d.xid >>> 0).toString(16), 'Matches offer and request of the same client'],
+      ['Client MAC (chaddr)', d.chaddr, 'The server hands out addresses per MAC'],
+      ['Client IP (ciaddr)', d.ciaddr || '0.0.0.0', ''], ['Your IP (yiaddr)', d.yiaddr || '0.0.0.0', d.yiaddr && d.yiaddr !== '0.0.0.0' ? 'The address for the client' : ''],
+      ['Relay agent (giaddr)', d.giaddr || '0.0.0.0', d.giaddr && d.giaddr !== '0.0.0.0' ? 'Set by the relay, the server picks the pool by it' : 'No relay involved'],
+      ...(d.requested ? [['Option 50: requested IP', d.requested, '']] : []), ...(d.server ? [['Option 54: server ID', d.server, '']] : []),
+      ...(d.op === 'OFFER' || d.op === 'ACK' ? [['Option 1: subnet mask', `/${d.prefix}`, ''], ['Option 3: router', d.router || '-', 'Default gateway'], ['Option 6: DNS', d.dns || '-', ''], ['Option 51: lease time', `${d.lease} s`, '']] : [])] });
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'dns') {
     const d = l4.payload;
     layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), ''], ['Destination port', String(l4.dport), l4.dport === 53 || l4.sport === 53 ? 'DNS' : ''], ['Length', `${UDP_HDR + udpPayloadLen(l4)} bytes`, '']] });

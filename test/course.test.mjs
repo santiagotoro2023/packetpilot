@@ -78,6 +78,55 @@ const SOLUTIONS = {
   'm5-l6': { answers: [null, 'r2', '1360'], act: sim => { run(sim, 'client', 'curl http://10.0.2.80/'); } },
   'm5-l6#2': { answers: [null, 'yes', null], act: sim => { run(sim, 'client', 'curl http://10.0.2.80/'); sim.dev('r1').cfg.mssClamp = 1360; run(sim, 'client', 'curl http://10.0.2.80/'); } },
 
+  'm6-l2': { answers: sim => [null, null, '255.255.255.255', null, sim.dev('client2').l3.lease.ip], act: (sim, ctx) => {
+    sim.runFor(3000);
+    runT(sim, 'client1', 'dhclient -r', 500); runT(sim, 'client1', 'dhclient', 3000);
+    ctx.inspected.push(findFrame(sim, f => f.payload?.l4?.payload?.op === 'OFFER')); } },
+  'm6-l3': { answers: [null, null, '10.10.0.1', null], act: sim => {
+    sim.runFor(15000);
+    sim.dev('r1').cfg.ifaces.eth1.helper = '10.20.0.67'; sim.configChanged('r1');
+    runT(sim, 'client1', 'dhclient', 3000); runT(sim, 'client2', 'dhclient', 3000); } },
+  'm7-l2': { answers: [null, 'isp', null, '203.0.113.2', null], act: sim => {
+    run(sim, 'pc1', 'ping -c 1 198.51.100.80');
+    sim.dev('home').cfg.nat.outside = 'eth2'; sim.configChanged('home');
+    run(sim, 'pc1', 'ping -c 1 198.51.100.80'); run(sim, 'pc1', 'curl http://198.51.100.80/'); run(sim, 'pc2', 'curl http://198.51.100.80/');
+    assert.ok(sim.log.some(e => e.dev === 'web' && e.data?.from === '203.0.113.2')); } },
+  'm7-l3': { answers: [null, null, '80', 'no'], act: sim => {
+    run(sim, 'web', 'curl http://203.0.113.2:8080/');
+    sim.dev('home').cfg.nat.forwards.push({ proto: 'tcp', port: 8080, to: '192.168.1.10', toPort: 80 }); sim.configChanged('home');
+    run(sim, 'web', 'curl http://203.0.113.2:8080/');
+    assert.ok(sim.log.some(e => e.dev === 'pc1' && e.tag === 'tcp-synack-sent' && e.data.port === 80)); } },
+  'm8-l2': { answers: sim => [null, null, null, String(sim.dev('o1').ospf.routes.find(r => r.net === '10.3.0.0').cost), sim.dev('o1').ospf.rid], act: sim => {
+    sim.runFor(5000); runT(sim, 'pc1', 'ping -c 1 10.3.0.10', 5000);
+    const o = sim.dev('o3').cfg.ospf;
+    o.enabled = true; o.ifaces = { eth1: { enabled: true, cost: 10 }, eth2: { enabled: true, cost: 10 }, eth3: { enabled: true, cost: 10, passive: true } };
+    sim.configChanged('o3'); sim.runFor(6000);
+    runT(sim, 'pc1', 'ping -c 1 10.3.0.10', 5000);
+    assert.equal(sim.dev('o1').ospf.routes.find(r => r.net === '10.3.0.0').cost, 20); } },
+  'm8-l3': { answers: [null, null, 'o2', null], act: sim => {
+    sim.runFor(6000); runT(sim, 'pc1', 'ping -c 1 10.3.0.10', 5000);
+    const l = sim.topo.links.find(x => x.a.dev === 'o1' && x.b.dev === 'o3');
+    sim.setLinkUp(l, false); sim.runFor(3000); runT(sim, 'pc1', 'ping -c 1 10.3.0.10', 5000);
+    sim.setLinkUp(l, true); sim.dev('o1').cfg.ospf.ifaces.eth2.cost = 50; sim.configChanged('o1'); sim.runFor(8000); } },
+  'm8-l4': { answers: ['o2', null, null, null], act: sim => {
+    sim.runFor(10000);
+    sim.dev('o2').cfg.ospf.timers = 'fast'; sim.configChanged('o2'); sim.runFor(8000);
+    runT(sim, 'pc2', 'ping -c 1 10.1.0.10', 5000); } },
+  'm9-l2': { answers: [null, null, '00:00:5e:00:01:01', null, null], act: (sim, ctx) => {
+    sim.runFor(6000); ctx.ask(0, 'ra');
+    runT(sim, 'pc1', 'ping -c 1 10.50.0.5', 5000);
+    runCommand(sim.dev('pc1'), 'ping -c 30 10.50.0.5'); sim.runFor(3000);
+    runCommand(sim.dev('ra'), 'ip link set eth1 down'); sim.runFor(30000);
+    ctx.inspected.push(sim.log.find(e => e.dev === 'rb' && e.frame?.type === 'arp' && e.frame.payload.spa === '10.0.0.1'));
+    const d = sim.log.filter(e => e.tag === 'ping-done').pop().data;
+    assert.ok(d.sent - d.received <= 5, `few pings lost during the failover (${d.sent - d.received})`); } },
+  'm9-l3': { answers: [null, null, null, null, 'no'], act: (sim, ctx) => {
+    sim.runFor(5000);
+    sim.dev('rb').cfg.vrrp = [{ ifname: 'eth1', vrid: 1, vip: '10.0.0.1', priority: 100, preempt: true }]; sim.configChanged('rb');
+    sim.runFor(5000); ctx.ask(1, 'backup');
+    sim.dev('rb').cfg.vrrp[0].priority = 120; sim.configChanged('rb'); sim.runFor(5000);
+    runT(sim, 'pc1', 'ping -c 1 10.50.0.5', 5000); } },
+
   'm1-l4': { answers: [null, 'eth2', null], act: sim => { run(sim, 'pc1', 'ping -c 2 10.0.0.2'); sim.dev('sw1').cfg.ageing = 0; run(sim, 'pc1', 'ping -c 1 10.0.0.2'); } },
   'm1-l5': { answers: [null, null, '00:00:00:00:00:00', null, '10.0.0.2'], act: (sim, ctx) => { run(sim, 'pc1', 'ping -c 1 10.0.0.3'); ctx.inspected.push(findFrame(sim, f => f.type === 'arp' && f.payload.op === 1)); run(sim, 'pc2', 'ping -c 1 10.0.0.99'); } },
   'm1-l6': { answers: sim => [null, '192.168.10.1', sim.dev('r1').mac('eth1'), sim.dev('r1').mac('eth2'), '63', '192.168.20.20'],

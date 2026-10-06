@@ -1,7 +1,8 @@
 // PacketPilot simulation engine: event-driven, no DOM
 import { BCAST, VXLAN_PORT, PROTO, STP_MAC, isGroupMac, macFor, inNet, parseCidr, isIp,
-  netOf, intToIp, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR } from './net.js';
+  netOf, intToIp, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp } from './net.js';
 import { ethFrame, arpPacket, ipPacket, icmp, udp, tcp, ipChecksum, summary, icmpName, fmtBid } from './packets.js';
+import { dhcpOn67, natIn, natOut, Vrrp, Ospf, DHCP_TIMING, vrrpMac } from './services.js';
 
 export const PORTS = {
   pc: ['eth1'], server: ['eth1'],
@@ -12,7 +13,7 @@ export const PORTS = {
 export const TYPE_NAMES = { pc: 'PC', server: 'Server', router: 'Router', switch: 'Switch', vtep: 'VTEP' };
 
 const T = { linkDelay: 0.1, arpTimeout: 1000, arpRetries: 3, pingInterval: 1000, replyTimeout: 4000, reachable: 30000,
-  nudDelay: 5000, nudProbes: 3, tcpSyn: [1000, 2000, 4000], tcpStall: 10000, dnsTimeout: 5000, loopHalt: 8 };
+  nudDelay: 5000, nudProbes: 3, tcpSyn: [1000, 2000, 4000], tcpRto: 1000, tcpStall: 10000, dnsTimeout: 5000, loopHalt: 8 };
 export const TIMING = T;
 export const STP_PRESETS = { standard: { hello: 2, fwd: 15, maxAge: 20 }, fast: { hello: 1, fwd: 4, maxAge: 6 } };
 // Networks saved by older versions still use the German name of the fast timers
@@ -124,7 +125,8 @@ export class Sim {
 
   transmit(dev, ifname, frame) {
     const link = this.linkAt(dev.id, ifname);
-    const quiet = frame.type === 'stp';
+    const hello = isHello(frame);
+    const quiet = frame.type === 'stp' || hello;
     if (!link) { if (!quiet) this.record(dev, 'drop', `${ifname} is not connected, frame is lost`, { frame }); return; }
     if (!link.up) { if (!quiet) this.record(dev, 'drop', `Link on ${ifname} is down, frame is lost`, { frame, tag: 'link-down-drop' }); return; }
     const plen = framePayloadLen(frame);
@@ -134,13 +136,17 @@ export class Sim {
     }
     const peer = link.a.dev === dev.id && link.a.if === ifname ? link.b : link.a;
     const f = clone(frame);
-    const fl = { id: f.id + ':' + this.seq, frame: f, link, from: dev.id, fromIf: ifname, to: peer.dev, toIf: peer.if, t0: this.time, t1: this.time + T.linkDelay };
+    // Per link: extra one-way latency in ms and a loss rate in percent
+    const delay = T.linkDelay + Math.max(0, Number(link.delay) || 0);
+    const lost = Number(link.loss) > 0 && this.random() * 100 < Number(link.loss);
+    const fl = { id: f.id + ':' + this.seq, frame: f, link, from: dev.id, fromIf: ifname, to: peer.dev, toIf: peer.if, t0: this.time, t1: this.time + delay, lost };
     this.inflight.push(fl);
-    this.record(dev, 'send', `sends via ${ifname}: ${summary(f)}`, { frame: f, tag: quiet ? 'bpdu-sent' : null });
-    this.schedule(T.linkDelay, () => {
+    this.record(dev, 'send', `sends via ${ifname}: ${summary(f)}`, { frame: f, tag: frame.type === 'stp' ? 'bpdu-sent' : hello ? 'hello-sent' : null });
+    this.schedule(delay, () => {
       this.inflight = this.inflight.filter(x => x !== fl);
       const target = this.devices.get(peer.dev);
       if (!target || !this.topo.links.includes(link) || !link.up) return;
+      if (lost) { this.record(dev, 'drop', `Frame lost on the link ${ifname} → ${target.name} (packet loss ${link.loss} %)`, { frame: f, tag: 'link-loss' }); return; }
       target.receive(peer.if, f);
     });
   }
@@ -162,6 +168,11 @@ export class Sim {
   hasTag(tag, pred = () => true) { return this.log.some(e => e.tag === tag && pred(e.data || {}, e)); }
 }
 
+/** Periodic control frames that would flood the log: VRRP advertisements and OSPF hellos */
+export function isHello(f) {
+  const l4 = f?.type === 'ipv4' ? f.payload.l4 : null;
+  return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello'));
+}
 export function traceOf(f) {
   if (!f || f.type !== 'ipv4') return null;
   const l4 = f.payload.l4;
@@ -184,7 +195,12 @@ export function normalizeDevice(cfg) {
     for (const p of PORTS.router) cfg.ifaces[p] ??= { ip: '', prefix: 24 };
     cfg.ifaces.lo ??= { ip: '', prefix: 32 };
     cfg.routes ??= []; cfg.acl ??= []; cfg.forwarding ??= true;
+    cfg.vrrp ??= [];
+    cfg.nat = { outside: '', masquerade: true, forwards: [], ...(cfg.nat || {}) };
+    cfg.ospf = { enabled: false, timers: 'fast', rid: '', ...(cfg.ospf || {}) };
+    cfg.ospf.ifaces ??= {};
   }
+  if (t === 'router' || t === 'server') cfg.dhcpServer = { enabled: false, pools: [], ...(cfg.dhcpServer || {}) };
   if (t === 'switch') {
     cfg.ports ??= {};
     for (const p of PORTS.switch) cfg.ports[p] = { mode: 'access', vlan: 1, allowed: '1-4094', native: 1, edge: false, cost: 4, ...(cfg.ports[p] || {}) };
@@ -247,14 +263,19 @@ class L3 {
   resetState() {
     this.arp = new Map(); this.pending = new Map(); this.pmtu = new Map();
     this.reasm = new Map(); this.sessions = new Set(); this.tcp = new Map();
+    this.lease = null; this.natTable = []; this.dhcpLeases = new Map();
   }
   get cfg() { return this.dev.cfg; }
   get forwarding() { return this.cfg.type === 'router' ? this.cfg.forwarding !== false : false; }
   ifaces() {
+    // An interface in DHCP mode uses the address from its lease, if there is one
     return Object.entries(this.cfg.ifaces || {})
+      .map(([name, v]) => v?.dhcp ? [name, { ...v, ip: this.lease?.ifname === name ? this.lease.ip : '', prefix: this.lease?.prefix ?? 24 }] : [name, v])
       .filter(([, v]) => v && isIp(v.ip))
       .map(([name, v]) => ({ name, ip: v.ip, prefix: Number(v.prefix ?? 24), vlan: v.vlan ? Number(v.vlan) : null, phys: v.parent || name }));
   }
+  gateway() { return isIp(this.cfg.gw) ? this.cfg.gw : this.lease?.router || ''; }
+  resolver() { return isIp(this.cfg.resolver) ? this.cfg.resolver : this.lease?.dns || ''; }
   phys(ifname) { return this.cfg.ifaces?.[ifname]?.parent || ifname; }
   logicalFor(phys, vid) {
     for (const [k, v] of Object.entries(this.cfg.ifaces || {})) {
@@ -263,7 +284,7 @@ class L3 {
     }
     return null;
   }
-  isOwn(ip) { return this.ifaces().some(i => i.ip === ip); }
+  isOwn(ip) { return this.ifaces().some(i => i.ip === ip) || !!this.dev.vrrp?.ownsIp(ip); }
   ifIp(ifname) { return this.ifaces().find(i => i.name === ifname)?.ip || null; }
   mtu(ifname) { return ifname === 'lo' ? 65536 : this.sim.mtuOf(this.dev.id, this.phys(ifname)); }
   linkUp(ifname) { if (ifname === 'lo') return true; const l = this.sim.linkAt(this.dev.id, this.phys(ifname)); return !!l && l.up; }
@@ -275,21 +296,25 @@ class L3 {
       out.push({ net: intToIp(netOf(i.ip, i.prefix)), len: i.prefix, via: null, dev: i.name, proto: 'C', src: i.ip });
     }
     const statics = [...(this.cfg.routes || [])];
-    if ((this.cfg.type === 'pc' || this.cfg.type === 'server') && isIp(this.cfg.gw)) statics.push({ dst: 'default', via: this.cfg.gw, auto: true });
+    const gw = (this.cfg.type === 'pc' || this.cfg.type === 'server') ? this.gateway() : '';
+    if (gw) statics.push({ dst: 'default', via: gw, auto: true, dhcp: !isIp(this.cfg.gw) });
     for (const r of statics) {
       const p = parseCidr(r.dst);
       if (!p || !isIp(r.via)) continue;
       const nh = out.find(c => c.proto === 'C' && inNet(r.via, c.net, c.len));
-      out.push({ net: p.net, len: p.len, via: r.via, dev: nh ? nh.dev : null, proto: 'S', active: !!nh, auto: r.auto });
+      out.push({ net: p.net, len: p.len, via: r.via, dev: nh ? nh.dev : null, proto: 'S', active: !!nh, auto: r.auto, dhcp: r.dhcp });
     }
+    for (const r of this.dev.ospf?.routes || []) out.push({ net: r.net, len: r.len, via: r.via, dev: r.dev, proto: 'O', metric: r.cost });
     return out;
   }
   lookup(dst) {
+    // Longest prefix first, then the administrative distance: connected 0, static 1, OSPF 110
+    const AD = { C: 0, S: 1, O: 110 };
     let best = null;
     for (const r of this.routes()) {
       if (r.proto === 'S' && !r.dev) continue;
       if (!inNet(dst, r.net, r.len)) continue;
-      if (!best || r.len > best.len || (r.len === best.len && best.proto === 'S' && r.proto === 'C')) best = r;
+      if (!best || r.len > best.len || (r.len === best.len && AD[r.proto] < AD[best.proto])) best = r;
     }
     return best;
   }
@@ -358,11 +383,11 @@ class L3 {
     this.pending.get(nh).push({ pkt, egress });
     if (!e || e.state !== 'INCOMPLETE') this.startArp(nh, egress);
   }
-  sendFrame(egress, dstMac, type, payload) {
+  sendFrame(egress, dstMac, type, payload, srcMac = null) {
     const c = this.cfg.ifaces?.[egress];
     const phys = c?.parent || egress;
     const vlanId = c?.vlan;
-    const frame = ethFrame(this.dev.mac(phys), dstMac, type, payload, vlanId ? { vid: Number(vlanId), pcp: 0 } : null);
+    const frame = ethFrame(srcMac || this.dev.mac(phys), dstMac, type, payload, vlanId ? { vid: Number(vlanId), pcp: 0 } : null);
     this.dev.transmit(phys, frame);
   }
   startArp(nh, egress) {
@@ -437,10 +462,17 @@ class L3 {
       return;
     }
     const myMac = this.dev.mac(phys);
-    if (frame.dst !== myMac && frame.dst !== BCAST) {
+    const forVip = this.dev.vrrp?.accepts(ifname, frame.dst);
+    if (frame.dst !== myMac && frame.dst !== BCAST && !forVip) {
+      if (isGroupMac(frame.dst)) {
+        // Multicast: only routers running VRRP or OSPF listen, everyone else ignores it quietly
+        const k = frame.type === 'ipv4' ? frame.payload.l4?.kind : null;
+        if (!((k === 'vrrp' && this.dev.vrrp) || (k === 'ospf' && this.dev.ospf?.enabled))) return;
+      } else {
       this.dev.record('ignore', `sees a frame to ${frame.dst} on ${phys}: not for me, dropped`,
         { frame, tag: 'frame-not-mine', data: { type: frame.type, kind: frame.type === 'ipv4' ? frame.payload.l4?.kind : 'arp' } });
       return;
+      }
     }
     // Confirm reachability: traffic from the neighbor keeps the ARP entry fresh
     for (const e of this.arp.values()) if (e.mac === frame.src && e.ifname === ifname && e.state !== 'INCOMPLETE') { e.t = this.sim.time; e.state = 'REACHABLE'; e.probing = false; }
@@ -471,6 +503,14 @@ class L3 {
       }
       return;
     }
+    const vg = a.op === 1 && this.dev.vrrp?.vipGroup(a.tpa, ifname);
+    if (vg) {
+      const vm = vrrpMac(vg.vrid);
+      this.learnArp(a.spa, a.sha, ifname, 'learned from the request');
+      this.dev.record('info', `answers the ARP request for the virtual IP: ${a.tpa} is at ${vm} (VRRP ${vg.vrid} master)`, { tag: 'arp-reply-sent', data: { ip: a.tpa, vrrp: true } });
+      this.sendFrame(ifname, a.sha, 'arp', arpPacket(2, vm, a.tpa, a.sha, a.spa), vm);
+      return;
+    }
     if (a.op === 1) {
       if (myIp && a.tpa === myIp) {
         this.learnArp(a.spa, a.sha, ifname, 'learned from the request');
@@ -484,6 +524,13 @@ class L3 {
     }
   }
   rxIp(ifname, ip, frame) {
+    const nat = this.cfg.nat;
+    if (nat?.outside === ifname && this.forwarding) {
+      const t = natIn(this, ip, frame);
+      if (t) return this.forward(t, ifname, frame);
+    }
+    // Limited broadcast and multicast are delivered locally and never forwarded
+    if (ip.dst === '255.255.255.255' || isMcastIp(ip.dst)) return this.deliver(ip, ifname, frame);
     if (this.isOwn(ip.dst)) {
       if (ip.frag) return this.reassemble(ip, ifname);
       return this.deliver(ip, ifname, frame);
@@ -537,6 +584,8 @@ class L3 {
       this.dev.record('info', `adjusts the MSS in the SYN from ${out.l4.mss} to ${clamp} (MSS clamping)`, { frame, tag: 'mss-clamped', data: { from: out.l4.mss, to: clamp } });
       out.l4.mss = clamp;
     }
+    const nat = this.cfg.nat;
+    if (nat?.outside && r?.dev === nat.outside && inIf !== nat.outside) natOut(this, out, frame);
     out.checksum = ipChecksum(out);
     if (r) this.dev.record('fwd', `forwards ${ip.src} > ${ip.dst}: route ${r.net}/${r.len}${r.via ? ' via ' + r.via : ' direct'} out ${r.dev}, TTL ${ip.ttl} → ${out.ttl}`,
       { frame, tag: 'forwarded', data: { dst: ip.dst, route: `${r.net}/${r.len}`, from: inIf, to: r.dev } });
@@ -572,6 +621,11 @@ class L3 {
   deliver(ip, ifname, frame) {
     const l4 = ip.l4;
     if (!l4) return;
+    const toGroup = ip.dst === '255.255.255.255' || isMcastIp(ip.dst);
+    if (l4.kind === 'vrrp') return this.dev.vrrp?.onAdvert(ip, ifname, frame);
+    if (l4.kind === 'ospf') return this.dev.ospf?.onPacket(ip, ifname, frame);
+    // Like Linux: no answers to pings sent to a broadcast or multicast address
+    if (toGroup && l4.kind !== 'udp') return;
     if (l4.kind === 'icmp') {
       if (l4.type === 8) {
         this.dev.record('ok', `receives Echo Request from ${ip.src} (seq ${l4.seq}) and replies`, { frame, tag: 'echo-request-received', data: { from: ip.src } });
@@ -595,6 +649,7 @@ class L3 {
     }
     if (l4.kind === 'tcp') return this.onTcp(ip, frame);
     if (l4.kind === 'udp') {
+      if (l4.dport === 67 && l4.payload?.kind === 'dhcp' && dhcpOn67(this, ip, ifname, frame)) return;
       if (this.dev.onUdp?.(ip, ifname, frame)) return;
       for (const s of [...this.sessions]) if (s.onUdp?.(ip)) return;
       const svc = this.service('udp', l4.dport);
@@ -603,6 +658,7 @@ class L3 {
         this.dev.record('ok', `receives a UDP datagram from ${ip.src}:${l4.sport} on port ${l4.dport} (${svc.name || 'service'})`, { frame, tag: 'udp-received', data: { port: l4.dport, from: ip.src } });
         return;
       }
+      if (toGroup) return;
       this.dev.record('info', `UDP port ${l4.dport} is closed, sends ICMP Port Unreachable to ${ip.src}`, { frame, tag: 'port-unreachable-sent', data: { port: l4.dport } });
       this.icmpError(ip, 3, 3);
     }
@@ -627,6 +683,21 @@ class L3 {
       seq += len;
     }
     c.sndNxt = Math.max(c.sndNxt, end);
+    this.armRto(c);
+  }
+  // Retransmission timeout with exponential backoff (1, 2, 4 … s), gives up after 6 attempts
+  armRto(c) {
+    this.sim.cancel(c.rto);
+    const end = c.resp.start + c.resp.total;
+    if (c.acked >= end) return;
+    const rto = Math.max(T.tcpRto, 2 * (c.rtt || 0)) * 2 ** (c.retries || 0);
+    c.rto = this.sim.schedule(rto, () => {
+      if (this.tcp.get(c.key) !== c || c.acked >= end) return;
+      c.retries = (c.retries || 0) + 1;
+      if (c.retries > 6) { this.dev.record('err', `gives up on ${c.rip}:${c.rport} after 6 retransmissions`, { tag: 'tcp-giveup' }); this.tcp.delete(c.key); return; }
+      this.dev.record('info', `no acknowledgment from ${c.rip} for ${Math.round(rto)} ms: retransmits from byte ${c.acked - c.resp.start} (attempt ${c.retries})`, { tag: 'tcp-rto', data: { mss: c.curMss, attempt: c.retries } });
+      this.sendResponse(c, c.curMss, c.acked);
+    });
   }
   // After ICMP Fragmentation Needed: resend unacknowledged data with a smaller MSS
   tcpPmtu(orig, mtu) {
@@ -657,7 +728,7 @@ class L3 {
           this.sendTcp(ip.src, tcp(s.dport, s.sport, 0, s.seq + 1, { RST: true, ACK: true }), ip.dst);
           return;
         }
-        const conn = { state: 'SYN_RECEIVED', lport: s.dport, rip: ip.src, rport: s.sport, iss: nextIsn(this.sim), rcvNxt: s.seq + 1, peerMss: s.mss || 536, svc, local: ip.dst };
+        const conn = { key, state: 'SYN_RECEIVED', lport: s.dport, rip: ip.src, rport: s.sport, iss: nextIsn(this.sim), rcvNxt: s.seq + 1, peerMss: s.mss || 536, svc, local: ip.dst, synT: this.sim.time };
         conn.sndNxt = conn.iss + 1;
         this.tcp.set(key, conn);
         this.dev.record('info', `Service ${svc.name || ''} on port ${s.dport} accepts the connection: SYN/ACK`, { frame, tag: 'tcp-synack-sent', data: { port: s.dport } });
@@ -667,9 +738,15 @@ class L3 {
       if (!s.flags.RST) this.sendTcp(ip.src, tcp(s.dport, s.sport, s.ack, s.seq + (s.dataLen || 0), { RST: true, ACK: true }), ip.dst);
       return;
     }
-    if (s.flags.RST) { this.tcp.delete(key); this.dev.record('info', `Connection to ${ip.src}:${s.sport} terminated by RST`, { frame, tag: 'tcp-reset' }); return; }
+    if (s.flags.RST) { this.sim.cancel(c.rto); this.tcp.delete(key); this.dev.record('info', `Connection to ${ip.src}:${s.sport} terminated by RST`, { frame, tag: 'tcp-reset' }); return; }
+    // The SYN/ACK got lost and the client repeats its SYN: answer again
+    if (c.state === 'SYN_RECEIVED' && s.flags.SYN && !s.flags.ACK) {
+      this.sendTcp(ip.src, tcp(s.dport, s.sport, c.iss, c.rcvNxt, { SYN: true, ACK: true }, { mss: this.mssFor(ip.src) }), ip.dst);
+      return;
+    }
     if (c.state === 'SYN_RECEIVED' && s.flags.ACK && s.ack === c.sndNxt) {
       c.state = 'ESTABLISHED';
+      c.rtt = this.sim.time - c.synT;
       this.dev.record('ok', `Connection with ${ip.src}:${s.sport} established (ESTABLISHED)`, { frame, tag: 'tcp-established', data: { port: c.lport } });
     }
     if (s.dataLen > 0 && s.seq === c.rcvNxt) {
@@ -684,7 +761,7 @@ class L3 {
       this.sendResponse(c, mss, c.sndNxt);
       return;
     }
-    if (c.resp && s.flags.ACK && s.ack > (c.acked ?? 0)) c.acked = s.ack;
+    if (c.resp && s.flags.ACK && s.ack > (c.acked ?? 0)) { c.acked = s.ack; c.retries = 0; this.armRto(c); }
     if (s.flags.FIN) {
       c.rcvNxt += 1;
       this.sendTcp(ip.src, tcp(c.lport, c.rport, c.sndNxt, c.rcvNxt, { FIN: true, ACK: true }), c.local);
@@ -693,6 +770,7 @@ class L3 {
       return;
     }
     if (c.state === 'LAST_ACK' && s.flags.ACK && s.ack === c.sndNxt) {
+      this.sim.cancel(c.rto);
       this.tcp.delete(key);
       this.dev.record('ok', `Connection with ${ip.src}:${s.sport} closed`, { frame, tag: 'tcp-closed' });
     }
@@ -909,12 +987,21 @@ class TcpClient extends Session {
       this.dev.record('ok', `Three-way handshake with ${this.dst}:${this.port} complete (ESTABLISHED)`, { tag: 'tcp-established', data: { dst: this.dst, port: this.port, client: true } });
       if (this.mode === 'probe') { this.dev.print(`Connection to ${this.dst} ${this.port} port [tcp] succeeded!`); return this.close(); }
       const req = 78;
-      this.l3.sendTcp(this.dst, tcp(this.lport, this.port, this.sndNxt, this.rcvNxt, { ACK: true, PSH: true }, { dataLen: req, app: 'GET / HTTP/1.1' }));
+      this.reqSeq = this.sndNxt;
+      this.sendRequest();
       this.sndNxt += req;
       this.armStall();
       return;
     }
+    // A segment arrived out of order (an earlier one was lost): repeat the last acknowledgment
+    if (this.state === 'ESTABLISHED' && s.dataLen > 0 && s.seq !== this.rcvNxt) {
+      this.dev.record('info', `segment from byte ${s.seq - (this.firstSeq ?? s.seq)} arrives out of order, acknowledges ${this.rcvNxt} again (duplicate ACK)`, { tag: 'tcp-dupack' });
+      this.l3.sendTcp(this.dst, tcp(this.lport, this.port, this.sndNxt, this.rcvNxt, { ACK: true }));
+      return;
+    }
     if (this.state === 'ESTABLISHED' && s.dataLen > 0 && s.seq === this.rcvNxt) {
+      this.sim.cancel(this.reqTimer);
+      this.firstSeq ??= s.seq;
       this.rcvNxt += s.dataLen; this.bytes += s.dataLen; this.segments++;
       if (s.total) this.expected = s.total;
       if (s.app) this.dev.print(`< ${s.app}`);
@@ -933,6 +1020,16 @@ class TcpClient extends Session {
       this.dev.record('ok', `Connection to ${this.dst}:${this.port} closed cleanly`, { tag: 'tcp-closed', data: { client: true } });
       this.finish(true);
     }
+  }
+  // The request is sent again if no answer comes within a second (it may have been lost)
+  sendRequest(n = 0) {
+    this.l3.sendTcp(this.dst, tcp(this.lport, this.port, this.reqSeq, this.rcvNxt, { ACK: true, PSH: true }, { dataLen: 78, app: 'GET / HTTP/1.1' }));
+    this.sim.cancel(this.reqTimer);
+    this.reqTimer = n < 3 ? this.sim.schedule(T.tcpRto * (n + 1), () => {
+      if (this.done || this.state !== 'ESTABLISHED' || this.bytes > 0) return;
+      this.dev.record('info', `no answer to the request yet, sends it again (attempt ${n + 1})`, { tag: 'tcp-rto', data: { client: true } });
+      this.sendRequest(n + 1);
+    }) : null;
   }
   armStall() {
     this.sim.cancel(this.timer);
@@ -967,6 +1064,7 @@ class TcpClient extends Session {
   finish(ok) {
     if (this.done) return;
     this.sim.cancel(this.timer);
+    this.sim.cancel(this.reqTimer);
     this.end();
     this.l3.tcp.delete(this.key);
     this.dev.record(ok ? 'ok' : 'err', `${this.tool} ${this.dst}:${this.port} finished`, { tag: 'tcp-done', data: { dst: this.dst, port: this.port, ok: !!ok, bytes: this.bytes, segments: this.segments, mode: this.mode } });
@@ -1041,12 +1139,114 @@ class Host extends Device {
   dig(server, name) { const s = new DigSession(this.l3, server, name); s.start(); return s; }
   resolve(name, cb) {
     if (isIp(name)) return cb(name);
-    if (!isIp(this.cfg.resolver)) { this.print(`${name}: no DNS server configured`); this.record('err', `cannot resolve ${name}: no DNS server configured`, { tag: 'dns-no-resolver' }); return cb(null); }
-    const s = new DigSession(this.l3, this.cfg.resolver, name, cb); s.start(); return s;
+    const dns = this.l3.resolver();
+    if (!dns) { this.print(`${name}: no DNS server configured`); this.record('err', `cannot resolve ${name}: no DNS server configured`, { tag: 'dns-no-resolver' }); return cb(null); }
+    const s = new DigSession(this.l3, dns, name, cb); s.start(); return s;
   }
   udpSend(dst, port, len = 32) { const s = new UdpSend(this.l3, dst, port, len); s.start(); return s; }
+  // Interfaces in DHCP mode ask for an address shortly after the device starts
+  start() {
+    for (const [n, v] of Object.entries(this.cfg.ifaces || {})) {
+      if (v?.dhcp) this.sim.schedule(600 + this.sim.random() * 600, () => { if (!this.l3.lease && !this.dhcpRunning(n)) this.dhclient(n, { boot: true }); });
+    }
+  }
+  dhcpRunning(ifname) { return [...this.l3.sessions].some(s => s instanceof DhcpClient && s.ifname === ifname); }
+  dhclient(ifname = 'eth1', o = {}) { const s = new DhcpClient(this.l3, ifname, o); s.start(); return s; }
+  dhcpRelease(ifname = 'eth1') {
+    const l = this.l3.lease;
+    this.print(`$ dhclient -r ${ifname}`);
+    if (!l || l.ifname !== ifname) return this.print('dhclient: no lease to release');
+    this.l3.output(ipPacket({ src: l.ip, dst: l.server, proto: PROTO.UDP, l4: udp(68, 67, { kind: 'dhcp', op: 'RELEASE', xid: 1, chaddr: this.mac(ifname), ciaddr: l.ip, yiaddr: '0.0.0.0', giaddr: '0.0.0.0', hops: 0 }) }), {});
+    this.l3.lease = null;
+    this.print(`DHCPRELEASE of ${l.ip} on ${ifname} to ${l.server} port 67`);
+    this.record('info', `releases ${l.ip} and has no address on ${ifname} now`, { tag: 'dhcp-released-client' });
+    this.sim.emit('config', this.id);
+  }
 }
-class Router extends Host {}
+class Router extends Host {
+  // VRRP and OSPF only restart when their own settings change, not on every configuration change
+  start() {
+    super.start();
+    this.vrrp?.stop(); this.ospf?.stop();
+    this.vrrp = new Vrrp(this); this.vrrp.start(); this.vrrpSnap = JSON.stringify(this.cfg.vrrp);
+    this.ospf = new Ospf(this); this.ospf.start(); this.ospfSnap = JSON.stringify(this.cfg.ospf);
+    this.addrSnap = JSON.stringify(this.l3.ifaces());
+  }
+  stop() { this.vrrp?.stop(); this.ospf?.stop(); }
+  onConfig() {
+    const v = JSON.stringify(this.cfg.vrrp), o = JSON.stringify(this.cfg.ospf), a = JSON.stringify(this.l3.ifaces());
+    if (v !== this.vrrpSnap) { this.vrrpSnap = v; this.vrrp.start(); }
+    if (o !== this.ospfSnap) { this.ospfSnap = o; this.ospf.start(); }
+    else if (a !== this.addrSnap) this.ospf.originate();
+    this.addrSnap = a;
+  }
+  onLink(ifname, up) { this.vrrp?.onLink(ifname, up); this.ospf?.onLink(ifname, up); }
+}
+
+// ---------------------------------------------------------------- DHCP client (DORA)
+class DhcpClient extends Session {
+  constructor(l3, ifname, o = {}) { super(l3); this.ifname = ifname; this.boot = !!o.boot; this.xid = Math.floor(this.sim.random() * 0xffffffff) >>> 0; this.tries = 0; this.state = 'INIT'; }
+  get mac() { return this.dev.mac(this.ifname); }
+  start() {
+    for (const s of [...this.l3.sessions]) if (s instanceof DhcpClient && s.ifname === this.ifname) s.end();
+    this.begin();
+    if (!this.boot) this.dev.print(`$ dhclient -v ${this.ifname}`);
+    if (this.l3.lease) { this.dev.print(`drops the old lease ${this.l3.lease.ip}`); this.l3.lease = null; this.sim.emit('config', this.dev.id); }
+    this.discover();
+  }
+  send(m) {
+    const pkt = ipPacket({ src: '0.0.0.0', dst: '255.255.255.255', proto: PROTO.UDP,
+      l4: udp(68, 67, { kind: 'dhcp', xid: this.xid, chaddr: this.mac, ciaddr: '0.0.0.0', yiaddr: '0.0.0.0', giaddr: '0.0.0.0', hops: 0, ...m }) });
+    this.l3.sendFrame(this.ifname, BCAST, 'ipv4', pkt);
+  }
+  discover() {
+    if (this.done) return;
+    if (this.tries >= DHCP_TIMING.tries) {
+      this.dev.print('No DHCPOFFERS received.');
+      this.dev.record('err', `DHCP on ${this.ifname}: no server answered after ${DHCP_TIMING.tries} DISCOVERs`, { tag: 'dhcp-failed' });
+      return this.finish(false);
+    }
+    this.tries++; this.state = 'SELECTING';
+    this.dev.print(`DHCPDISCOVER on ${this.ifname} to 255.255.255.255 port 67 interval ${DHCP_TIMING.retry / 1000}`);
+    this.dev.record('info', `has no address on ${this.ifname} and asks for one: DHCP DISCOVER as a broadcast (attempt ${this.tries})`, { tag: 'dhcp-discover' });
+    this.send({ op: 'DISCOVER' });
+    this.timer = this.sim.schedule(DHCP_TIMING.retry, () => { if (this.state === 'SELECTING') this.discover(); });
+  }
+  onUdp(ip) {
+    const d = ip.l4.payload;
+    if (d?.kind !== 'dhcp' || ip.l4.dport !== 68 || d.xid !== this.xid || d.chaddr !== this.mac || this.done) return false;
+    if (d.op === 'OFFER' && this.state === 'SELECTING') {
+      this.sim.cancel(this.timer);
+      this.state = 'REQUESTING';
+      this.dev.print(`DHCPOFFER of ${d.yiaddr} from ${d.server}`);
+      this.dev.print(`DHCPREQUEST for ${d.yiaddr} on ${this.ifname} to 255.255.255.255 port 67`);
+      this.dev.record('learn', `gets an offer: ${d.yiaddr}/${d.prefix} from ${d.server}, requests it (DHCP REQUEST)`, { tag: 'dhcp-offer', data: { ip: d.yiaddr, server: d.server } });
+      this.send({ op: 'REQUEST', requested: d.yiaddr, server: d.server });
+      this.timer = this.sim.schedule(DHCP_TIMING.retry, () => { if (this.state === 'REQUESTING') this.discover(); });
+      return true;
+    }
+    if (d.op === 'ACK' && this.state === 'REQUESTING') {
+      this.sim.cancel(this.timer);
+      this.l3.lease = { ifname: this.ifname, ip: d.yiaddr, prefix: d.prefix, router: d.router, dns: d.dns, server: d.server, lease: d.lease, t: this.sim.time };
+      this.dev.print(`DHCPACK of ${d.yiaddr} from ${d.server}`);
+      this.dev.print(`bound to ${d.yiaddr}/${d.prefix}${d.router ? ', gateway ' + d.router : ''}${d.dns ? ', DNS ' + d.dns : ''} -- renewal in ${Math.round(d.lease / 2)} seconds.`);
+      this.dev.record('ok', `uses ${d.yiaddr}/${d.prefix} on ${this.ifname} now (gateway ${d.router || 'none'}, DNS ${d.dns || 'none'}, lease ${d.lease} s)`, { tag: 'dhcp-bound', data: { ip: d.yiaddr, router: d.router, dns: d.dns } });
+      this.sim.emit('config', this.dev.id);
+      this.finish(true);
+      return true;
+    }
+    if (d.op === 'NAK') {
+      this.sim.cancel(this.timer);
+      this.dev.print(`DHCPNAK from ${d.server}`);
+      this.dev.record('err', `the server refuses the requested address (DHCP NAK), starts over`, { tag: 'dhcp-nak' });
+      this.tries = 0;
+      this.discover();
+      return true;
+    }
+    return true;
+  }
+  finish() { if (this.done) return; this.sim.cancel(this.timer); this.end(); }
+}
 
 // ---------------------------------------------------------------- Bridge with spanning tree
 const cmpBid = (a, b) => (a.prio - b.prio) || a.mac.localeCompare(b.mac);

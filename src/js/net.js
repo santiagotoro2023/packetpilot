@@ -5,8 +5,11 @@ export const IP_HDR = 20, UDP_HDR = 8, ICMP_HDR = 8, VXLAN_HDR = 8, ARP_LEN = 28
 export const STP_MAC = '01:80:c2:00:00:00';
 export const BCAST = 'ff:ff:ff:ff:ff:ff';
 export const VXLAN_PORT = 4789;
-export const PROTO = { ICMP: 1, TCP: 6, UDP: 17 };
-export const PROTO_NAME = { 1: 'ICMP', 6: 'TCP', 17: 'UDP' };
+export const PROTO = { ICMP: 1, TCP: 6, UDP: 17, OSPF: 89, VRRP: 112 };
+export const PROTO_NAME = { 1: 'ICMP', 6: 'TCP', 17: 'UDP', 89: 'OSPF', 112: 'VRRP' };
+export const DHCP_LEN = 300;
+export const VRRP_MAC = '01:00:5e:00:00:12', OSPF_MAC = '01:00:5e:00:00:05';
+export const isMcastIp = ip => { const n = ipToInt(ip); return n !== null && (n >>> 28) === 14; };
 
 export function ipToInt(ip) {
   const p = String(ip).trim().split('.');
@@ -66,7 +69,14 @@ export function l4Len(ip) {
   if (l4.kind === 'icmp') return ICMP_HDR + (l4.dataLen || 0);
   if (l4.kind === 'udp') return UDP_HDR + udpPayloadLen(l4);
   if (l4.kind === 'tcp') return tcpHdrLen(l4) + (l4.dataLen || 0);
+  if (l4.kind === 'vrrp') return 8 + 4 * (l4.vips?.length || 1);
+  if (l4.kind === 'ospf') return ospfLen(l4);
   return 0;
+}
+// OSPF: 24 byte header, hello 20 + 4 per neighbor, LS update 4 + per LSA 24 + 12 per link
+export function ospfLen(o) {
+  if (o.type === 'hello') return 24 + 20 + 4 * (o.nbrs?.length || 0);
+  return 24 + 4 + (o.lsas || []).reduce((s, l) => s + 24 + 12 * l.links.length, 0);
 }
 export function tcpHdrLen(t) { return TCP_HDR + (t.mss ? 4 : 0); }
 export function dnsLen(d) {
@@ -78,6 +88,7 @@ export function udpPayloadLen(udp) {
   if (!p) return udp.dataLen || 0;
   if (p.kind === 'vxlan') return VXLAN_HDR + frameLen(p.frame);
   if (p.kind === 'dns') return dnsLen(p);
+  if (p.kind === 'dhcp') return DHCP_LEN;
   return p.len || 0;
 }
 export function ipTotalLen(ip) { return IP_HDR + l4Len(ip); }

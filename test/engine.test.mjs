@@ -411,4 +411,134 @@ test('TCP: PMTUD, blackhole and MSS clamping', () => {
   assert.ok(sim.hasTag('tcp-done', d => d.ok && d.segments === 4));
 });
 
+
+// ---------------------------------------------------------------- services: DHCP, NAT, VRRP, OSPF, line quality
+const R = (id, ifaces, extra = {}) => ({ id, type: 'router', name: id, ifaces: Object.fromEntries(Object.entries(ifaces).map(([k, v]) => [k, { ip: v.split('/')[0], prefix: Number(v.split('/')[1]) }])), ...extra });
+
+test('DHCP: DORA on the same segment, then through a relay', () => {
+  const pool = { net: '10.10.0.0/24', from: '10.10.0.100', to: '10.10.0.101', router: '10.10.0.1', dns: '10.20.0.53' };
+  let sim = new Sim({ devices: [{ id: 'c', type: 'pc', name: 'c', ifaces: { eth1: { dhcp: true } } },
+    { id: 'd', type: 'server', name: 'd', ifaces: { eth1: { ip: '10.10.0.2', prefix: 24 } }, dhcpServer: { enabled: true, pools: [pool] } }],
+  links: [L('c', 'eth1', 'd', 'eth1')] });
+  sim.runFor(3000);
+  assert.equal(sim.dev('c').l3.lease.ip, '10.10.0.100');
+  assert.equal(sim.dev('c').l3.lookup('8.8.8.8').via, '10.10.0.1', 'default route from DHCP');
+  assert.equal(sim.dev('c').l3.resolver(), '10.20.0.53');
+  assert.match(out(sim, 'c'), /DHCPACK of 10\.10\.0\.100/);
+  // Relay
+  sim = new Sim({ devices: [{ id: 'c', type: 'pc', name: 'c', ifaces: { eth1: { dhcp: true } } },
+    { id: 'd', type: 'server', name: 'd', ifaces: { eth1: { ip: '10.20.0.67', prefix: 24 } }, gw: '10.20.0.1', dhcpServer: { enabled: true, pools: [pool] } },
+    R('r', { eth1: '10.10.0.1/24', eth2: '10.20.0.1/24' })], links: [L('c', 'eth1', 'r', 'eth1'), L('r', 'eth2', 'd', 'eth1')] });
+  sim.runFor(15000);
+  assert.ok(sim.hasTag('dhcp-failed'), 'without a relay no answer');
+  assert.ok(!sim.log.some(e => e.tag === 'port-unreachable-sent'), 'no ICMP errors for broadcasts');
+  sim.dev('r').cfg.ifaces.eth1.helper = '10.20.0.67';
+  sim.dev('c').dhclient('eth1'); sim.runFor(3000);
+  assert.equal(sim.dev('c').l3.lease?.ip, '10.10.0.100');
+  assert.ok(sim.hasTag('dhcp-relayed', d => d.op === 'DISCOVER'));
+  sim.dev('c').ping('10.20.0.67', { count: 1 }); sim.runToIdle();
+  assert.match(out(sim, 'c'), /1 received/);
+  sim.dev('c').dhcpRelease('eth1'); sim.runFor(500);
+  assert.equal(sim.dev('c').l3.lease, null);
+  assert.equal(sim.dev('d').l3.dhcpLeases.size, 0);
+});
+
+const natNet = () => {
+  const sim = new Sim({ devices: [pc('in1', '192.168.1.10', '192.168.1.1'), pc('in2', '192.168.1.11', '192.168.1.1'),
+    R('gw', { eth1: '192.168.1.1/24', eth2: '203.0.113.2/30' }, { routes: [{ dst: 'default', via: '203.0.113.1' }], nat: { outside: 'eth2', masquerade: true, forwards: [{ proto: 'tcp', port: 8080, to: '192.168.1.10', toPort: 80 }] } }),
+    R('isp', { eth1: '203.0.113.1/30', eth2: '198.51.100.1/24' }), { id: 'web', type: 'server', name: 'web', ifaces: { eth1: { ip: '198.51.100.80', prefix: 24 } }, gw: '198.51.100.1' },
+    { id: 'sw', type: 'switch', name: 'sw' }],
+  links: [L('in1', 'eth1', 'sw', 'eth1'), L('in2', 'eth1', 'sw', 'eth2'), L('gw', 'eth1', 'sw', 'eth3'), L('gw', 'eth2', 'isp', 'eth1'), L('isp', 'eth2', 'web', 'eth1')] });
+  sim.dev('in1').cfg.services = [{ proto: 'tcp', port: 80, name: 'http', size: 1000 }];
+  return sim;
+};
+test('NAT: masquerade, port reuse, port forward and ICMP errors', () => {
+  const sim = natNet();
+  sim.dev('in1').ping('198.51.100.80', { count: 1 }); sim.runToIdle();
+  assert.match(out(sim, 'in1'), /1 received/);
+  assert.ok(sim.log.some(e => e.dev === 'web' && e.tag === 'echo-request-received' && e.data.from === '203.0.113.2'), 'web only sees the outside address');
+  sim.dev('in1').curl('198.51.100.80', 80); sim.dev('in2').curl('198.51.100.80', 80); sim.runToIdle();
+  assert.equal(sim.log.filter(e => e.tag === 'tcp-done' && e.data.ok).length, 2);
+  assert.ok(sim.dev('isp').l3.lookup('192.168.1.10') === null, 'the ISP does not know the private network');
+  sim.dev('web').curl('203.0.113.2', 8080); sim.runToIdle();
+  assert.ok(sim.hasTag('nat-new', d => d.kind === 'forward'));
+  assert.match(out(sim, 'web'), /1000 bytes received/);
+  sim.dev('in1').traceroute('198.51.100.80'); sim.runToIdle();
+  assert.ok(sim.hasTag('trace-done', d => d.reached && d.hops === 3), 'traceroute works through NAT');
+  sim.dev('web').ping('192.168.1.10', { count: 1 }); sim.runToIdle();
+  assert.match(out(sim, 'web'), /0 received/);
+});
+
+test('VRRP: master election, virtual MAC and failover', () => {
+  const sim = new Sim({ devices: [pc('h', '10.0.0.10', '10.0.0.1'), { id: 'sw', type: 'switch', name: 'sw' },
+    R('ra', { eth1: '10.0.0.2/24', eth2: '10.9.0.1/24' }, { vrrp: [{ ifname: 'eth1', vrid: 7, vip: '10.0.0.1', priority: 110 }] }),
+    R('rb', { eth1: '10.0.0.3/24', eth2: '10.9.0.2/24' }, { vrrp: [{ ifname: 'eth1', vrid: 7, vip: '10.0.0.1', priority: 100 }] }),
+    { id: 's', type: 'server', name: 's', ifaces: { eth1: { ip: '10.9.0.9', prefix: 24 } } }, { id: 'sw2', type: 'switch', name: 'sw2' }],
+  links: [L('h', 'eth1', 'sw', 'eth1'), L('ra', 'eth1', 'sw', 'eth2'), L('rb', 'eth1', 'sw', 'eth3'), L('ra', 'eth2', 'sw2', 'eth1'), L('rb', 'eth2', 'sw2', 'eth2'), L('s', 'eth1', 'sw2', 'eth3')] });
+  sim.dev('s').cfg.vrrp = undefined;
+  sim.runFor(5000);
+  assert.deepEqual(sim.dev('ra').vrrp.table().map(g => g.state), ['master']);
+  assert.deepEqual(sim.dev('rb').vrrp.table().map(g => g.state), ['backup']);
+  sim.dev('h').ping('10.0.0.1', { count: 1 }); sim.runFor(3000);
+  assert.equal(sim.dev('h').l3.arp.get('10.0.0.1').mac, '00:00:5e:00:01:07');
+  assert.match(out(sim, 'h'), /1 received/);
+  assert.ok(!sim.log.some(e => e.dev !== 'ra' && e.dev !== 'rb' && /hello|vrrp/.test(e.tag || '') && e.kind !== 'send'), 'hosts ignore advertisements');
+  sim.setLinkUp(sim.topo.links[1], false); sim.runFor(4000);
+  assert.equal(sim.dev('rb').vrrp.table()[0].state, 'master');
+  assert.equal(sim.dev('sw').bridge.table().find(e => e.mac === '00:00:5e:00:01:07').port, 'eth3', 'switch learned the virtual MAC on the new port');
+  sim.dev('h').ping('10.9.0.9', { count: 1 }); sim.runFor(3000);
+  assert.match(out(sim, 'h'), /1 received/);
+  sim.setLinkUp(sim.topo.links[1], true); sim.runFor(6000);
+  assert.equal(sim.dev('ra').vrrp.table()[0].state, 'master', 'preemption: the higher priority takes over again');
+  assert.equal(sim.dev('rb').vrrp.table()[0].state, 'backup');
+});
+
+const ospfTri = (o = {}) => {
+  const oi = (t, ...n) => ({ enabled: true, timers: t, ifaces: Object.fromEntries(n.map(x => [x, { enabled: true, cost: 10 }])) });
+  return new Sim({ devices: [R('o1', { eth1: '10.0.12.1/24', eth2: '10.0.13.1/24', eth3: '10.1.0.1/24' }, { ospf: oi('fast', 'eth1', 'eth2', 'eth3') }),
+    R('o2', { eth1: '10.0.12.2/24', eth2: '10.0.23.2/24' }, { ospf: oi(o.t2 || 'fast', 'eth1', 'eth2') }),
+    R('o3', { eth1: '10.0.13.3/24', eth2: '10.0.23.3/24', eth3: '10.3.0.1/24' }, { ospf: oi('fast', 'eth1', 'eth2', 'eth3') }),
+    pc('p1', '10.1.0.10', '10.1.0.1'), pc('p3', '10.3.0.10', '10.3.0.1')],
+  links: [L('o1', 'eth1', 'o2', 'eth1'), L('o1', 'eth2', 'o3', 'eth1'), L('o2', 'eth2', 'o3', 'eth2'), L('o1', 'eth3', 'p1', 'eth1'), L('o3', 'eth3', 'p3', 'eth1')] });
+};
+test('OSPF: adjacencies, SPF, reroute after a failure', () => {
+  const sim = ospfTri();
+  sim.runFor(6000);
+  assert.deepEqual(sim.dev('o1').ospf.neighborTable().map(n => n.state), ['Full', 'Full']);
+  const r = sim.dev('o1').l3.lookup('10.3.0.10');
+  assert.equal(r.proto, 'O'); assert.equal(r.via, '10.0.13.3'); assert.equal(r.metric, 20);
+  sim.dev('p1').ping('10.3.0.10', { count: 1 }); sim.runFor(3000);
+  assert.match(out(sim, 'p1'), /1 received/);
+  sim.setLinkUp(sim.topo.links[1], false); sim.runFor(2000);
+  const r2 = sim.dev('o1').l3.lookup('10.3.0.10');
+  assert.equal(r2.via, '10.0.12.2'); assert.equal(r2.metric, 30);
+  sim.dev('p1').ping('10.3.0.10', { count: 1 }); sim.runFor(3000);
+  assert.match(out(sim, 'p1'), /2 received|1 received, 0%[\s\S]*1 received/);
+  // A static route wins over OSPF for the same prefix (distance 1 instead of 110)
+  sim.dev('o1').cfg.routes = [{ dst: '10.3.0.0/24', via: '10.0.12.2' }];
+  assert.equal(sim.dev('o1').l3.lookup('10.3.0.10').proto, 'S');
+});
+test('OSPF: mismatched timers prevent the adjacency', () => {
+  const sim = ospfTri({ t2: 'standard' });
+  sim.runFor(15000);
+  assert.ok(sim.hasTag('ospf-mismatch', d => d.what === 'timers'));
+  assert.ok(!sim.dev('o2').ospf.neighborTable().some(n => n.state === 'Full'));
+  assert.ok(sim.dev('o1').ospf.neighborTable().some(n => n.rid === '10.3.0.1' && n.state === 'Full'));
+});
+
+test('Line quality: latency, loss and TCP retransmission', () => {
+  const sim = new Sim({ devices: [pc('a', '10.0.0.1'), { ...pc('b', '10.0.0.2'), services: [{ proto: 'tcp', port: 80, name: 'http', size: 20000 }] }],
+    links: [{ ...L('a', 'eth1', 'b', 'eth1'), delay: 20 }] });
+  sim.dev('a').ping('10.0.0.2', { count: 2 }); sim.runToIdle();
+  assert.match(out(sim, 'a'), /time=40\.\d+ ms/);
+  sim.topo.links[0].loss = 20;
+  sim.dev('a').ping('10.0.0.2', { count: 20 }); sim.runToIdle();
+  assert.ok(sim.hasTag('link-loss'));
+  const d = sim.log.filter(e => e.tag === 'ping-done').pop().data;
+  assert.ok(d.received > 5 && d.received < 20, `some pings lost (${d.received}/20)`);
+  sim.dev('a').curl('10.0.0.2', 80); sim.runToIdle();
+  assert.ok(sim.hasTag('tcp-done', x => x.ok && x.bytes === 20000), 'TCP gets everything through despite the loss');
+  assert.ok(sim.hasTag('tcp-rto') || sim.hasTag('tcp-dupack'));
+});
+
 console.log(`\n${passed} tests passed`);

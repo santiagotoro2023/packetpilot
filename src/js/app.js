@@ -9,9 +9,15 @@ import { PRESETS } from './presets.js';
 import { preview, heroSim } from './minimap.js';
 import { renderFrameBuilder } from './framebuilder.js';
 import { clone } from './net.js';
+import { viewChallenges, viewSubnet } from './practice.js';
+import { shareLink, decodeTopo, unpack } from './share.js';
+import { loadSite, moveCard, siteBase, oldHttpLink } from './site.js';
+import { CHALLENGES } from './challenges.js';
+import { initGlossary, glossify } from './glossary.js';
 
 const main = document.querySelector('.main');
 let cleanup = [];
+initGlossary(main);
 function clear() { cleanup.forEach(f => { try { f(); } catch { /* ignore */ } }); cleanup = []; main.innerHTML = ''; main.scrollTop = 0; }
 
 // ---------------------------------------------------------------- Theme
@@ -44,9 +50,12 @@ function viewHome() {
       h('div', { class: 'row', style: { marginTop: '18px' } },
         h('a', { class: 'btn primary', href: `#/lesson/${next.id}` }, doneCount ? 'Continue learning' : 'Start with lesson 1'),
         h('a', { class: 'btn', href: '#/lab' }, 'Open the free lab')),
-      h('div', { class: 'small muted', style: { marginTop: '12px' } }, `${doneCount} of ${flat.length} lessons completed`)),
+      h('div', { class: 'small muted', style: { marginTop: '12px' } }, `${doneCount} of ${flat.length} lessons completed`),
+      store.isEmpty() && oldHttpLink() && h('div', { class: 'small muted', style: { marginTop: '4px' } }, 'Used PacketPilot here before it switched to HTTPS? ',
+        h('a', { href: oldHttpLink() }, 'Bring your progress over'), '.')),
     heroBox));
-  page.append(h('h2', { style: { marginTop: '18px' } }, 'Course'));
+  page.append(h('div', { class: 'row', style: { marginTop: '18px', justifyContent: 'space-between' } }, h('h2', { style: { margin: 0 } }, 'Course'),
+    h('a', { class: 'btn ghost', href: '#/print', html: I.print + 'Print theory' })));
   const mods = h('div', { class: 'modules' });
   MODULES.forEach((m, mi) => {
     const lp = m.lessons.map(lessonProgress);
@@ -70,6 +79,14 @@ function viewHome() {
         list)));
   });
   page.append(mods);
+  const solved = CHALLENGES.filter(c => store.challenge(c.id)?.solved).length;
+  const sub = ['range', 'mask', 'size', 'same', 'split'].reduce((a, m) => { const s = store.subnetStats(m); return { right: a.right + (s.right || 0), best: Math.max(a.best, s.best || 0) }; }, { right: 0, best: 0 });
+  page.append(h('h2', { style: { marginTop: '28px' } }, 'Practice'),
+    h('div', { class: 'netgrid' },
+      h('a', { class: 'netcard chcard', href: '#/troubleshoot' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('span', { class: 'pico', html: I.fix }), h('h3', { style: { margin: 0 } }, 'Troubleshooting')),
+        h('p', { class: 'muted small' }, 'Broken networks with a symptom and a hidden cause. Find it and fix it.'), h('div', { class: 'small muted' }, `${solved} of ${CHALLENGES.length} solved`)),
+      h('a', { class: 'netcard chcard', href: '#/subnetting' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('span', { class: 'pico', html: I.calc }), h('h3', { style: { margin: 0 } }, 'Subnetting trainer')),
+        h('p', { class: 'muted small' }, 'Network, broadcast, masks and subnet sizes with random addresses and worked solutions.'), h('div', { class: 'small muted' }, sub.right ? `${sub.right} right so far, best streak ${sub.best}` : 'Endless questions'))));
   page.append(h('h2', { style: { marginTop: '28px' } }, 'Coming soon'),
     h('div', { class: 'netgrid' }, UPCOMING.map(u => h('div', { class: 'netcard' }, h('h3', {}, u.title), h('p', { class: 'muted small' }, u.text)))));
   page.append(h('div', { class: 'row', style: { marginTop: '28px' } },
@@ -97,7 +114,8 @@ function viewLesson(id, stepIdx) {
   const step = l.steps[cur];
   const top = h('div', { class: 'lesson-top' },
     h('a', { class: 'btn icon ghost', href: '#/', title: 'Back to the course overview', html: I.left }),
-    h('div', {}, h('div', { class: 'crumb' }, `Module ${MODULES.indexOf(m) + 1}: ${m.title}`), h('h1', {}, l.title)));
+    h('div', {}, h('div', { class: 'crumb' }, `Module ${MODULES.indexOf(m) + 1}: ${m.title}`), h('h1', {}, l.title)),
+    step.type === 'theory' ? h('a', { class: 'btn icon ghost printbtn', href: `#/print/${l.id}`, title: 'Print or save the theory of this lesson as PDF', html: I.print }) : null);
   const steps = h('div', { class: 'steps', 'aria-label': 'Steps' });
   l.steps.forEach((s, i) => steps.append(h('button', { class: (i === cur ? 'cur ' : '') + (store.stepDone(l.id, i) ? 'ok' : ''), title: s.title || s.type,
     onclick: () => go(i), 'aria-current': i === cur ? 'step' : null }, store.stepDone(l.id, i) && i !== cur ? '✓' : String(i + 1))));
@@ -231,8 +249,8 @@ function labStep(step, body, markDone, already, key) {
 }
 
 // ---------------------------------------------------------------- Lab
-function viewLab(presetId) {
-  let topo;
+function viewLab(presetId, shared = null) {
+  let topo = shared;
   if (presetId) topo = PRESETS.find(p => p.id === presetId)?.make();
   if (!topo) topo = store.prefs.sandbox ? clone(store.prefs.sandbox) : PRESETS.find(p => p.id === 'routed').make();
   const nameIn = h('input', { class: 'input', value: topo.name || 'My network', 'aria-label': 'Network name', style: { width: '220px' } });
@@ -252,6 +270,7 @@ function viewLab(presetId) {
     h('span', { class: 'grow' }),
     h('button', { class: 'btn', onclick: () => { if (confirm('Start an empty network? Unsaved changes will be lost.')) { lab.load({ name: 'My network', devices: [], links: [] }); nameIn.value = 'My network'; } } }, 'New'),
     h('a', { class: 'btn', href: '#/networks' }, 'Example networks'),
+    h('button', { class: 'btn', html: I.share + 'Share', title: 'A link that contains this network', onclick: () => shareDialog(lab.sim.topo) }),
     h('button', { class: 'btn', html: I.download + 'Export', onclick: () => download(`${(lab.sim.topo.name || 'network').replace(/\W+/g, '-')}.json`, JSON.stringify(lab.sim.topo, null, 2)) }),
     h('button', { class: 'btn', html: I.upload + 'Import', onclick: async () => {
       const t = await pickFile(); if (!t) return;
@@ -264,8 +283,55 @@ function viewLab(presetId) {
   const autosave = () => { clearTimeout(t); t = setTimeout(() => store.setPref('sandbox', clone(lab.sim.topo)), 400); };
   savedSel.addEventListener('change', () => { const n = savedSel.value; if (!n) return; lab.load(clone(store.nets()[n].topo)); nameIn.value = n; autosave(); });
   nameIn.addEventListener('change', () => { lab.sim.topo.name = nameIn.value; autosave(); });
-  if (presetId) autosave();
+  if (presetId || shared) autosave();
   cleanup.push(() => lab.destroy());
+}
+
+// The link contains the whole network, compressed. Copying needs HTTPS in most browsers, so
+// the link is also shown in a field to copy by hand.
+async function shareDialog(topo) {
+  const url = await shareLink(topo, siteBase());
+  const inp = h('input', { class: 'input mono', value: url, readonly: true, style: { width: '100%' } });
+  const msg = h('span', { class: 'small muted' }, `${url.length.toLocaleString('en')} characters. Whoever opens it gets a copy of this network in their lab.`);
+  const d = h('dialog', { class: 'dlg' }, h('h3', {}, 'Share this network'), inp, h('div', { class: 'row', style: { marginTop: '10px' } },
+    h('button', { class: 'btn primary', onclick: async () => {
+      inp.select();
+      try { await navigator.clipboard.writeText(url); msg.textContent = 'Copied to the clipboard.'; }
+      catch { document.execCommand?.('copy'); msg.textContent = 'Selected: press Ctrl+C (or ⌘+C) to copy.'; }
+    } }, 'Copy link'), h('button', { class: 'btn ghost', onclick: () => d.close() }, 'Close')), h('p', { style: { margin: '8px 0 0' } }, msg));
+  d.addEventListener('close', () => d.remove());
+  document.body.append(d);
+  d.showModal();
+  inp.select();
+}
+async function openShared(code) {
+  try {
+    const topo = await decodeTopo(code);
+    history.replaceState(null, '', '#/lab');
+    clear();
+    markNav('lab');
+    viewLab(null, topo);
+    toast('Shared network loaded. It is now in your lab, save it to keep a copy.');
+  } catch {
+    toast('This link does not contain a valid network.');
+    location.hash = '#/lab';
+  }
+}
+
+// Progress handed over from an older address of this server (see migrate.html and site.js).
+// Merging never overwrites anything done here, so a second transfer is harmless.
+async function viewMigrate(code) {
+  const q = new URLSearchParams(location.hash.split('?')[1] || '');
+  const from = q.get('from') || '';
+  const to = /^#\/[\w\-/.]*$/.test(q.get('to') || '') ? q.get('to') : '#/';
+  let ok = false;
+  try { store.importAll(await unpack(code), { merge: true }); ok = true; }
+  catch { toast('The progress could not be transferred. Export it as a file at the old address and import it here.'); }
+  // The bridge on plain HTTP waits for this confirmation, so it hands the progress over only once
+  if (ok && from === `http://${location.host}`) { location.replace(`${from}/#/moved/${encodeURIComponent(to)}`); return; }
+  history.replaceState(null, '', to);
+  route();
+  if (ok) toast('Your progress from the old address is here now.');
 }
 
 // ---------------------------------------------------------------- Example networks
@@ -283,21 +349,86 @@ function viewNets() {
   main.append(page);
 }
 
+// ---------------------------------------------------------------- Print theory pages
+// Pick modules and lessons, then the browser prints them or saves them as PDF
+function viewPrint(lessonId) {
+  const withTheory = l => l.steps.some(s => s.type === 'theory');
+  const chosen = new Set(lessonId ? [lessonId] : (store.prefs.printSel || []).filter(id => findLesson(id)));
+  const doc = h('div', { class: 'print-doc' });
+  const boxes = new Map(), syncers = [];
+  const draw = () => {
+    doc.innerHTML = '';
+    store.setPref('printSel', [...chosen]);
+    const lessons = MODULES.flatMap(m => m.lessons.filter(l => chosen.has(l.id)).map(l => ({ m, l })));
+    if (!lessons.length) { doc.append(h('p', { class: 'muted no-print' }, 'Pick at least one lesson above.')); count.textContent = ''; return; }
+    count.textContent = `${lessons.length} lesson${lessons.length === 1 ? '' : 's'} selected`;
+    for (const { m, l } of lessons) {
+      const sec = h('section', { class: 'print-lesson' }, h('div', { class: 'crumb' }, `Module ${MODULES.indexOf(m) + 1}: ${m.title}`), h('h1', {}, l.title));
+      for (const s of l.steps.filter(s => s.type === 'theory')) sec.append(h('article', { class: 'theory' }, h('h2', {}, s.title), h('div', { html: s.html })));
+      doc.append(sec);
+    }
+    for (const [id, cb] of boxes) cb.checked = chosen.has(id);
+  };
+  const count = h('span', { class: 'small muted' });
+  const picker = h('div', { class: 'print-pick no-print' });
+  for (const m of MODULES) {
+    const ls = m.lessons.filter(withTheory);
+    const all = h('input', { type: 'checkbox' });
+    const sync = () => { all.checked = ls.every(l => chosen.has(l.id)); all.indeterminate = !all.checked && ls.some(l => chosen.has(l.id)); };
+    all.addEventListener('change', () => { for (const l of ls) all.checked ? chosen.add(l.id) : chosen.delete(l.id); draw(); syncAll(); });
+    const items = ls.map(l => {
+      const cb = h('input', { type: 'checkbox', checked: chosen.has(l.id) ? true : null });
+      cb.addEventListener('change', () => { cb.checked ? chosen.add(l.id) : chosen.delete(l.id); draw(); syncAll(); });
+      boxes.set(l.id, cb);
+      return h('label', { class: 'row small' }, cb, l.title);
+    });
+    picker.append(h('div', { class: 'print-mod' }, h('label', { class: 'row', style: { fontWeight: 650 } }, all, `${MODULES.indexOf(m) + 1}. ${m.title}`), h('div', { class: 'print-lessons' }, items)));
+    syncers.push(sync);
+  }
+  function syncAll() { syncers.forEach(f => f()); }
+  main.append(h('div', { class: 'page' },
+    h('div', { class: 'no-print' }, h('h1', {}, 'Print theory'),
+      h('p', { class: 'muted', style: { maxWidth: '68ch' } }, 'Choose the lessons you want on paper. The print dialog of your browser can also save them as a PDF ("Save as PDF" as the printer).'),
+      h('div', { class: 'row', style: { margin: '10px 0' } },
+        h('button', { class: 'btn primary', html: I.print + 'Print or save as PDF', onclick: () => window.print() }),
+        h('button', { class: 'btn ghost', onclick: () => { MODULES.forEach(m => m.lessons.filter(withTheory).forEach(l => chosen.add(l.id))); draw(); syncAll(); } }, 'All'),
+        h('button', { class: 'btn ghost', onclick: () => { chosen.clear(); draw(); syncAll(); } }, 'None'), count),
+      picker, h('h2', { style: { marginTop: '24px' } }, 'Preview')),
+    doc));
+  draw(); syncAll();
+}
+
 // ---------------------------------------------------------------- Router
 // Older German links (#/lektion, #/labor, #/netze, #/baukasten) keep working
 const ALIAS = { lektion: 'lesson', labor: 'lab', netze: 'networks', baukasten: 'builder' };
+function markNav(nav) {
+  document.querySelectorAll('.rail a').forEach(a => a.classList.toggle('active',
+    (a.dataset.nav === 'course' && (nav === '' || nav === 'lesson' || nav === 'print')) || a.dataset.nav === nav));
+}
 function route() {
   clear();
-  const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+  const parts = location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean);
   const nav = ALIAS[parts[0]] || parts[0] || '';
-  document.querySelectorAll('.rail a').forEach(a => a.classList.toggle('active',
-    (a.dataset.nav === 'course' && (nav === '' || nav === 'lesson')) || a.dataset.nav === nav));
+  markNav(nav === 'share' ? 'lab' : nav);
   if (nav === 'lesson') viewLesson(parts[1], parts[2]);
   else if (nav === 'lab') viewLab(parts[1]);
+  else if (nav === 'share') openShared(parts[1] || '');
   else if (nav === 'networks') viewNets();
   else if (nav === 'builder') { renderFrameBuilder(main); }
+  else if (nav === 'troubleshoot') viewChallenges(main, cleanup, parts[1]);
+  else if (nav === 'subnetting') viewSubnet(main);
+  else if (nav === 'print') viewPrint(parts[1]);
+  else if (nav === 'migrate') { viewMigrate(parts[1] || ''); return; }
   else viewHome();
+  glossify(main);
   document.title = 'PacketPilot';
 }
 window.addEventListener('hashchange', route);
+// Arriving from the plain HTTP address after the progress was handed over
+if (/[?&]moved=1/.test(location.hash)) {
+  history.replaceState(null, '', location.hash.replace(/[?&]moved=1/, ''));
+  setTimeout(() => toast('PacketPilot now runs over HTTPS. Your progress came along.'), 300);
+}
+await loadSite();
 route();
+moveCard();

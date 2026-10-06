@@ -30,6 +30,17 @@ function select(options, value, onChange) {
   return s;
 }
 
+// Collapsible section for features that are not always needed. It opens by itself when the
+// feature is in use and remembers being opened or closed while the device stays selected.
+const sectionOpen = new Map();
+function section(dev, title, status, inUse, content) {
+  const key = dev.id + '|' + title;
+  const d = h('details', { class: 'sect', open: (sectionOpen.get(key) ?? inUse) ? true : null },
+    h('summary', {}, h('span', {}, title), h('span', { class: 'sect-status' + (inUse ? ' on' : '') }, status)), h('div', { class: 'sect-body' }, content));
+  d.addEventListener('toggle', () => sectionOpen.set(key, d.open));
+  return d;
+}
+
 // ---------------------------------------------------------------- Configuration
 export function configPanel(dev, ctx) {
   const { sim, changed, locked, rerender } = ctx;
@@ -40,17 +51,33 @@ export function configPanel(dev, ctx) {
 
   if (c.type === 'pc' || c.type === 'server') {
     const i = c.ifaces.eth1;
+    const mode = select([['static', 'Static'], ['dhcp', 'DHCP (automatic)']], i.dhcp ? 'dhcp' : 'static', v => {
+      upd(() => { i.dhcp = v === 'dhcp'; }, `${dev.name}: ${v === 'dhcp' ? 'DHCP' : 'static address'}`);
+      if (v === 'dhcp') dev.dhclient('eth1'); else { dev.l3.lease = null; }
+      rerender?.();
+    });
+    const lease = dev.l3.lease;
+    const addrRows = i.dhcp ? [
+      h('span', {}, 'Address'), h('span', { class: 'mono small' }, lease ? `${lease.ip}/${lease.prefix}` : 'waiting for DHCP …'),
+      h('span', {}, 'Gateway'), h('span', { class: 'mono small' }, lease?.router || (lease ? 'none' : '–')),
+      h('span', {}, 'DNS server'), h('span', { class: 'mono small' }, lease?.dns || (lease ? 'none' : '–'))
+    ] : [
+      h('span', {}, 'IP address'), ipInput(i.ip, v => upd(() => i.ip = v, `${dev.name}: IP ${v || 'removed'}`), '192.168.10.10'),
+      h('span', {}, 'Prefix'), numInput(i.prefix, 0, 32, v => upd(() => i.prefix = v ?? 24, `${dev.name}: prefix /${v}`)),
+      h('span', {}, 'Gateway'), ipInput(c.gw, v => upd(() => c.gw = v, `${dev.name}: gateway ${v || 'removed'}`), 'empty = none')
+    ];
     box.append(h('h4', {}, 'Network card eth1'),
       h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } },
-        h('span', {}, 'IP address'), ipInput(i.ip, v => upd(() => i.ip = v, `${dev.name}: IP ${v || 'removed'}`), '192.168.10.10'),
-        h('span', {}, 'Prefix'), numInput(i.prefix, 0, 32, v => upd(() => i.prefix = v ?? 24, `${dev.name}: prefix /${v}`)),
-        h('span', {}, 'Gateway'), ipInput(c.gw, v => upd(() => c.gw = v, `${dev.name}: gateway ${v || 'removed'}`), 'empty = none'),
+        h('span', {}, 'Address'), mode, ...addrRows,
         h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
+      i.dhcp ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('button', { class: 'btn', onclick: () => { dev.dhclient('eth1'); } }, 'Ask again (dhclient)'),
+        lease ? h('button', { class: 'btn ghost', onclick: () => { dev.dhcpRelease('eth1'); rerender?.(); } }, 'Release') : null) : null,
       h('dl', { class: 'kv', style: { marginTop: '10px' } }, h('dt', {}, 'MAC'), h('dd', {}, dev.mac('eth1'))),
       h('p', { class: 'small muted', style: { marginTop: '8px' } }, 'A VLAN tag sends all frames with an 802.1Q tag, like a subinterface eth1.10 on Linux. Without a tag the host fits on an access port.'),
-      h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr', marginTop: '8px' } },
+      i.dhcp ? null : h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr', marginTop: '8px' } },
         h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for curl/ping with names')));
     box.append(servicesEditor(dev, upd), dnsEditor(dev, upd));
+    if (c.type === 'server') box.append(section(dev, 'DHCP server', c.dhcpServer.enabled ? `on, ${dev.l3.dhcpLeases.size} lease${dev.l3.dhcpLeases.size === 1 ? '' : 's'}` : 'off', c.dhcpServer.enabled, dhcpServerEditor(dev, upd)));
   }
 
   if (c.type === 'router' || c.type === 'vtep') {
@@ -66,17 +93,17 @@ export function configPanel(dev, ctx) {
     }
     box.append(g);
     if (c.type === 'router') box.append(subifEditor(dev, upd, sim, rerender));
-    if (c.type === 'router') {
-      const fw = h('input', { type: 'checkbox', checked: c.forwarding !== false ? true : null });
-      fw.addEventListener('change', () => upd(() => c.forwarding = fw.checked, `${dev.name}: forwarding ${fw.checked ? 'on' : 'off'}`));
-      box.append(h('label', { class: 'row', style: { marginTop: '10px', fontSize: '.88rem' } }, fw, 'IP forwarding (net.ipv4.ip_forward = 1)'));
-      const clamp = numInput(c.mssClamp, 536, 9000, v => upd(() => c.mssClamp = v, `${dev.name}: MSS clamping ${v ?? 'off'}`), 'off');
-      clamp.style.width = '90px';
-      box.append(h('div', { class: 'row', style: { marginTop: '6px', fontSize: '.88rem' } }, 'MSS clamping', clamp,
-        h('span', { class: 'small muted' }, 'lowers the MSS in forwarded SYN segments')));
-    }
     box.append(routesEditor(dev, upd));
-    if (c.type === 'router') box.append(aclEditor(dev, upd));
+    if (c.type === 'router') {
+      box.append(
+        section(dev, 'Rules', c.acl.length ? `${c.acl.length} rule${c.acl.length === 1 ? '' : 's'}` : 'none', c.acl.length > 0, aclEditor(dev, upd)),
+        section(dev, 'NAT', c.nat.outside ? `outside ${c.nat.outside}` : 'off', !!c.nat.outside, natEditor(dev, upd, rerender)),
+        section(dev, 'DHCP', c.dhcpServer.enabled ? 'server on' : Object.values(c.ifaces).some(i => isIp(i.helper)) ? 'relay' : 'off',
+          c.dhcpServer.enabled || Object.values(c.ifaces).some(i => isIp(i.helper)), h('div', {}, relayEditor(dev, upd), dhcpServerEditor(dev, upd))),
+        section(dev, 'VRRP', c.vrrp.length ? (dev.vrrp?.table() || []).map(g => `${g.vrid}: ${g.state}`).join(', ') || `${c.vrrp.length} group${c.vrrp.length === 1 ? '' : 's'}` : 'off', c.vrrp.length > 0, vrrpEditor(dev, upd, rerender)),
+        section(dev, 'OSPF', c.ospf.enabled ? `on, ${(dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length} neighbor${(dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length === 1 ? '' : 's'}` : 'off', c.ospf.enabled, ospfEditor(dev, upd, rerender)),
+        section(dev, 'Advanced', c.forwarding === false || c.mssClamp ? 'changed' : '', c.forwarding === false || !!c.mssClamp, advancedEditor(dev, upd)));
+    }
   }
 
   if (c.type === 'switch' || c.type === 'vtep') {
@@ -330,6 +357,145 @@ function vxlanEditor(dev, upd, sim) {
   return wrap;
 }
 
+// ---------------------------------------------------------------- NAT, DHCP, VRRP, OSPF
+const ifaceNames = dev => Object.keys(dev.cfg.ifaces).filter(n => n !== 'lo');
+const small = t => h('span', { class: 'small muted' }, t);
+
+function advancedEditor(dev, upd) {
+  const c = dev.cfg;
+  const fw = h('input', { type: 'checkbox', checked: c.forwarding !== false ? true : null });
+  fw.addEventListener('change', () => upd(() => c.forwarding = fw.checked, `${dev.name}: forwarding ${fw.checked ? 'on' : 'off'}`));
+  const clamp = numInput(c.mssClamp, 536, 9000, v => upd(() => c.mssClamp = v, `${dev.name}: MSS clamping ${v ?? 'off'}`), 'off');
+  clamp.style.width = '90px';
+  return h('div', {},
+    h('label', { class: 'row', style: { fontSize: '.88rem' } }, fw, 'IP forwarding (net.ipv4.ip_forward = 1)'),
+    h('div', { class: 'row', style: { marginTop: '6px', fontSize: '.88rem' } }, 'MSS clamping', clamp, small('lowers the MSS in forwarded SYN segments')));
+}
+
+function natEditor(dev, upd, rerender) {
+  const n = dev.cfg.nat;
+  const wrap = h('div');
+  const draw = () => {
+    wrap.innerHTML = '';
+    const out = select([['', 'none (NAT off)'], ...ifaceNames(dev).map(x => [x, x])], n.outside, v => { upd(() => n.outside = v, `${dev.name}: NAT outside ${v || 'off'}`); rerender?.(); });
+    const masq = h('input', { type: 'checkbox', checked: n.masquerade !== false ? true : null });
+    masq.addEventListener('change', () => upd(() => n.masquerade = masq.checked, `${dev.name}: masquerade ${masq.checked ? 'on' : 'off'}`));
+    wrap.append(h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '110px 1fr' } }, h('span', { class: 'small' }, 'Outside interface'), out),
+      h('label', { class: 'row small', style: { marginTop: '6px' } }, masq, 'Masquerade: inside hosts share the outside address'),
+      h('h4', {}, 'Port forwards'));
+    const list = h('div', { class: 'list' });
+    n.forwards.forEach((f, idx) => {
+      const proto = select([['tcp', 'TCP'], ['udp', 'UDP']], f.proto || 'tcp', v => upd(() => f.proto = v, `${dev.name}: forward ${idx + 1}`));
+      const port = numInput(f.port, 1, 65535, v => upd(() => f.port = v, `${dev.name}: forward port ${v}`), 'port'); port.style.width = '76px';
+      const to = ipInput(f.to, v => upd(() => f.to = v, `${dev.name}: forward to ${v}`), 'inside IP');
+      const toPort = numInput(f.toPort, 1, 65535, v => upd(() => f.toPort = v, `${dev.name}: forward to port ${v}`), 'port'); toPort.style.width = '76px';
+      proto.style.width = '70px';
+      list.append(h('div', { class: 'item' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, proto, port, small('→'), to, toPort,
+        h('button', { class: 'btn icon ghost', title: 'Remove port forward', html: I.trash, onclick: () => { upd(() => n.forwards.splice(idx, 1), `${dev.name}: forward removed`); draw(); } }))));
+    });
+    if (!n.forwards.length) list.append(h('div', { class: 'empty' }, 'None. Connections from outside only reach inside hosts through a port forward.'));
+    wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Port forward', onclick: () => { n.forwards.push({ proto: 'tcp', port: 8080, to: '', toPort: 80 }); draw(); } }),
+      h('p', { class: 'small muted', style: { marginTop: '8px' } }, 'Packets leaving through the outside interface get the router\'s address as source. Answers are translated back using the table (conntrack -L).'));
+  };
+  draw();
+  return wrap;
+}
+
+function relayEditor(dev, upd) {
+  const c = dev.cfg;
+  const rows = ifaceNames(dev).filter(n => isIp(c.ifaces[n].ip));
+  const g = h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '64px 1fr' } });
+  for (const n of rows) g.append(h('span', { class: 'if' }, n), ipInput(c.ifaces[n].helper, v => upd(() => c.ifaces[n].helper = v, `${dev.name} ${n}: DHCP relay ${v || 'off'}`), 'DHCP server IP'));
+  return h('div', {}, h('h4', { style: { marginTop: 0 } }, 'Relay (ip helper-address)'),
+    rows.length ? g : h('div', { class: 'empty' }, 'Give the interfaces an address first.'),
+    h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'DHCP broadcasts do not cross routers. With a helper address the router forwards them to the server and marks which network they came from (giaddr).'));
+}
+
+function dhcpServerEditor(dev, upd) {
+  const s = dev.cfg.dhcpServer;
+  const wrap = h('div');
+  const draw = () => {
+    wrap.innerHTML = '';
+    const on = h('input', { type: 'checkbox', checked: s.enabled ? true : null });
+    on.addEventListener('change', () => { upd(() => s.enabled = on.checked, `${dev.name}: DHCP server ${on.checked ? 'on' : 'off'}`); draw(); });
+    wrap.append(h('h4', {}, 'DHCP server'), h('label', { class: 'row small' }, on, 'Hand out addresses (UDP port 67)'));
+    if (!s.enabled) return;
+    const list = h('div', { class: 'list', style: { marginTop: '6px' } });
+    s.pools.forEach((p, idx) => {
+      const f = (label, key, ph) => h('label', { class: 'field' }, label, ipInput(p[key], v => upd(() => p[key] = v, `${dev.name}: pool ${label} ${v}`), ph));
+      const net = h('input', { class: 'input mono', value: p.net || '', placeholder: '10.10.0.0/24' });
+      net.addEventListener('change', () => { if (!parseCidr(net.value)) return net.classList.add('bad'); net.classList.remove('bad'); upd(() => p.net = net.value.trim(), `${dev.name}: pool ${net.value}`); });
+      list.append(h('div', { class: 'item' },
+        h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('label', { class: 'field grow' }, 'Network', net),
+          h('button', { class: 'btn icon ghost', title: 'Remove pool', html: I.trash, onclick: () => { upd(() => s.pools.splice(idx, 1), `${dev.name}: pool removed`); draw(); } })),
+        h('div', { class: 'cfg-grid vx' }, f('First address', 'from', '10.10.0.100'), f('Last address', 'to', '10.10.0.199'), f('Gateway', 'router', '10.10.0.1'), f('DNS server', 'dns', 'optional'))));
+    });
+    if (!s.pools.length) list.append(h('div', { class: 'empty' }, 'No pool yet. A pool is a range of addresses for one network.'));
+    wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Pool', onclick: () => { s.pools.push({ net: '', from: '', to: '', router: '', dns: '', lease: 3600 }); draw(); } }),
+      h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'The server picks the pool by the network the request came from: its own interface, or the relay\'s giaddr.'));
+  };
+  draw();
+  return wrap;
+}
+
+function vrrpEditor(dev, upd, rerender) {
+  const c = dev.cfg;
+  const wrap = h('div');
+  const draw = () => {
+    wrap.innerHTML = '';
+    const state = dev.vrrp?.table() || [];
+    const list = h('div', { class: 'list' });
+    c.vrrp.forEach((g, idx) => {
+      const st = state.find(x => x.ifname === g.ifname && x.vrid === Number(g.vrid));
+      const ifs = select(ifaceNames(dev).map(x => [x, x]), g.ifname, v => upd(() => g.ifname = v, `${dev.name}: VRRP interface ${v}`));
+      const vrid = numInput(g.vrid, 1, 255, v => upd(() => g.vrid = v ?? 1, `${dev.name}: VRRP group ${v}`)); vrid.style.width = '64px';
+      const prio = numInput(g.priority ?? 100, 1, 254, v => upd(() => g.priority = v ?? 100, `${dev.name}: VRRP priority ${v}`)); prio.style.width = '70px';
+      const pre = h('input', { type: 'checkbox', checked: g.preempt !== false ? true : null });
+      pre.addEventListener('change', () => upd(() => g.preempt = pre.checked, `${dev.name}: preempt ${pre.checked ? 'on' : 'off'}`));
+      list.append(h('div', { class: 'item' },
+        h('div', { class: 'row' }, h('b', { class: 'small' }, `Group ${g.vrid}`), st ? h('span', { class: 'chip' + (st.state === 'master' ? ' on' : '') }, st.state) : null, h('span', { class: 'grow' }),
+          h('button', { class: 'btn icon ghost', title: 'Remove group', html: I.trash, onclick: () => { upd(() => c.vrrp.splice(idx, 1), `${dev.name}: VRRP group removed`); rerender?.(); } })),
+        h('div', { class: 'cfg-grid vx' }, h('label', { class: 'field' }, 'Interface', ifs), h('label', { class: 'field' }, 'Group (VRID)', vrid),
+          h('label', { class: 'field' }, 'Virtual IP', ipInput(g.vip, v => upd(() => g.vip = v, `${dev.name}: virtual IP ${v}`), '10.0.0.1')), h('label', { class: 'field' }, 'Priority', prio)),
+        h('label', { class: 'row small' }, pre, 'Preempt: take over again when this router has the higher priority')));
+    });
+    if (!c.vrrp.length) list.append(h('div', { class: 'empty' }, 'No group. With VRRP, two routers share one gateway address, and one takes over when the other fails.'));
+    wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Group', onclick: () => { upd(() => c.vrrp.push({ ifname: ifaceNames(dev).find(n => isIp(c.ifaces[n].ip)) || 'eth1', vrid: 1, vip: '', priority: 100, preempt: true }), `${dev.name}: VRRP group added`); draw(); } }));
+  };
+  draw();
+  return wrap;
+}
+
+function ospfEditor(dev, upd, rerender) {
+  const o = dev.cfg.ospf;
+  const wrap = h('div');
+  const on = h('input', { type: 'checkbox', checked: o.enabled ? true : null });
+  on.addEventListener('change', () => { upd(() => o.enabled = on.checked, `${dev.name}: OSPF ${on.checked ? 'on' : 'off'}`); rerender?.(); });
+  wrap.append(h('label', { class: 'row small' }, on, 'OSPF enabled (area 0)'));
+  if (!o.enabled) { wrap.append(h('p', { class: 'small muted' }, 'Routers running OSPF find each other with hellos, exchange their links and compute the shortest paths themselves.')); return wrap; }
+  wrap.append(h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '110px 1fr', marginTop: '6px' } },
+    h('span', { class: 'small' }, 'Router ID'), ipInput(o.rid, v => upd(() => o.rid = v, `${dev.name}: router ID ${v || 'auto'}`), `auto (${dev.ospf?.rid || '-'})`),
+    h('span', { class: 'small' }, 'Timers'), select([['fast', 'Fast for the lab (hello 1, dead 4)'], ['standard', 'Standard (hello 10, dead 40)']], o.timers || 'fast', v => upd(() => o.timers = v, `${dev.name}: OSPF timers ${v}`))));
+  const g = h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '54px 52px 70px 1fr', marginTop: '8px' } },
+    small('Port'), small('OSPF'), small('Cost'), small('Passive'));
+  for (const n of Object.keys(dev.cfg.ifaces)) {
+    if (!isIp(dev.cfg.ifaces[n].ip)) continue;
+    // The entry is only created on the first change, so rendering never alters the configuration
+    const ic = o.ifaces[n] || { enabled: false, cost: 10, passive: false };
+    const set = (k, v, msg) => upd(() => { ic[k] = v; o.ifaces[n] = ic; }, msg);
+    const en = h('input', { type: 'checkbox', checked: ic.enabled ? true : null });
+    en.addEventListener('change', () => set('enabled', en.checked, `${dev.name} ${n}: OSPF ${en.checked ? 'on' : 'off'}`));
+    const cost = numInput(ic.cost ?? 10, 1, 65535, v => set('cost', v ?? 10, `${dev.name} ${n}: OSPF cost ${v}`));
+    const pas = h('input', { type: 'checkbox', checked: ic.passive ? true : null, disabled: n === 'lo' ? true : null });
+    pas.addEventListener('change', () => set('passive', pas.checked, `${dev.name} ${n}: passive ${pas.checked ? 'on' : 'off'}`));
+    g.append(h('span', { class: 'if' }, n), en, cost, pas);
+  }
+  const nb = dev.ospf?.neighborTable() || [];
+  wrap.append(g, h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'An enabled interface is advertised. Passive: advertised, but no hellos are sent (for LANs with only hosts).'),
+    h('h4', {}, 'Neighbors'), nb.length ? h('dl', { class: 'kv' }, ...nb.flatMap(n => [h('dt', {}, `${n.rid}`), h('dd', {}, `${n.state} via ${n.ifname}`)])) : h('div', { class: 'empty' }, 'None yet.'));
+  return wrap;
+}
+
 // ---------------------------------------------------------------- Tables
 export function tablesPanel(dev, sim) {
   const box = h('div');
@@ -339,12 +505,18 @@ export function tablesPanel(dev, sim) {
   };
   if (dev.l3) {
     box.append(h('h4', {}, 'Routing table'),
-      tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : (r.dev ? 'S' : 'S inactive')])));
+      tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.dhcp ? 'DHCP' : (r.dev ? 'S' : 'S inactive')])));
     box.append(h('h4', {}, 'ARP table'),
       tbl(['IP', 'MAC', 'dev', 'State'], dev.l3.arpTable().map(e => [e.ip, e.mac || '–', e.ifname, e.state])));
     if (dev.l3.pmtu.size) box.append(h('h4', {}, 'Learned path MTU'), tbl(['Destination', 'MTU'], [...dev.l3.pmtu].map(([k, v]) => [k, v])));
     const conns = [...dev.l3.tcp.values()];
     if (conns.length) box.append(h('h4', {}, 'TCP connections'), tbl(['State', 'Local', 'Peer'], conns.map(c => [c.state, `:${c.lport}`, `${c.rip}:${c.rport}`])));
+    if (dev.l3.lease) box.append(h('h4', {}, 'DHCP lease'), h('dl', { class: 'kv' }, h('dt', {}, 'Address'), h('dd', { class: 'mono' }, `${dev.l3.lease.ip}/${dev.l3.lease.prefix}`),
+      h('dt', {}, 'From server'), h('dd', { class: 'mono' }, dev.l3.lease.server), h('dt', {}, 'Lease'), h('dd', {}, `${dev.l3.lease.lease} s`)));
+    if (dev.cfg.dhcpServer?.enabled) box.append(h('h4', {}, 'DHCP leases handed out'), tbl(['IP', 'MAC', 'State'], [...dev.l3.dhcpLeases].map(([m, l]) => [l.ip, m, l.state])));
+    if (dev.cfg.nat?.outside) box.append(h('h4', {}, 'NAT translations'), tbl(['Inside', 'Outside', 'Remote'], dev.l3.natTable.map(e => [`${e.inIp}:${e.inPort}`, `${e.outIp}:${e.outPort}`, `${e.remIp}:${e.remPort}`])));
+    if (dev.vrrp?.groups.length) box.append(h('h4', {}, 'VRRP'), tbl(['Group', 'Port', 'Virtual IP', 'State', 'Prio'], dev.vrrp.table().map(g => [g.vrid, g.ifname, g.vip, g.state, g.prio])));
+    if (dev.ospf?.enabled) box.append(h('h4', {}, 'OSPF neighbors'), tbl(['Router ID', 'Address', 'Port', 'State'], dev.ospf.neighborTable().map(n => [n.rid, n.ip, n.ifname, n.state])));
     if (dev.cfg.services?.length) box.append(h('h4', {}, 'Listening services'), tbl(['Proto', 'Port', 'Service'], dev.cfg.services.map(s => [s.proto.toUpperCase(), s.port, s.name || ''])));
   }
   if (dev.type === 'switch') {

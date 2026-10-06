@@ -276,6 +276,7 @@ export const BUILD_BLOCKS = {
   udp: { name: 'UDP', kind: 'udp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num']] },
   tcp: { name: 'TCP', kind: 'tcp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num'], ['flags', 'Flags', [['SYN', 'SYN'], ['SYN,ACK', 'SYN, ACK'], ['ACK', 'ACK'], ['PSH,ACK', 'PSH, ACK'], ['FIN,ACK', 'FIN, ACK'], ['RST', 'RST'], ['RST,ACK', 'RST, ACK']]]] },
   dns: { name: 'DNS', kind: 'udp', fields: [['qr', 'Kind', [['0', 'Query (QR 0)'], ['1', 'Response (QR 1)']]], ['name', 'Queried name', 'name']] },
+  dhcp: { name: 'DHCP', kind: 'data', fields: [['op', 'Message type', [['DISCOVER', 'Discover'], ['OFFER', 'Offer'], ['REQUEST', 'Request'], ['ACK', 'ACK']]], ['chaddr', 'Client MAC (chaddr)', 'mac'], ['yiaddr', 'Your IP (yiaddr)', 'ip']] },
   http: { name: 'HTTP', kind: 'data', fields: [['msg', 'Message', [['GET', 'GET / HTTP/1.1'], ['200', 'HTTP/1.1 200 OK']]]] },
   data: { name: 'Data', kind: 'data', fields: [] }
 };
@@ -309,7 +310,7 @@ function build(step, el, done, saved, save) {
   const frame = saved.frame;
   const addr = step.addresses || {};
   const macs = [...(addr.mac || []), ['ff:ff:ff:ff:ff:ff', 'Broadcast'], ['00:00:00:00:00:00', 'unknown (zeros)'], ['01:80:c2:00:00:00', 'STP multicast']];
-  const ips = [...(addr.ip || []), ['0.0.0.0', 'no address']];
+  const ips = [...(addr.ip || []), ['0.0.0.0', 'no address'], ['255.255.255.255', 'broadcast']];
   const optsFor = t => t === 'mac' ? macs.map(([v, l]) => [v, `${v}  ${l}`]) : t === 'ip' ? ips.map(([v, l]) => [v, `${v}  ${l}`]) : t === 'bid' ? (addr.bid || []).map(([v, l]) => [v, `${v}  ${l}`]) : t === 'name' ? (addr.name || []).map(n => [n, n]) : null;
   const pal = h('div', { class: 'fb-pal bld-pal' });
   for (const k of allowed) {

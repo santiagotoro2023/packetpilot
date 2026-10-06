@@ -4,7 +4,7 @@ import { MODULES } from '../src/js/course/index.js';
 import { runCommand } from '../src/js/cli.js';
 import { checkBuild } from '../src/js/widgets.js';
 import { fmtBid } from '../src/js/packets.js';
-import { PRESETS, failoverTopo, stickTopo, stpTriangle, servicesTopo } from '../src/js/presets.js';
+import { PRESETS, failoverTopo, stickTopo, stpTriangle, servicesTopo, dhcpLanTopo, natTopo } from '../src/js/presets.js';
 import assert from 'node:assert/strict';
 
 const flags = f => ['SYN', 'FIN', 'RST', 'PSH', 'ACK'].filter(k => f[k]);
@@ -22,7 +22,8 @@ function toBuild(f) {
     const l4 = p.l4;
     if (l4.kind === 'icmp') out.push({ block: 'icmp', fields: { type: String(l4.type) } });
     if (l4.kind === 'udp') { out.push({ block: 'udp', fields: { sport: String(l4.sport), dport: String(l4.dport) } });
-      if (l4.payload?.kind === 'dns') out.push({ block: 'dns', fields: { qr: String(l4.payload.qr), name: l4.payload.qname } }); }
+      if (l4.payload?.kind === 'dns') out.push({ block: 'dns', fields: { qr: String(l4.payload.qr), name: l4.payload.qname } });
+      if (l4.payload?.kind === 'dhcp') out.push({ block: 'dhcp', fields: { op: l4.payload.op, chaddr: l4.payload.chaddr, yiaddr: l4.payload.yiaddr } }); }
     if (l4.kind === 'tcp') out.push({ block: 'tcp', fields: { sport: String(l4.sport), dport: String(l4.dport), flags: FLAGSTR[flags(l4.flags).sort().join(',')] } });
   }
   return out;
@@ -36,7 +37,9 @@ const REAL = {
   'm3-stick': () => { const s = new Sim(stickTopo(true)); go(s, 'a1', 'ping -c 1 10.20.0.11'); return sent(s, 'r1', f => f.vlan?.vid === 20 && f.payload.l4?.type === 8); },
   'm4-l2': () => { const s = new Sim(stpTriangle({ enabled: true, rootPrio: 4096 })); s.runFor(5000); return s.log.filter(e => e.dev === 'sw1' && e.frame?.type === 'stp' && e.frame.src === s.dev('sw1').mac('eth1')).pop().frame; },
   'm5-l2': () => { const s = new Sim(servicesTopo()); go(s, 'client', 'dig @10.20.0.53 web.lab'); return sent(s, 'client', f => f.payload?.l4?.payload?.kind === 'dns'); },
-  'm5-l3': () => { const s = new Sim(servicesTopo()); go(s, 'client', 'curl http://10.20.0.80/'); return sent(s, 'client', f => f.payload?.l4?.flags?.SYN); }
+  'm5-l3': () => { const s = new Sim(servicesTopo()); go(s, 'client', 'curl http://10.20.0.80/'); return sent(s, 'client', f => f.payload?.l4?.flags?.SYN); },
+  'm6-l2': () => { const s = new Sim(dhcpLanTopo()); s.runFor(3000); return sent(s, 'client1', f => f.payload?.l4?.payload?.op === 'DISCOVER'); },
+  'm7-l2': () => { const s = new Sim(natTopo({ nat: true })); go(s, 'pc1', 'ping -c 1 198.51.100.80'); return sent(s, 'home', f => f.payload?.l4?.type === 8 && f.payload.src === '203.0.113.2'); }
 };
 
 let n = 0, bad = 0;

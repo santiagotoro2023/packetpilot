@@ -3,18 +3,20 @@ import m2 from './m2.js';
 import m3 from './m3.js';
 import m4 from './m4.js';
 import m5 from './m5.js';
+import m6 from './m6.js';
+import m7 from './m7.js';
+import m8 from './m8.js';
+import m9 from './m9.js';
 
-// Display order: all of layer 2, then layer 3, VLAN/VXLAN, transport
-export const MODULES = [m1, m4, m2, m3, m5];
+// Display order: all of layer 2, then layer 3, VLAN/VXLAN, transport, then the network services
+export const MODULES = [m1, m4, m2, m3, m5, m6, m7, m8, m9];
 export const UPCOMING = [
-  { title: 'Static routing and ECMP', text: 'Several equally good paths, load balancing via hashes.' },
-  { title: 'OSPF and BFD', text: 'Learn routes dynamically and detect failures in milliseconds.' },
-  { title: 'VRRP', text: 'A gateway that does not fail.' },
-  { title: 'DHCP and DNS in detail', text: 'Hand out addresses with a relay across routers, the DNS hierarchy and recursive resolution.' },
+  { title: 'IPv6', text: 'Addresses, Neighbor Discovery instead of ARP, SLAAC and dual stack.' },
+  { title: 'ECMP and BFD', text: 'Several equally good paths, load balancing via hashes, and failure detection in milliseconds.' },
+  { title: 'DNS in depth', text: 'The DNS hierarchy, recursive resolution and caching.' },
   { title: 'VPN', text: 'WireGuard and IPsec between sites, MTU with a double envelope.' },
-  { title: 'BGP and EVPN', text: 'Routing between networks and a real control plane for VXLAN.' },
-  { title: 'IPv6', text: 'Addresses, Neighbor Discovery instead of ARP, SLAAC and dual stack.' }
-];
+  { title: 'BGP and EVPN', text: 'Routing between networks and a real control plane for VXLAN.' }
+]
 export function findLesson(id) {
   for (const m of MODULES) {
     const i = m.lessons.findIndex(l => l.id === id);

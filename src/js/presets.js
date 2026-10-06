@@ -79,6 +79,18 @@ export const PRESETS = [
   { id: 'tcppath', title: 'TCP across a bottleneck', topics: ['TCP', 'MSS', 'PMTUD'],
     text: 'Only MTU 1400 between r1 and r2. The web server has to shrink its segments.',
     make: () => tcpPathTopo() },
+  { id: 'dhcp', title: 'DHCP with a relay', topics: ['DHCP', 'Relay', 'Broadcast'],
+    text: 'Two clients get their address from a server in another network. r1 relays their broadcasts.',
+    make: () => dhcpTopo({ relay: true }) },
+  { id: 'nat', title: 'Home network with NAT', topics: ['NAT', 'PAT', 'Port forwarding'],
+    text: 'Two PCs share one public address. Watch the router rewrite addresses and ports with conntrack -L.',
+    make: () => natTopo({ nat: true, forward: true }) },
+  { id: 'ospf', title: 'OSPF between three sites', topics: ['OSPF', 'SPF', 'Failover'],
+    text: 'Three routers learn each other\'s networks by themselves. Disconnect a link and watch them reroute.',
+    make: () => ospfTopo() },
+  { id: 'vrrp', title: 'Redundant gateway with VRRP', topics: ['VRRP', 'Failover', 'Virtual MAC'],
+    text: 'ra and rb share the gateway 10.0.0.1. Pull the master\'s cable while pc1 pings.',
+    make: () => vrrpTopo() },
   { id: 'empty', title: 'Empty network', topics: ['Your own network'],
     text: 'An empty canvas for your own topology.',
     make: () => topo('My network', [], []) }
@@ -94,11 +106,12 @@ export function chainTopo() {
   [link('pc1', 'eth1', 'r1', 'eth1'), link('r1', 'eth2', 'r2', 'eth1'), link('r2', 'eth2', 'r3', 'eth1'), link('r3', 'eth2', 'srv1', 'eth1')]);
 }
 export function vlanTopo(trunked = true) {
-  const up = trunked ? trunk('10,20', 1) : acc(1);
+  // A fresh object per switch, so changing one trunk never changes the other
+  const up = () => trunked ? trunk('10,20', 1) : acc(1);
   return topo('VLANs over a trunk', [
     host('a10', 90, 110, '10.10.0.1'), host('a20', 90, 330, '10.20.0.1'),
     host('b10', 690, 110, '10.10.0.2'), host('b20', 690, 330, '10.20.0.2'),
-    sw('s1', 270, 220, { eth1: acc(10), eth2: acc(20), eth8: up }), sw('s2', 510, 220, { eth1: acc(10), eth2: acc(20), eth8: up })],
+    sw('s1', 270, 220, { eth1: acc(10), eth2: acc(20), eth8: up() }), sw('s2', 510, 220, { eth1: acc(10), eth2: acc(20), eth8: up() })],
   [link('a10', 'eth1', 's1', 'eth1'), link('a20', 'eth1', 's1', 'eth2'), link('b10', 'eth1', 's2', 'eth1'), link('b20', 'eth1', 's2', 'eth2'), link('s1', 'eth8', 's2', 'eth8')],
   [{ x: 20, y: 40, w: 760, h: 140, label: 'VLAN 10', kind: 'vlan' }, { x: 20, y: 262, w: 760, h: 140, label: 'VLAN 20', kind: 'vlan' }]);
 }
@@ -181,4 +194,69 @@ export function tcpPathTopo({ fwAcl = [] } = {}) {
     router('fw', 650, 220, { eth1: '10.0.23.3/24', eth2: '10.0.2.1/24' }, [['0.0.0.0/0', '10.0.23.2']], { acl: fwAcl }), web],
   [link('client', 'eth1', 'r1', 'eth1'), link('r1', 'eth2', 'r2', 'eth1', 1400), link('r2', 'eth2', 'fw', 'eth1'), link('fw', 'eth2', 'web', 'eth1')],
   [{ x: 210, y: 130, w: 310, h: 150, label: 'Tunnel section, MTU 1400', color: 'orange' }]);
+}
+
+// -------------------------------------------------------------- DHCP, NAT, OSPF, VRRP
+const ospfOn = (ifaces, extra = {}) => ({ enabled: true, timers: 'fast', rid: '', ifaces: Object.fromEntries(Object.entries(ifaces).map(([k, v]) => [k, { enabled: true, cost: 10, passive: false, ...v }])), ...extra });
+export function dhcpTopo({ relay = false } = {}) {
+  const c1 = host('client1', 90, 110), c2 = host('client2', 90, 330);
+  for (const c of [c1, c2]) c.ifaces.eth1 = { ip: '', prefix: 24, vlan: null, dhcp: true };
+  const srv = server('dhcp', 690, 220, '10.20.0.67', 24, '10.20.0.1');
+  srv.services = [];
+  srv.dhcpServer = { enabled: true, pools: [{ net: '10.10.0.0/24', from: '10.10.0.100', to: '10.10.0.199', router: '10.10.0.1', dns: '10.20.0.53', lease: 3600 }] };
+  const r1 = router('r1', 470, 220, { eth1: '10.10.0.1/24', eth2: '10.20.0.1/24' });
+  if (relay) r1.ifaces.eth1.helper = '10.20.0.67';
+  return topo('DHCP with a relay', [c1, c2, sw('sw1', 280, 220), r1, srv],
+    [link('client1', 'eth1', 'sw1', 'eth1'), link('client2', 'eth1', 'sw1', 'eth2'), link('r1', 'eth1', 'sw1', 'eth8'), link('r1', 'eth2', 'dhcp', 'eth1')],
+    [{ x: 20, y: 40, w: 340, h: 380, label: 'Clients 10.10.0.0/24', color: 'blue' }, { x: 600, y: 120, w: 180, h: 200, label: 'Servers 10.20.0.0/24', color: 'green' }]);
+}
+export function dhcpLanTopo() {
+  const c1 = host('client1', 110, 120), c2 = host('client2', 110, 330);
+  for (const c of [c1, c2]) c.ifaces.eth1 = { ip: '', prefix: 24, vlan: null, dhcp: true };
+  const srv = server('dhcp', 560, 220, '10.10.0.2', 24, '10.10.0.1');
+  srv.services = [];
+  srv.dhcpServer = { enabled: true, pools: [{ net: '10.10.0.0/24', from: '10.10.0.100', to: '10.10.0.199', router: '10.10.0.1', dns: '10.10.0.2', lease: 3600 }] };
+  return topo('DHCP in one network', [c1, c2, sw('sw1', 330, 220), srv],
+    [link('client1', 'eth1', 'sw1', 'eth1'), link('client2', 'eth1', 'sw1', 'eth2'), link('dhcp', 'eth1', 'sw1', 'eth3')]);
+}
+export function natTopo({ nat = false, forward = false } = {}) {
+  const in1 = host('pc1', 90, 110, '192.168.1.10', 24, '192.168.1.1');
+  in1.services = [{ proto: 'tcp', port: 80, name: 'http', size: 1200 }];
+  const gw = router('home', 420, 220, { eth1: '192.168.1.1/24', eth2: '203.0.113.2/30' }, [['0.0.0.0/0', '203.0.113.1']]);
+  gw.nat = { outside: nat ? 'eth2' : '', masquerade: true, forwards: forward ? [{ proto: 'tcp', port: 8080, to: '192.168.1.10', toPort: 80 }] : [] };
+  const web = server('web', 820, 220, '198.51.100.80', 24, '198.51.100.1');
+  return topo('Home network with NAT', [in1, host('pc2', 90, 330, '192.168.1.11', 24, '192.168.1.1'), sw('sw1', 250, 220), gw,
+    router('isp', 620, 220, { eth1: '203.0.113.1/30', eth2: '198.51.100.1/24' }), web],
+  [link('pc1', 'eth1', 'sw1', 'eth1'), link('pc2', 'eth1', 'sw1', 'eth2'), link('home', 'eth1', 'sw1', 'eth8'), link('home', 'eth2', 'isp', 'eth1'), link('isp', 'eth2', 'web', 'eth1')],
+  [{ x: 20, y: 40, w: 330, h: 380, label: 'Private network 192.168.1.0/24', color: 'green' }, { x: 540, y: 110, w: 360, h: 220, label: 'Internet', color: 'gray' }]);
+}
+export function ospfTopo({ configured = ['o1', 'o2', 'o3'], timers = {} } = {}) {
+  const r = (name, x, y, ifaces, lan) => {
+    const d = router(name, x, y, ifaces);
+    d.ospf = configured.includes(name) ? ospfOn(Object.fromEntries(Object.keys(ifaces).map(k => [k, k === lan ? { passive: true } : {}])), { timers: timers[name] || 'fast' })
+      : { enabled: false, timers: 'fast', rid: '', ifaces: {} };
+    return d;
+  };
+  return topo('OSPF between three sites', [
+    r('o1', 260, 120, { eth1: '10.0.12.1/24', eth2: '10.0.13.1/24', eth3: '10.1.0.1/24' }, 'eth3'),
+    r('o2', 640, 120, { eth1: '10.0.12.2/24', eth2: '10.0.23.2/24', eth3: '10.2.0.1/24' }, 'eth3'),
+    r('o3', 450, 390, { eth1: '10.0.13.3/24', eth2: '10.0.23.3/24', eth3: '10.3.0.1/24' }, 'eth3'),
+    host('pc1', 70, 120, '10.1.0.10', 24, '10.1.0.1'), host('pc2', 830, 120, '10.2.0.10', 24, '10.2.0.1'), server('srv3', 450, 580, '10.3.0.10', 24, '10.3.0.1')],
+  [link('o1', 'eth1', 'o2', 'eth1'), link('o1', 'eth2', 'o3', 'eth1'), link('o2', 'eth2', 'o3', 'eth2'),
+    link('pc1', 'eth1', 'o1', 'eth3'), link('pc2', 'eth1', 'o2', 'eth3'), link('srv3', 'eth1', 'o3', 'eth3')]);
+}
+export function vrrpTopo({ vrrpB = true, prioB = 100 } = {}) {
+  const ra = router('ra', 330, 120, { eth1: '10.0.0.2/24', eth2: '10.9.1.1/30' });
+  ra.vrrp = [{ ifname: 'eth1', vrid: 1, vip: '10.0.0.1', priority: 110, preempt: true }];
+  ra.ospf = ospfOn({ eth1: { passive: true }, eth2: {} });
+  const rb = router('rb', 330, 400, { eth1: '10.0.0.3/24', eth2: '10.9.2.1/30' });
+  rb.vrrp = vrrpB ? [{ ifname: 'eth1', vrid: 1, vip: '10.0.0.1', priority: prioB, preempt: true }] : [];
+  rb.ospf = ospfOn({ eth1: { passive: true }, eth2: {} });
+  const core = router('core', 600, 260, { eth1: '10.9.1.2/30', eth2: '10.9.2.2/30', eth3: '10.50.0.1/24' });
+  core.ospf = ospfOn({ eth1: {}, eth2: {}, eth3: { passive: true } });
+  return topo('Redundant gateway with VRRP', [host('pc1', 70, 180, '10.0.0.10', 24, '10.0.0.1'), host('pc2', 70, 360, '10.0.0.11', 24, '10.0.0.1'),
+    sw('sw1', 170, 260), ra, rb, core, server('srv', 820, 260, '10.50.0.5', 24, '10.50.0.1')],
+  [link('pc1', 'eth1', 'sw1', 'eth1'), link('pc2', 'eth1', 'sw1', 'eth2'), link('ra', 'eth1', 'sw1', 'eth7'), link('rb', 'eth1', 'sw1', 'eth8'),
+    link('ra', 'eth2', 'core', 'eth1'), link('rb', 'eth2', 'core', 'eth2'), link('core', 'eth3', 'srv', 'eth1')],
+  [{ x: 20, y: 40, w: 410, h: 470, label: 'LAN 10.0.0.0/24, gateway 10.0.0.1 (virtual)', color: 'orange' }]);
 }

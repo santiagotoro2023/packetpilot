@@ -28,7 +28,10 @@ export function helpFor(dev) {
     'ip addr add 10.10.0.1/24 dev eth1.10   set an address',
     'ip link del eth1.10   delete a subinterface');
   l.push('ip link set <port> down|up   disconnect or reconnect the cable on this port');
-  if (dev.type === 'router') l.push('show ip route         routing table in FRR style', 'sysctl net.ipv4.ip_forward=0|1');
+  if (dev.type === 'router') l.push('show ip route         routing table in FRR style', 'sysctl net.ipv4.ip_forward=0|1',
+    'show ip ospf neighbor / database / interface   OSPF state', 'show vrrp             VRRP groups and who is master', 'conntrack -L          NAT translations (also: show ip nat)');
+  if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
+  if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)');
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
   if (dev.type === 'switch') l.push('show spanning-tree    STP status: root, roles, states',
     'spanning-tree on|off  turn STP on or off',
@@ -46,7 +49,7 @@ export function runCommand(dev, line) {
   const sim = dev.sim;
   const say = t => dev.print(t);
   const cmd = p.join(' ');
-  const own = ['ping', 'traceroute', 'arping', 'curl', 'nc', 'dig', 'nslookup'];
+  const own = ['ping', 'traceroute', 'arping', 'curl', 'nc', 'dig', 'nslookup', 'dhclient'];
   if (!own.includes(p[0]) || !dev.l3) say(`$ ${cmd}`);
   try {
     if (p[0] === 'help' || p[0] === '?') return helpFor(dev).forEach(say);
@@ -96,12 +99,15 @@ export function runCommand(dev, line) {
           const mtu = dev.l3.mtu(n);
           const up = n === 'lo' || dev.l3.linkUp(n);
           const label = c.parent ? `${n}@${c.parent}` : n + (c.vlan ? '.' + c.vlan : '');
-          const addr = isIp(c.ip) ? `${c.ip}/${c.prefix}` : '';
-          if (brief) say(`${pad(label, 14)}${pad(up ? 'UP' : 'DOWN', 8)}${addr}`);
+          const eff = dev.l3.ifaces().find(i => i.name === n);
+          const addr = eff ? `${eff.ip}/${eff.prefix}` : '';
+          if (brief) say(`${pad(label, 14)}${pad(up ? 'UP' : 'DOWN', 8)}${addr}${c.dhcp && !addr ? '(DHCP, no lease)' : ''}`);
           else {
             say(`${label}: <${up ? 'UP,LOWER_UP' : 'NO-CARRIER'}> mtu ${mtu}`);
             if (n !== 'lo') say(`    link/ether ${dev.mac(n)}${c.vlan ? `  (${c.parent ? '802.1Q id' : 'VLAN tag'} ${c.vlan})` : ''}`);
-            if (addr) say(`    inet ${addr}`);
+            if (addr) say(`    inet ${addr}${c.dhcp ? ` dynamic valid_lft ${dev.l3.lease?.lease ?? 0}sec` : ''}`);
+            else if (c.dhcp) say('    (DHCP: no lease yet, try dhclient)');
+            for (const g of dev.vrrp?.table() || []) if (g.ifname === n && g.state === 'master') say(`    inet ${g.vip}/32 (VRRP ${g.vrid} virtual address)`);
           }
         }
         return;
@@ -143,7 +149,8 @@ export function runCommand(dev, line) {
         }
         for (const r of dev.l3.routes()) {
           if (r.proto === 'C') say(`${r.net}/${r.len} dev ${r.dev} proto kernel scope link src ${r.src}`);
-          else say(`${r.len === 0 ? 'default' : r.net + '/' + r.len} via ${r.via}${r.dev ? ' dev ' + r.dev : '  (inactive: next hop unreachable)'}`);
+          else if (r.proto === 'O') say(`${r.net}/${r.len} via ${r.via} dev ${r.dev} proto ospf metric ${r.metric}`);
+          else say(`${r.len === 0 ? 'default' : r.net + '/' + r.len} via ${r.via}${r.dev ? ' dev ' + r.dev : '  (inactive: next hop unreachable)'}${r.dhcp ? ' proto dhcp' : ''}`);
         }
         return;
       }
@@ -281,11 +288,68 @@ export function runCommand(dev, line) {
       return;
     }
     if (p[0] === 'arp' && dev.l3) return runCommand(dev, 'ip neigh');
+    if (p[0] === 'dhclient' && dev.dhclient) {
+      const ifn = p.slice(1).find(x => !x.startsWith('-')) || 'eth1';
+      if (!dev.cfg.ifaces?.[ifn]) return say(`dhclient: interface ${ifn} does not exist`);
+      if (p.includes('-r')) return dev.dhcpRelease(ifn);
+      if (!dev.cfg.ifaces[ifn].dhcp) say(`Note: ${ifn} has a static address, switch it to DHCP in the configuration to keep the lease.`);
+      dev.dhclient(ifn); return;
+    }
+    if ((p[0] === 'show' && p[1] === 'ip' && p[2] === 'dhcp') || (p[0] === 'dhcp' && p[1] === 'leases')) {
+      if (!dev.l3) return say('This device has no IP address.');
+      const ls = [...dev.l3.dhcpLeases.entries()];
+      if (!dev.cfg.dhcpServer?.enabled) say('(the DHCP server is not enabled on this device)');
+      say(`${pad('IP address', 16)}${pad('MAC address', 20)}State`);
+      if (!ls.length) return say('(no leases)');
+      for (const [mac, l] of ls) say(`${pad(l.ip, 16)}${pad(mac, 20)}${l.state}`);
+      return;
+    }
+    if ((p[0] === 'conntrack' || (p[0] === 'show' && p[1] === 'ip' && p[2] === 'nat')) && dev.type === 'router') {
+      const t = dev.l3.natTable;
+      if (!dev.cfg.nat?.outside) say('(NAT is not configured: no outside interface)');
+      if (!t.length) return say('(no translations)');
+      const nm = { 1: 'icmp', 6: 'tcp', 17: 'udp' };
+      say(`${pad('Proto', 6)}${pad('Inside', 22)}${pad('Outside', 22)}${pad('Remote', 22)}Type`);
+      for (const e of t) say(`${pad(nm[e.proto] || e.proto, 6)}${pad(e.inIp + ':' + e.inPort, 22)}${pad(e.outIp + ':' + e.outPort, 22)}${pad(e.remIp + ':' + e.remPort, 22)}${e.kind}`);
+      return;
+    }
+    if (p[0] === 'show' && p[1] === 'vrrp' && dev.type === 'router') {
+      const t = dev.vrrp?.table() || [];
+      if (!t.length) return say('(no VRRP groups configured)');
+      for (const g of t) say(`${g.ifname} - group ${g.vrid}: ${g.state.toUpperCase()}, virtual IP ${g.vip}, virtual MAC ${g.vmac}, priority ${g.prio}${g.preempt ? ', preempt' : ''}, master ${g.master || 'unknown'}`);
+      return;
+    }
+    if (p[0] === 'show' && p[1] === 'ip' && p[2] === 'ospf' && dev.type === 'router') {
+      const o = dev.ospf;
+      if (!o?.enabled) return say('OSPF is not enabled on this router.');
+      if (p[3] === 'database') {
+        say(`OSPF router with ID (${o.rid}), area 0.0.0.0`);
+        for (const l of [...o.lsdb.values()].sort((a, b) => a.rid.localeCompare(b.rid, 'en', { numeric: true }))) {
+          say(`  Router LSA ${l.rid}  seq ${l.seq}`);
+          for (const k of l.links) say(k.type === 'router' ? `    neighbor ${k.rid}, cost ${k.cost}` : `    network ${k.net}/${k.len}, cost ${k.cost}`);
+        }
+        return;
+      }
+      if (p[3] === 'interface') {
+        for (const i of o.ifs()) say(`${pad(i.name, 8)}${pad(i.ip + '/' + i.prefix, 20)}cost ${i.cost}${i.passive ? ', passive' : ''}, hello ${o.timers().hello} s, dead ${o.timers().dead} s`);
+        return;
+      }
+      say(`${pad('Neighbor ID', 16)}${pad('State', 10)}${pad('Address', 16)}Interface`);
+      const t = o.neighborTable();
+      if (!t.length) return say('(no neighbors)');
+      for (const n of t) say(`${pad(n.rid, 16)}${pad(n.state, 10)}${pad(n.ip, 16)}${n.ifname}`);
+      return;
+    }
     if (p[0] === 'show' && p[1] === 'ip' && p[2] === 'route' && dev.l3) {
-      say('Codes: C - connected, S - static, > - selected route, * - FIB route');
-      for (const r of dev.l3.routes()) {
-        if (r.proto === 'C') say(`C>* ${r.net}/${r.len} is directly connected, ${r.dev}`);
-        else say(`S${r.dev ? '>*' : '  '} ${r.net}/${r.len} [1/0] via ${r.via}${r.dev ? ', ' + r.dev : ' inactive'}`);
+      say('Codes: C - connected, S - static, O - OSPF, > - selected route, * - FIB route');
+      const AD = { C: 0, S: 1, O: 110 };
+      const all = dev.l3.routes();
+      const sel = r => !!r.dev && !all.some(x => x !== r && x.dev && x.net === r.net && x.len === r.len && AD[x.proto] < AD[r.proto]);
+      for (const r of all) {
+        const mark = sel(r) ? '>*' : '  ';
+        if (r.proto === 'C') say(`C${mark} ${r.net}/${r.len} is directly connected, ${r.dev}`);
+        else if (r.proto === 'O') say(`O${mark} ${r.net}/${r.len} [110/${r.metric}] via ${r.via}, ${r.dev}`);
+        else say(`S${mark} ${r.net}/${r.len} [1/0] via ${r.via}${r.dev ? ', ' + r.dev : ' inactive'}`);
       }
       return;
     }

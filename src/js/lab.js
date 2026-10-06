@@ -1,5 +1,8 @@
 // Lab: network diagram editor, animation, side panel, log and inspector
-import { Sim, PORTS, TYPE_NAMES, TIMING, newId, normalizeDevice, traceOf, STP_TEXT } from './engine.js';
+import { Sim, PORTS, TYPE_NAMES, TIMING, newId, normalizeDevice, traceOf, STP_TEXT, isHello } from './engine.js';
+
+// BPDUs, VRRP advertisements and OSPF hellos repeat all the time and can be hidden together
+const isCtl = f => f.type === 'stp' || isHello(f);
 import { layerKinds, shortLabel } from './packets.js';
 import { isIp } from './net.js';
 import { h, svgEl, toast, iconBtn, resizer } from './ui.js';
@@ -25,7 +28,7 @@ export class Lab {
     this.listeners = new Set();
     if (opts.onEvent) this.listeners.add(opts.onEvent);
     this.sel = null; this.connectFrom = null; this.connectMode = false;
-    this.playing = true; this.msPerHop = opts.msPerHop || 550; this.lastTs = 0; this.idleUntil = 0;
+    this.playing = true; this.msPerHop = opts.msPerHop || Number(store.prefs.speed) || 550; this.lastTs = 0; this.idleUntil = 0;
     this.traceId = null; this.logFilter = 'all'; this.selectedLog = null; this.showBpdu = true;
     this.view = { x: 0, y: 0, w: 900, h: 520 };
     this.pktEls = new Map();
@@ -86,7 +89,9 @@ export class Lab {
     this.timeEl = h('span', { class: 'time' }, 't = 0.0000 s');
     const speed = h('input', { type: 'range', min: '0', max: '100', value: String(this.speedToSlider(this.msPerHop)), 'aria-label': 'Speed' });
     this.speedLbl = h('span', { class: 'speedlbl' });
+    // The speed is remembered for every lab and lesson
     speed.addEventListener('input', () => { this.msPerHop = this.sliderToSpeed(Number(speed.value)); this.showSpeed(); });
+    speed.addEventListener('change', () => store.setPref('speed', this.msPerHop));
     this.showSpeed();
     this.player = h('div', { class: 'player' },
       h('div', { class: 'bar' }, this.playBtn,
@@ -95,7 +100,7 @@ export class Lab {
         iconBtn(I.reset, 'Reset state: clear tables, packets and log', () => this.resetState()),
         this.timeEl),
       h('div', { class: 'bar' }, h('span', { class: 'speedlbl', style: { paddingLeft: '6px' } }, 'Speed'), speed, this.speedLbl),
-      this.bpduBar = h('div', { class: 'bar hidden' }, this.bpduBtn = h('button', { class: 'tog on', title: 'Show or hide BPDUs in the network diagram', onclick: () => this.toggleBpdu() }, 'BPDUs')),
+      this.bpduBar = h('div', { class: 'bar hidden' }, this.bpduBtn = h('button', { class: 'tog on', title: 'Show or hide the periodic control messages (BPDUs, hellos) in the network diagram', onclick: () => this.toggleBpdu() }, 'BPDUs')),
       h('span', { class: 'grow' }),
       h('div', { class: 'bar' }, iconBtn(I.fit, 'Fit view', () => this.fit(true))));
     this.canvasWrap.append(this.player);
@@ -196,7 +201,7 @@ export class Lab {
   onSim(type, data) {
     if (type === 'log') {
       this.queueLog(data);
-      if (data.tag && (data.tag.startsWith('stp-') || data.tag === 'link-up' || data.tag === 'link-down')) this.renderSoon();
+      if (data.tag && (/^(stp|vrrp|ospf)-/.test(data.tag) || ['link-up', 'link-down', 'dhcp-bound', 'dhcp-released-client'].includes(data.tag))) { this.renderSoon(); this.refreshSideSoon(); }
     }
     if (type === 'halted') this.showStorm(data);
     if (type === 'console' && this.sel?.kind === 'dev' && this.sel.id === data.devId && this.tab === 'console') this.consoleEl?.refresh();
@@ -241,9 +246,10 @@ export class Lab {
         dot.append(tt, svgEl('circle', { r: 6 }), letter);
         g.append(dot);
       }
-      if (l.mtu !== 1500) {
+      const props = [l.mtu !== 1500 ? `MTU ${l.mtu}` : '', Number(l.delay) > 0 ? `${l.delay} ms` : '', Number(l.loss) > 0 ? `${l.loss} % loss` : ''].filter(Boolean);
+      if (props.length) {
         const t = svgEl('text', { class: 'mtulbl', x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 - 7, 'text-anchor': 'middle' });
-        t.textContent = `MTU ${l.mtu}`; g.append(t);
+        t.textContent = props.join(' · '); g.append(t);
       }
       this.gLinks.append(g);
     }
@@ -257,7 +263,10 @@ export class Lab {
       ic.innerHTML = DEV_ICON[d.type];
       g.append(ic);
       const nm = svgEl('text', { class: 'nm', x: CARD_W / 2, y: CARD_H + 15 }); nm.textContent = d.name; g.append(nm);
-      this.addrLines(d).forEach((line, i) => { const t = svgEl('text', { class: 'ip', x: CARD_W / 2, y: CARD_H + 28 + i * 12 }); t.textContent = line; g.append(t); });
+      const lines = this.addrLines(d);
+      lines.forEach((line, i) => { const t = svgEl('text', { class: 'ip', x: CARD_W / 2, y: CARD_H + 28 + i * 12 }); t.textContent = line; g.append(t); });
+      const badge = this.badge(d);
+      if (badge) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 + lines.length * 12 }); t.textContent = badge; g.append(t); }
       const st = d.type === 'switch' ? this.sim.dev(d.id)?.bridge?.stpTable() : null;
       if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = st.isRoot ? `Root bridge, prio ${d.stp.priority}` : `STP, prio ${d.stp.priority}`; g.append(t); }
       g.addEventListener('pointerdown', e => this.devPointerDown(e, d));
@@ -270,7 +279,9 @@ export class Lab {
   /** Address lines under a device: one for hosts, one per configured interface for routers and VTEPs */
   addrLines(d) {
     if (d.type === 'pc' || d.type === 'server') {
-      const i = d.ifaces.eth1; return isIp(i.ip) ? [`${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}`] : [];
+      const i = d.ifaces.eth1;
+      if (i.dhcp) { const l = this.sim.dev(d.id)?.l3?.lease; return [l ? `${l.ip}/${l.prefix} (DHCP)` : 'DHCP …']; }
+      return isIp(i.ip) ? [`${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}`] : [];
     }
     if (d.type === 'router' || d.type === 'vtep') {
       return Object.entries(d.ifaces).filter(([, i]) => isIp(i.ip))
@@ -278,6 +289,16 @@ export class Lab {
         .map(([n, i]) => `${n} ${i.ip}/${i.prefix}`);
     }
     return [];
+  }
+  /** Short status line for routers: VRRP role, OSPF neighbors, DHCP server */
+  badge(d) {
+    if (d.type !== 'router' && d.type !== 'server') return '';
+    const dev = this.sim.dev(d.id), parts = [];
+    for (const g of dev?.vrrp?.table() || []) parts.push(`VRRP ${g.state === 'master' ? 'master' : g.state} ${g.vip}`);
+    if (dev?.ospf?.enabled) { const n = dev.ospf.neighborTable().filter(x => x.state === 'Full').length; parts.push(`OSPF ${n} nbr${n === 1 ? '' : 's'}`); }
+    if (d.dhcpServer?.enabled) parts.push('DHCP server');
+    if (d.nat?.outside) parts.push('NAT');
+    return parts.join(' · ');
   }
   fit(force) {
     const r = this.canvasWrap.getBoundingClientRect();
@@ -539,7 +560,7 @@ export class Lab {
           h('li', {}, 'Space pauses time, the right arrow advances one event. The speed slider sets the slow motion.'),
           h('li', {}, 'Clicking a packet takes it apart into its layers in the packet inspector.')),
         h('h4', {}, 'Layer colors'),
-        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN']]
+        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'VRRP, OSPF']]
           .map(([k, n]) => h('span', { class: 'chip' }, h('i', { class: `bg-${k}`, style: { width: '10px', height: '10px', borderRadius: '2px', display: 'inline-block' } }), n)))));
       return;
     }
@@ -586,7 +607,23 @@ export class Lab {
         h('dl', { class: 'kv' }, h('dt', {}, 'Side A'), h('dd', {}, `${A.name} ${l.a.if}`), h('dt', {}, 'Side B'), h('dd', {}, `${B.name} ${l.b.if}`)),
         h('h4', {}, 'MTU (payload bytes per frame)'), mtu,
         h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'Both ends use this MTU. Frames with a larger payload are lost on this cable.'),
+        h('h4', {}, 'Line quality'),
+        h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '1fr 90px' } },
+          h('span', { class: 'small' }, 'Latency, one way (ms)'), this.linkNum(l, 'delay', 0, 2000, 'ms'),
+          h('span', { class: 'small' }, 'Packet loss (%)'), this.linkNum(l, 'loss', 0, 100, '%')),
+        h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'A long-distance or wireless link: ping shows the round-trip time and losses, TCP retransmits what got lost, UDP does not.'),
         h('label', { class: 'row', style: { marginTop: '10px' } }, up, 'Link up (cable plugged in)')));
+  }
+  linkNum(l, key, min, max, unit) {
+    const i = h('input', { class: 'input mono', type: 'number', min: String(min), max: String(max), value: Number(l[key]) || 0, disabled: this.canConfig ? null : true });
+    i.addEventListener('change', () => {
+      const v = Number(i.value);
+      if (!(v >= min && v <= max)) { i.classList.add('bad'); return; }
+      i.classList.remove('bad');
+      if (v) l[key] = v; else delete l[key];
+      this.render(); this.sim.emit('config', null); this.emit('config', { link: l.id, msg: `${key} ${v} ${unit}` });
+    });
+    return i;
   }
 
   // ------------------------------------------------------------ Log
@@ -596,7 +633,7 @@ export class Lab {
     if (!this.logTimer) this.logTimer = setTimeout(() => { this.logTimer = null; const p = this.pendingLog; this.pendingLog = []; this.appendLog(p); }, 60);
   }
   logVisible(e) {
-    if (this.logFilter === 'all') return e.tag !== 'bpdu-sent';
+    if (this.logFilter === 'all') return e.tag !== 'bpdu-sent' && e.tag !== 'hello-sent';
     if (this.logFilter === 'bpdu') return true;
     if (this.logFilter === 'stp') return e.stp && e.tag !== 'bpdu-sent' || e.tag === 'loop-detected' || e.tag === 'storm' || e.tag === 'mac-flap';
     if (this.logFilter === 'nosend') return e.kind !== 'send';
@@ -612,7 +649,9 @@ export class Lab {
   }
   renderLog() {
     const opts = [['all', 'All events'], ['nosend', 'Decisions only']];
-    if (this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled) || this.logFilter === 'stp' || this.logFilter === 'bpdu') opts.push(['stp', 'Spanning tree only'], ['bpdu', 'Everything, including BPDUs sent']);
+    const stp = this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled), hellos = this.hasHellos();
+    if (stp || this.logFilter === 'stp') opts.push(['stp', 'Spanning tree only']);
+    if (stp || hellos || this.logFilter === 'bpdu') opts.push(['bpdu', `Everything, including ${stp && hellos ? 'BPDUs and hellos' : stp ? 'BPDUs' : 'hellos'}`]);
     if (this.traceId) opts.push(['trace', 'Traced packet']);
     for (const d of this.sim.topo.devices) opts.push(['dev:' + d.id, `Only ${d.name}`]);
     this.filterSel.innerHTML = '';
@@ -660,10 +699,14 @@ export class Lab {
     this.lastTs = ts;
     if (this.playing) {
       const sim = this.sim;
-      const visible = this.showBpdu ? sim.inflight.length : sim.inflight.filter(f => f.frame.type !== 'stp').length;
+      const shown = this.showBpdu ? sim.inflight : sim.inflight.filter(f => !isCtl(f.frame));
+      const visible = shown.length;
       if (!visible && sim.inflight.length) sim.runUntil(Math.max(...sim.inflight.map(f => f.t1)));
       if (visible) {
-        sim.runUntil(sim.time + dt * (TIMING.linkDelay / this.msPerHop));
+        // One hop takes msPerHop on screen. A slow link (latency) takes longer, but at most 8 hops' worth
+        const durs = shown.map(f => f.t1 - f.t0);
+        const pace = Math.max(Math.min(...durs), Math.max(...durs) / 8);
+        sim.runUntil(sim.time + dt * (pace / this.msPerHop));
         this.idleUntil = 0;
       } else {
         const nt = sim.nextTime();
@@ -683,7 +726,7 @@ export class Lab {
     const byId = new Map(sim.topo.devices.map(d => [d.id, d]));
     const groups = new Map();
     for (const f of sim.inflight) {
-      if (!this.showBpdu && f.frame.type === 'stp') continue;
+      if (!this.showBpdu && isCtl(f.frame)) continue;
       const key = f.link.id + (f.from === f.link.a.dev ? 'a' : 'b');
       groups.set(key, (groups.get(key) || 0) + 1);
       const idx = groups.get(key) - 1;
@@ -724,7 +767,12 @@ export class Lab {
     toast(`Fast-forwarded ${ms / 1000} s, now t = ${(this.sim.time / 1000).toFixed(1)} s`);
   }
   toggleBpdu() { this.showBpdu = !this.showBpdu; this.bpduBtn.classList.toggle('on', this.showBpdu); this.drawPackets(); }
-  updateBpduBar() { this.bpduBar?.classList.toggle('hidden', !this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled)); }
+  hasHellos() { return this.sim.topo.devices.some(d => d.type === 'router' && (d.vrrp?.length || d.ospf?.enabled)); }
+  updateBpduBar() {
+    const stp = this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled), hellos = this.hasHellos();
+    this.bpduBar?.classList.toggle('hidden', !stp && !hellos);
+    if (this.bpduBtn) this.bpduBtn.textContent = stp && hellos ? 'BPDUs & hellos' : stp ? 'BPDUs' : 'Hellos';
+  }
   renderSoon() {
     if (this.renderTimer) return;
     this.renderTimer = setTimeout(() => { this.renderTimer = null; this.render(); }, 80);
