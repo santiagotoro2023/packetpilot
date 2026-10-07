@@ -34,6 +34,11 @@
 #      This server keeps running and shows every learner a card "PacketPilot has a new
 #      address" with a button that carries all their progress over in one click.
 #    sudo bash packetpilot-install.sh --not-moved    Remove that card again
+#
+#  With a Let's Encrypt domain, people who open PacketPilot by IP address (or under
+#  another name) get a card offering to move their progress to the domain. To never
+#  show that card, e.g. behind a reverse proxy where the address would be wrong:
+#    sudo bash packetpilot-install.sh --no-move-card   (kept on updates, back with --move-card)
 # =============================================================================
 set -euo pipefail
 
@@ -61,6 +66,8 @@ PP_LE_EMAIL=""
 PP_LE_SET="no"
 PP_MOVED_TO=""
 PP_MOVED_SET="no"
+PP_MOVE_CARD="yes"
+PP_MOVE_CARD_SET="no"
 PP_LE_CERT="${PP_TLS_DIR}/letsencrypt.crt"
 PP_LE_KEY="${PP_TLS_DIR}/letsencrypt.key"
 PP_ACME_HOME="${PP_ROOT}/acme"
@@ -100,6 +107,8 @@ while [ $# -gt 0 ]; do
     --moved-to)  need "$1" "${2:-}"; PP_MOVED_TO="$2"; PP_MOVED_SET="yes"; shift 2 ;;
     --moved-to=*) PP_MOVED_TO="${1#*=}"; PP_MOVED_SET="yes"; shift ;;
     --not-moved) PP_MOVED_TO=""; PP_MOVED_SET="off"; shift ;;
+    --no-move-card) PP_MOVE_CARD="no"; PP_MOVE_CARD_SET="yes"; shift ;;
+    --move-card) PP_MOVE_CARD="yes"; PP_MOVE_CARD_SET="yes"; shift ;;
     --update)    PP_ACTION="update"; shift ;;
     --uninstall) PP_ACTION="uninstall"; shift ;;
     --extract)   need "$1" "${2:-}"; PP_ACTION="extract"; PP_EXTRACT_DIR="$2"; shift 2 ;;

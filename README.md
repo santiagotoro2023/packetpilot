@@ -37,6 +37,7 @@ PacketPilot then runs at `https://<server>:8080/`, secured with a self-signed ce
 | `sudo bash packetpilot-install.sh --uninstall` | removes PacketPilot, nginx stays |
 | `bash packetpilot-install.sh --extract ./web` | only extracts the web files, no root needed |
 | `--force` | also installs on untested systems |
+| `--no-move-card` | never show the card "PacketPilot has a new address" (e.g. behind a reverse proxy or when people use the IP on purpose), back with `--move-card` |
 | `--moved-to https://new.example.com` | PacketPilot moved elsewhere (e.g. to Kubernetes): every learner gets a one-click move of their progress (`--not-moved` removes it) |
 
 The script installs nginx (and openssl, if missing) from the Debian packages, writes the files to `/opt/packetpilot/www` and creates `/etc/nginx/sites-available/packetpilot`. The certificate and key live in `/opt/packetpilot/tls/`. The certificate covers the hostname, `localhost` and all IP addresses of the server and is valid for 825 days. Updates keep it, so browsers don't warn again; it is only replaced when it expires within 30 days or with `--new-cert`. To use your own certificate, replace `packetpilot.crt` and `packetpilot.key` there and run `systemctl reload nginx`. If `ufw` is active, the port is opened. At runtime PacketPilot loads nothing from the internet, so it also works in isolated lab networks.
@@ -57,7 +58,7 @@ sudo bash packetpilot-install.sh --letsencrypt pp.example.com --dns manual
 
 `--dns` takes the name of any DNS provider that [acme.sh supports](https://github.com/acmesh-official/acme.sh/wiki/dnsapi) (`dns_cf`, `dns_hetzner`, `dns_ionos`, `dns_aws`, `dns_gd`, …). The wiki page lists the environment variables each provider needs. Pass them once, after `sudo` as shown, and acme.sh keeps them for renewals. `--email you@example.com` is optional. The installer fetches acme.sh 3.1.6 from a fixed commit, checks its checksum and keeps it in `/opt/packetpilot/acme`. A daily systemd timer (`packetpilot-renew.timer`) renews the certificate 30 days before it expires and reloads nginx. With `--dns manual` there is no automatic renewal: within the last 30 days, run the installer again and create the new TXT record.
 
-The self-signed certificate keeps serving access by IP address. When someone opens PacketPilot by IP, a small card offers to move their progress to the domain.
+The self-signed certificate keeps serving access by IP address. When someone opens PacketPilot by IP, a small card offers to move their progress to the domain. If you don't want that card (for example because the server sits behind a reverse proxy and the address in the card would be wrong), add `--no-move-card`.
 
 ### Your progress is safe
 

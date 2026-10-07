@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.8.0
+#  PacketPilot 2.8.1
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -34,10 +34,15 @@
 #      This server keeps running and shows every learner a card "PacketPilot has a new
 #      address" with a button that carries all their progress over in one click.
 #    sudo bash packetpilot-install.sh --not-moved    Remove that card again
+#
+#  With a Let's Encrypt domain, people who open PacketPilot by IP address (or under
+#  another name) get a card offering to move their progress to the domain. To never
+#  show that card, e.g. behind a reverse proxy where the address would be wrong:
+#    sudo bash packetpilot-install.sh --no-move-card   (kept on updates, back with --move-card)
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.8.0"
+PP_VERSION="2.8.1"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -61,6 +66,8 @@ PP_LE_EMAIL=""
 PP_LE_SET="no"
 PP_MOVED_TO=""
 PP_MOVED_SET="no"
+PP_MOVE_CARD="yes"
+PP_MOVE_CARD_SET="no"
 PP_LE_CERT="${PP_TLS_DIR}/letsencrypt.crt"
 PP_LE_KEY="${PP_TLS_DIR}/letsencrypt.key"
 PP_ACME_HOME="${PP_ROOT}/acme"
@@ -100,6 +107,8 @@ while [ $# -gt 0 ]; do
     --moved-to)  need "$1" "${2:-}"; PP_MOVED_TO="$2"; PP_MOVED_SET="yes"; shift 2 ;;
     --moved-to=*) PP_MOVED_TO="${1#*=}"; PP_MOVED_SET="yes"; shift ;;
     --not-moved) PP_MOVED_TO=""; PP_MOVED_SET="off"; shift ;;
+    --no-move-card) PP_MOVE_CARD="no"; PP_MOVE_CARD_SET="yes"; shift ;;
+    --move-card) PP_MOVE_CARD="yes"; PP_MOVE_CARD_SET="yes"; shift ;;
     --update)    PP_ACTION="update"; shift ;;
     --uninstall) PP_ACTION="uninstall"; shift ;;
     --extract)   need "$1" "${2:-}"; PP_ACTION="extract"; PP_EXTRACT_DIR="$2"; shift 2 ;;
@@ -13744,7 +13753,10 @@ main_url() {
 write_site_json() {
   local url
   url="$(main_url)"
-  # A new home elsewhere (--moved-to) wins: every browser then offers to take its progress there
+  # --no-move-card: no main address, so no browser is ever told to move (share links
+  # then use whatever address the learner opened)
+  [ "$PP_MOVE_CARD" = "no" ] && url=""
+  # A new home elsewhere (--moved-to) is an explicit wish: it always shows the card
   [ -n "$PP_MOVED_TO" ] && url="$PP_MOVED_TO"
   if [ -n "$url" ]; then
     printf '{ "version": "%s", "canonical": "%s" }\n' "$PP_VERSION" "${url%/}" > "${PP_WWW}/site.json"
@@ -13772,16 +13784,17 @@ LE_DOMAIN=${PP_LE_DOMAIN}
 LE_DNS=${PP_LE_DNS}
 LE_EMAIL=${PP_LE_EMAIL}
 MOVED_TO=${PP_MOVED_TO}
+MOVE_CARD=${PP_MOVE_CARD}
 CONF
   chmod 644 "$PP_CONF"
 }
 
 keep_settings() {
-  local k v c_port="" c_tls="" c_domain="" c_dns="" c_email="" c_moved=""
+  local k v c_port="" c_tls="" c_domain="" c_dns="" c_email="" c_moved="" c_card=""
   if [ -f "$PP_CONF" ]; then
     while IFS='=' read -r k v; do
       case "$k" in
-        PORT) c_port="$v" ;; TLS) c_tls="$v" ;; LE_DOMAIN) c_domain="$v" ;; LE_DNS) c_dns="$v" ;; LE_EMAIL) c_email="$v" ;; MOVED_TO) c_moved="$v" ;;
+        PORT) c_port="$v" ;; TLS) c_tls="$v" ;; LE_DOMAIN) c_domain="$v" ;; LE_DNS) c_dns="$v" ;; LE_EMAIL) c_email="$v" ;; MOVED_TO) c_moved="$v" ;; MOVE_CARD) c_card="$v" ;;
       esac
     done < "$PP_CONF"
   elif [ -f "$PP_SITE" ]; then
@@ -13798,6 +13811,7 @@ keep_settings() {
     PP_TLS="no"
     ok "Keeping plain HTTP (switch with --https)"
   fi
+  if [ "$PP_MOVE_CARD_SET" = "no" ] && [ "$c_card" = "no" ]; then PP_MOVE_CARD="no"; ok "Keeping: no card about another address (show it again with --move-card)"; fi
   if [ "$PP_MOVED_SET" = "no" ] && [ -n "$c_moved" ]; then PP_MOVED_TO="$c_moved"; ok "Keeping the new address ${PP_MOVED_TO} (remove with --not-moved)"; fi
   case "$PP_LE_SET" in
     no)
