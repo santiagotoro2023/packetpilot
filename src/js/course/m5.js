@@ -186,7 +186,7 @@ ${note('Typical places for this are VPN tunnels, PPPoE (MTU 1492) and VXLAN with
           { text: 'Fetch http://10.0.2.80/. The connection is up, but the data does not arrive.', check: tag('client', 'tcp-stalled') },
           { text: 'Was the three-way handshake completed? (yes or no)', ask: true, expect: () => ['yes'] },
           { text: 'Set up MSS clamping on r1 so that the segments fit through the narrow spot, and fetch the page again.', check: tcpDoneAfter('tcp-stalled') }],
-        hints: ['You will find MSS clamping on r1 under Configuration, below IP forwarding.', 'MTU 1400 minus 40 bytes for IP and TCP.'],
+        hints: ['You will find MSS clamping on r1 under Configuration, Add a feature, Advanced.', 'MTU 1400 minus 40 bytes for IP and TCP.'],
         outro: '<p>With MSS clamping, the client only announces 1360 in the SYN, and the SYN/ACK from web is also adjusted on the way back. Neither side sends a segment that is too large any more, ICMP is not needed at all.</p>' }
     ] }
   ]

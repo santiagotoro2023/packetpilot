@@ -41,6 +41,27 @@ function section(dev, title, status, inUse, content) {
   return d;
 }
 
+// Optional features: only the ones in use (or just added) are shown, the rest waits in a
+// small menu with one line of explanation each. This keeps a new device calm to look at.
+const featShown = new Set();
+function features(dev, list, rerender, locked) {
+  const wrap = h('div', { class: 'features' });
+  const key = f => dev.id + '|' + f.id;
+  const active = list.filter(f => f.inUse || featShown.has(key(f)));
+  const rest = list.filter(f => !active.includes(f));
+  for (const f of active) wrap.append(section(dev, f.title, f.status || '', f.inUse, f.render()));
+  if (rest.length && !locked) {
+    const menu = h('div', { class: 'featmenu hidden', role: 'menu' }, rest.map(f => h('button', { class: 'featitem', role: 'menuitem', onclick: () => {
+      featShown.add(key(f)); sectionOpen.set(dev.id + '|' + f.title, true); f.onAdd?.(); rerender?.();
+    } }, h('b', {}, f.title), h('span', {}, f.desc))));
+    const btn = h('button', { class: 'btn addfeat', 'aria-expanded': 'false', html: `${I.plus} Add a feature <span class="small muted">(${rest.map(f => f.title).join(', ')})</span>`,
+      onclick: () => { const open = menu.classList.toggle('hidden') === false; btn.setAttribute('aria-expanded', String(open)); } });
+    wrap.append(btn, menu);
+  }
+  return wrap;
+}
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
 // ---------------------------------------------------------------- Configuration
 export function configPanel(dev, ctx) {
   const { sim, changed, locked, rerender } = ctx;
@@ -69,22 +90,35 @@ export function configPanel(dev, ctx) {
     box.append(h('h4', {}, 'Network card eth1'),
       h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } },
         h('span', {}, 'Address'), mode, ...addrRows,
-        h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
+        ...(i.dhcp ? [] : [h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for names, optional')])),
       i.dhcp ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('button', { class: 'btn', onclick: () => { dev.dhclient('eth1'); } }, 'Ask again (dhclient)'),
         lease ? h('button', { class: 'btn ghost', onclick: () => { dev.dhcpRelease('eth1'); rerender?.(); } }, 'Release') : null) : '',
-      h('dl', { class: 'kv', style: { marginTop: '10px' } }, h('dt', {}, 'MAC'), h('dd', {}, dev.mac('eth1'))),
-      h('p', { class: 'small muted', style: { marginTop: '8px' } }, 'A VLAN tag sends all frames with an 802.1Q tag, like a subinterface eth1.10 on Linux. Without a tag the host fits on an access port.'),
-      i.dhcp ? '' : h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr', marginTop: '8px' } },
-        h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for curl/ping with names')));
-    box.append(servicesEditor(dev, upd), dnsEditor(dev, upd));
-    if (c.type === 'server') box.append(section(dev, 'DHCP server', c.dhcpServer.enabled ? `on, ${dev.l3.dhcpLeases.size} lease${dev.l3.dhcpLeases.size === 1 ? '' : 's'}` : 'off', c.dhcpServer.enabled, dhcpServerEditor(dev, upd)));
+      h('dl', { class: 'kv', style: { marginTop: '10px' } }, h('dt', {}, 'MAC'), h('dd', {}, dev.mac('eth1'))));
+    const hasDnsSvc = () => c.services.some(x => x.proto === 'udp' && Number(x.port) === 53);
+    box.append(features(dev, [
+      { id: 'services', title: 'Services', desc: 'Programs that listen on a port, e.g. a web server on TCP 80',
+        inUse: c.services.length > 0, status: c.services.map(x => `${x.proto.toUpperCase()} ${x.port}`).join(', '), render: () => servicesEditor(dev, upd) },
+      { id: 'dns', title: 'DNS records', desc: 'Answer name queries for other devices (DNS server on UDP 53)',
+        inUse: c.dns.length > 0, status: plural(c.dns.length, 'record'), render: () => dnsEditor(dev, upd),
+        onAdd: () => { if (!hasDnsSvc()) upd(() => c.services.push({ proto: 'udp', port: 53, name: 'dns' }), `${dev.name}: DNS service`); } },
+      ...(c.type === 'server' ? [{ id: 'dhcpd', title: 'DHCP server', desc: 'Hand out addresses to other devices',
+        inUse: c.dhcpServer.enabled, status: c.dhcpServer.enabled ? `on, ${plural(dev.l3.dhcpLeases.size, 'lease')}` : 'off', render: () => dhcpServerEditor(dev, upd) }] : []),
+      { id: 'vlan', title: 'VLAN tag', desc: 'Send every frame with an 802.1Q tag, like eth1.10 on Linux',
+        inUse: !!i.vlan, status: i.vlan ? `VLAN ${i.vlan}` : '', render: () => h('div', {},
+          h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } }, h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
+          h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'Without a tag the host fits on an access port. With a tag, the switch port must be a trunk that allows this VLAN.')) }
+    ], rerender, locked));
   }
 
   if (c.type === 'router' || c.type === 'vtep') {
     const names = c.type === 'router' ? [...PORTS.router, 'lo'] : ['eth1', 'lo'];
     box.append(h('h4', {}, c.type === 'vtep' ? 'Underlay (layer 3)' : 'Interfaces'));
     const g = h('div', { class: 'cfg-grid' });
+    // Ports without a cable and without an address only appear on request
+    const used = n => n === 'lo' || !!sim.linkAt(dev.id, n) || isIp(c.ifaces[n].ip);
+    const showAll = featShown.has(dev.id + '|allports');
     for (const n of names) {
+      if (!showAll && !used(n)) continue;
       const i = c.ifaces[n];
       const linked = n === 'lo' || !!sim.linkAt(dev.id, n);
       g.append(h('span', { class: 'if', title: linked ? 'connected' : 'not connected' }, n + (linked ? '' : ' ○')),
@@ -92,17 +126,27 @@ export function configPanel(dev, ctx) {
         numInput(i.prefix, 0, 32, v => upd(() => i.prefix = v ?? 24, `${dev.name} ${n}: /${v}`)));
     }
     box.append(g);
-    if (c.type === 'router') box.append(subifEditor(dev, upd, sim, rerender));
+    const hidden = names.filter(n => !used(n));
+    if (hidden.length && !locked) box.append(h('button', { class: 'linkbtn small', onclick: () => { showAll ? featShown.delete(dev.id + '|allports') : featShown.add(dev.id + '|allports'); rerender?.(); } },
+      showAll ? 'Hide ports without a cable' : `Show ports without a cable (${hidden.join(', ')})`));
     box.append(routesEditor(dev, upd));
     if (c.type === 'router') {
-      box.append(
-        section(dev, 'Rules', c.acl.length ? `${c.acl.length} rule${c.acl.length === 1 ? '' : 's'}` : 'none', c.acl.length > 0, aclEditor(dev, upd)),
-        section(dev, 'NAT', c.nat.outside ? `outside ${c.nat.outside}` : 'off', !!c.nat.outside, natEditor(dev, upd, rerender)),
-        section(dev, 'DHCP', c.dhcpServer.enabled ? 'server on' : Object.values(c.ifaces).some(i => isIp(i.helper)) ? 'relay' : 'off',
-          c.dhcpServer.enabled || Object.values(c.ifaces).some(i => isIp(i.helper)), h('div', {}, relayEditor(dev, upd), dhcpServerEditor(dev, upd))),
-        section(dev, 'VRRP', c.vrrp.length ? (dev.vrrp?.table() || []).map(g => `${g.vrid}: ${g.state}`).join(', ') || `${c.vrrp.length} group${c.vrrp.length === 1 ? '' : 's'}` : 'off', c.vrrp.length > 0, vrrpEditor(dev, upd, rerender)),
-        section(dev, 'OSPF', c.ospf.enabled ? `on, ${(dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length} neighbor${(dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length === 1 ? '' : 's'}` : 'off', c.ospf.enabled, ospfEditor(dev, upd, rerender)),
-        section(dev, 'Advanced', c.forwarding === false || c.mssClamp ? 'changed' : '', c.forwarding === false || !!c.mssClamp, advancedEditor(dev, upd)));
+      const subs = Object.keys(c.ifaces).filter(n => c.ifaces[n].parent);
+      const relay = Object.values(c.ifaces).some(i => isIp(i.helper));
+      const fullNbrs = (dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length;
+      box.append(features(dev, [
+        { id: 'subif', title: 'Subinterfaces', desc: 'One cable, several VLANs: router on a stick', inUse: subs.length > 0, status: subs.join(', '), render: () => subifEditor(dev, upd, sim, rerender) },
+        { id: 'rules', title: 'Rules', desc: 'Allow, drop or reject forwarded packets (firewall)', inUse: c.acl.length > 0, status: plural(c.acl.length, 'rule'), render: () => aclEditor(dev, upd) },
+        { id: 'nat', title: 'NAT', desc: 'Inside hosts share the outside address, port forwards', inUse: !!c.nat.outside, status: c.nat.outside ? `outside ${c.nat.outside}` : 'off', render: () => natEditor(dev, upd, rerender) },
+        { id: 'dhcp', title: 'DHCP', desc: 'Hand out addresses, or relay requests to a DHCP server', inUse: c.dhcpServer.enabled || relay,
+          status: c.dhcpServer.enabled ? 'server on' : relay ? 'relay' : 'off', render: () => h('div', {}, relayEditor(dev, upd), dhcpServerEditor(dev, upd)) },
+        { id: 'vrrp', title: 'VRRP', desc: 'Share a gateway address with a second router', inUse: c.vrrp.length > 0,
+          status: (dev.vrrp?.table() || []).map(g => `${g.vrid}: ${g.state}`).join(', ') || plural(c.vrrp.length, 'group'), render: () => vrrpEditor(dev, upd, rerender) },
+        { id: 'ospf', title: 'OSPF', desc: 'Learn routes automatically from neighboring routers', inUse: c.ospf.enabled,
+          status: c.ospf.enabled ? `on, ${plural(fullNbrs, 'neighbor')}` : 'off', render: () => ospfEditor(dev, upd, rerender) },
+        { id: 'adv', title: 'Advanced', desc: 'IP forwarding on or off, MSS clamping', inUse: c.forwarding === false || !!c.mssClamp,
+          status: c.forwarding === false || c.mssClamp ? 'changed' : '', render: () => advancedEditor(dev, upd) }
+      ], rerender, locked));
     }
   }
 
@@ -134,10 +178,15 @@ export function configPanel(dev, ctx) {
         vl);
     }
     box.append(g);
-    box.append(h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '1fr 90px', marginTop: '10px' } },
-      h('span', { class: 'small' }, 'MAC table aging time (s), 0 = learns nothing'),
-      numInput(c.ageing, 0, 3600, v => upd(() => c.ageing = v ?? 300, `${dev.name}: aging ${v} s`))));
-    if (c.type === 'switch') box.append(stpEditor(dev, upd, sim, shown, rerender));
+    const st = c.stp;
+    box.append(features(dev, [
+      ...(c.type === 'switch' ? [{ id: 'stp', title: 'Spanning tree', desc: 'Block redundant paths so no loop forms (STP or RSTP)', inUse: !!st.enabled,
+        status: st.enabled ? `${st.mode === 'rstp' ? 'RSTP' : 'STP'}${dev.bridge.stpTable()?.isRoot ? ', root' : ''}` : 'off', render: () => stpEditor(dev, upd, sim, shown, rerender) }] : []),
+      { id: 'mac', title: 'MAC table', desc: 'How long learned addresses are kept, 0 turns the switch into a hub', inUse: Number(c.ageing) !== 300,
+        status: `aging ${c.ageing} s`, render: () => h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '1fr 90px' } },
+          h('span', { class: 'small' }, 'Aging time (s), 0 = learns nothing'),
+          numInput(c.ageing, 0, 3600, v => upd(() => c.ageing = v ?? 300, `${dev.name}: aging ${v} s`))) }
+    ], rerender, locked));
   }
 
   if (c.type === 'vtep') box.append(vxlanEditor(dev, upd, sim));
@@ -149,7 +198,6 @@ function subifEditor(dev, upd, sim, rerender) {
   const c = dev.cfg;
   const wrap = h('div');
   const subs = Object.keys(c.ifaces).filter(n => c.ifaces[n].parent);
-  wrap.append(h('h4', {}, 'Subinterfaces (802.1Q)'));
   const list = h('div', { class: 'list' });
   for (const n of subs) {
     const i = c.ifaces[n];
@@ -181,8 +229,7 @@ function stpEditor(dev, upd, sim, shown, rerender) {
   const wrap = h('div');
   const on = h('input', { type: 'checkbox', checked: st.enabled ? true : null });
   on.addEventListener('change', () => { upd(() => st.enabled = on.checked, `${dev.name}: spanning tree ${on.checked ? 'on' : 'off'}`); rerender?.(); });
-  wrap.append(h('h4', {}, st.mode === 'rstp' ? 'Rapid spanning tree (802.1w)' : 'Spanning tree (802.1D)'),
-    h('label', { class: 'row', style: { fontSize: '.88rem' } }, on, 'Spanning tree enabled'));
+  wrap.append(h('label', { class: 'row', style: { fontSize: '.88rem' } }, on, 'Spanning tree enabled'));
   if (!st.enabled) { wrap.append(h('p', { class: 'small muted' }, 'Off: all ports forward immediately. If the network has a loop, broadcasts circle endlessly.')); return wrap; }
   const prios = []; for (let p = 0; p <= 61440; p += 4096) prios.push([p, String(p) + (p === 32768 ? ' (default)' : '')]);
   const timers = st.timers === 'schnell' ? 'fast' : st.timers;
@@ -215,7 +262,6 @@ function servicesEditor(dev, upd) {
   const wrap = h('div');
   const draw = () => {
     wrap.innerHTML = '';
-    wrap.append(h('h4', {}, 'Services (listening ports)'));
     const list = h('div', { class: 'list' });
     c.services.forEach((sv, idx) => {
       const name = h('input', { class: 'input', value: sv.name || '', placeholder: 'Name', style: { minWidth: 0, flex: '1 1 0' } });
@@ -245,10 +291,9 @@ function servicesEditor(dev, upd) {
 function dnsEditor(dev, upd) {
   const c = dev.cfg;
   const wrap = h('div');
-  if (!c.services.some(s => s.proto === 'udp' && Number(s.port) === 53) && !c.dns.length) return wrap;
   const draw = () => {
     wrap.innerHTML = '';
-    wrap.append(h('h4', {}, 'DNS entries (A records)'));
+    if (!c.services.some(s => s.proto === 'udp' && Number(s.port) === 53)) wrap.append(h('p', { class: 'small', style: { color: 'var(--warn)', marginTop: 0 } }, 'No DNS service on UDP 53: add it under Services, otherwise nobody can ask.'));
     const list = h('div', { class: 'list' });
     c.dns.forEach((r, idx) => {
       const name = h('input', { class: 'input mono', value: r.name, placeholder: 'web.lab' });
@@ -294,8 +339,7 @@ function aclEditor(dev, upd) {
   const wrap = h('div');
   const draw = () => {
     wrap.innerHTML = '';
-    wrap.append(h('h4', {}, 'Rules for forwarded packets'),
-      h('p', { class: 'small muted' }, 'From top to bottom, the first matching rule applies. If none matches, the packet is forwarded.'));
+    wrap.append(h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Rules for forwarded packets. From top to bottom, the first matching rule applies. If none matches, the packet is forwarded.'));
     const list = h('div', { class: 'list' });
     c.acl.forEach((r, idx) => {
       const src = h('input', { class: 'input mono', value: r.src || 'any', placeholder: 'any' });

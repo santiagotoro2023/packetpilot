@@ -47,7 +47,7 @@ ${note('A cable that accidentally connects two wall sockets in the same office i
         goals: [
           { text: 'Ping pc2 (10.0.0.2) from pc1 and trigger the storm.', check: tag(null, 'storm') },
           { text: 'What kind of frame is circling in the loop?', ask: true, expect: () => ['arp', 'arp request', 'arp-request', 'broadcast', 'arp broadcast'], placeholder: 'e.g. ICMP' },
-          { text: 'Reset the state and turn on spanning tree on sw1, sw2 and sw3 under Configuration.', check: stpOn(TRI) },
+          { text: 'Reset the state and turn on spanning tree on sw1, sw2 and sw3 under Configuration (Add a feature, Spanning tree).', check: stpOn(TRI) },
           { text: 'Wait until the dots on the ports are green or red, and ping again. Now the reply arrives.', check: pingOk('pc1', '10.0.0.2') }],
         hints: ['The button with the circular arrow at the top left resets the state.', 'The timers are set to "fast": a port needs 8 seconds to reach Forwarding. With the fast-forward button it happens immediately.'],
         outro: '<p>A red dot shows a blocked port. It keeps receiving BPDUs but does not forward a single frame. This way the cable stays plugged in as a spare without forming a loop.</p>' },

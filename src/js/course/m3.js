@@ -65,7 +65,7 @@ sw1 → b1      untagged, access port in VLAN 20</pre>
 ${note('All subinterfaces share the MAC address of the physical interface. That is no problem because each VLAN is its own segment.')}
 ${note('Every routed packet crosses the same cable twice. With a lot of traffic between VLANs this link becomes a bottleneck. Larger networks therefore route directly in the switch (layer 3 switch with one SVI per VLAN).', true)}` },
       { type: 'lab', title: 'Set up the subinterfaces', topo: () => stickTopo(false), edit: 'config',
-        intro: '<p>sw1 is fully configured: a1 and a2 in VLAN 10, b1 and b2 in VLAN 20, eth8 as a trunk to r1. On r1 everything is missing. Create the two subinterfaces, under Configuration or in the console.</p>',
+        intro: '<p>sw1 is fully configured: a1 and a2 in VLAN 10, b1 and b2 in VLAN 20, eth8 as a trunk to r1. On r1 everything is missing. Create the two subinterfaces, under Configuration (Add a feature, Subinterfaces) or in the console.</p>',
         presets: { r1: ['ip link add link eth1 name eth1.10 type vlan id 10', 'ip link add link eth1 name eth1.20 type vlan id 20', 'ip addr add 10.10.0.1/24 dev eth1.10', 'ip addr add 10.20.0.1/24 dev eth1.20', 'ip -br a'], a1: ['ping -c 2 10.20.0.11'] },
         goals: [
           { text: 'r1 has a subinterface for VLAN 10 with 10.10.0.1/24.', check: sim => subif(sim, 10, '10.10.0.1') },

@@ -203,7 +203,15 @@ export function viewSubnet(main) {
 function cheatSheet() {
   const rows = [];
   for (let len = 16; len <= 30; len++) rows.push(h('tr', {}, h('td', {}, `/${len}`), h('td', { class: 'mono' }, maskStr(len)), h('td', {}, (2 ** (32 - len)).toLocaleString('en')), h('td', {}, (2 ** (32 - len) - 2).toLocaleString('en'))));
-  return h('details', { class: 'sect', style: { marginTop: '18px' } }, h('summary', {}, h('span', {}, 'Cheat sheet: prefixes, masks and sizes')),
-    h('div', { class: 'sect-body' }, h('table', { class: 'rtable' }, h('tr', {}, h('th', {}, 'Prefix'), h('th', {}, 'Mask'), h('th', {}, 'Addresses'), h('th', {}, 'Usable hosts')), rows),
+  const steps = h('div', { html: `
+<p style="margin-top:4px"><b>Network, first host, last host, broadcast in four steps</b>, example <code>192.168.1.130/26</code>:</p>
+<ol style="margin:4px 0 8px 18px;padding:0;line-height:1.6">
+<li><b>Find the interesting octet and the block size.</b> /26 = 24 + 2: the prefix ends 2 bits into the 4th octet. Block size = 2<sup>8−2</sup> = <b>64</b> (or 256 − mask octet 192).</li>
+<li><b>Find the block the address lies in.</b> The blocks start at 0, 64, 128, 192. 130 lies in the block <b>128 to 191</b>.</li>
+<li><b>Network and broadcast are the edges of the block.</b> Network = first address of the block, all host bits 0: <code>192.168.1.128</code>. Broadcast = last address, all host bits 1: <code>192.168.1.191</code>.</li>
+<li><b>The hosts are everything in between.</b> First host = network + 1 = <code>.129</code>, last host = broadcast − 1 = <code>.190</code>. 64 − 2 = 62 usable.</li></ol>
+<p class="small muted" style="margin:0 0 10px">So the first host is only .1 when the block starts at .0. For <code>192.168.243.224/28</code> the blocks are 16 wide, 224 lies in the block 224 to 239, so the first host is .225 and the last .238. Addresses like .0 or .1 belong to a different subnet there.</p>` });
+  return h('details', { class: 'sect', style: { marginTop: '18px' } }, h('summary', {}, h('span', {}, 'Cheat sheet: step by step, prefixes, masks and sizes')),
+    h('div', { class: 'sect-body' }, steps, h('table', { class: 'rtable' }, h('tr', {}, h('th', {}, 'Prefix'), h('th', {}, 'Mask'), h('th', {}, 'Addresses'), h('th', {}, 'Usable hosts')), rows),
       h('p', { class: 'small muted', style: { marginTop: '8px' } }, 'Mask octets you will meet: 128, 192, 224, 240, 248, 252, 254, 255. Block size = 256 − mask octet.')));
 }

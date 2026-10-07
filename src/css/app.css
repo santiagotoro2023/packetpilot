@@ -511,3 +511,16 @@ abbr.gl:hover, abbr.gl:focus-visible { border-bottom-color: var(--ink); outline:
 .lesson-body:fullscreen, .lesson-body.pseudo-full, .lab-root:fullscreen { background: var(--paper); height: 100vh; }
 .pseudo-full { position: fixed !important; inset: 0; z-index: 45; background: var(--paper); height: 100vh !important; }
 .btn.icon.on { color: var(--accent, var(--ink)); }
+
+/* Optional features of a device: a quiet "add" button with a small menu */
+.features { margin-top: 14px; display: grid; gap: 8px; }
+.btn.addfeat { width: 100%; max-width: 100%; box-sizing: border-box; white-space: normal; justify-content: flex-start; border-style: dashed; background: transparent; flex-wrap: wrap; text-align: left; line-height: 1.35; }
+.btn.addfeat .small { font-weight: 400; }
+.featmenu { display: grid; gap: 2px; border: 1px solid var(--line); border-radius: var(--r-s); padding: 4px; background: var(--panel); box-shadow: var(--shadow); }
+.featmenu.hidden { display: none; }
+.featitem { display: grid; gap: 1px; text-align: left; border: 0; background: none; padding: 7px 9px; border-radius: 6px; cursor: pointer; color: var(--ink); }
+.featitem:hover, .featitem:focus-visible { background: var(--panel-2); outline: none; }
+.featitem b { font-size: .88rem; }
+.featitem span { font-size: .8rem; color: var(--ink-2); }
+.linkbtn { border: 0; background: none; padding: 4px 0; color: var(--ink-2); cursor: pointer; text-decoration: underline dotted; }
+.linkbtn:hover { color: var(--ink); }
