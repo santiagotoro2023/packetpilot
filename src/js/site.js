@@ -15,12 +15,6 @@ export async function loadSite() {
   return site;
 }
 
-/** Link to the bridge on the old plain HTTP address: for browsers that remember the
- *  permanent redirect of versions 1.2 and 1.3 and therefore never ask the server again */
-export function oldHttpLink() {
-  return site.version && location.protocol === 'https:' && !otherHome() ? `http://${location.host}/migrate.html` : null;
-}
-
 /** The main address of this server, if it differs from the one in the address bar */
 export function otherHome() {
   try {

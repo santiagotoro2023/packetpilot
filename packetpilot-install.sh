@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.8.2
+#  PacketPilot 2.8.3
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -42,7 +42,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.8.2"
+PP_VERSION="2.8.3"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -752,7 +752,7 @@ import { renderFrameBuilder } from './framebuilder.js';
 import { clone } from './net.js';
 import { viewChallenges, viewSubnet } from './practice.js';
 import { shareLink, decodeTopo, unpack } from './share.js';
-import { loadSite, moveCard, siteBase, oldHttpLink, siteInfo } from './site.js';
+import { loadSite, moveCard, siteBase, siteInfo } from './site.js';
 import { CHALLENGES } from './challenges.js';
 import { initGlossary, glossify } from './glossary.js';
 
@@ -791,9 +791,7 @@ function viewHome() {
       h('div', { class: 'row', style: { marginTop: '18px' } },
         h('a', { class: 'btn primary', href: `#/lesson/${next.id}` }, doneCount ? 'Continue learning' : 'Start with lesson 1'),
         h('a', { class: 'btn', href: '#/lab' }, 'Open the free lab')),
-      h('div', { class: 'small muted', style: { marginTop: '12px' } }, `${doneCount} of ${flat.length} lessons completed`),
-      store.isEmpty() && oldHttpLink() && h('div', { class: 'small muted', style: { marginTop: '4px' } }, 'Used PacketPilot here before it switched to HTTPS? ',
-        h('a', { href: oldHttpLink() }, 'Bring your progress over'), '.')),
+      h('div', { class: 'small muted', style: { marginTop: '12px' } }, `${doneCount} of ${flat.length} lessons completed`)),
     heroBox));
   page.append(h('div', { class: 'row', style: { marginTop: '18px', justifyContent: 'space-between' } }, h('h2', { style: { margin: 0 } }, 'Course'),
     h('a', { class: 'btn ghost', href: '#/print', html: I.print + 'Print theory' })));
@@ -12396,12 +12394,6 @@ export async function loadSite() {
     if (r.ok) site = await r.json();
   } catch { /* opened as a file, without the installer or slow */ }
   return site;
-}
-
-/** Link to the bridge on the old plain HTTP address: for browsers that remember the
- *  permanent redirect of versions 1.2 and 1.3 and therefore never ask the server again */
-export function oldHttpLink() {
-  return site.version && location.protocol === 'https:' && !otherHome() ? `http://${location.host}/migrate.html` : null;
 }
 
 /** The main address of this server, if it differs from the one in the address bar */

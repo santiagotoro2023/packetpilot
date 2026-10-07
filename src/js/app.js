@@ -11,7 +11,7 @@ import { renderFrameBuilder } from './framebuilder.js';
 import { clone } from './net.js';
 import { viewChallenges, viewSubnet } from './practice.js';
 import { shareLink, decodeTopo, unpack } from './share.js';
-import { loadSite, moveCard, siteBase, oldHttpLink, siteInfo } from './site.js';
+import { loadSite, moveCard, siteBase, siteInfo } from './site.js';
 import { CHALLENGES } from './challenges.js';
 import { initGlossary, glossify } from './glossary.js';
 
@@ -50,9 +50,7 @@ function viewHome() {
       h('div', { class: 'row', style: { marginTop: '18px' } },
         h('a', { class: 'btn primary', href: `#/lesson/${next.id}` }, doneCount ? 'Continue learning' : 'Start with lesson 1'),
         h('a', { class: 'btn', href: '#/lab' }, 'Open the free lab')),
-      h('div', { class: 'small muted', style: { marginTop: '12px' } }, `${doneCount} of ${flat.length} lessons completed`),
-      store.isEmpty() && oldHttpLink() && h('div', { class: 'small muted', style: { marginTop: '4px' } }, 'Used PacketPilot here before it switched to HTTPS? ',
-        h('a', { href: oldHttpLink() }, 'Bring your progress over'), '.')),
+      h('div', { class: 'small muted', style: { marginTop: '12px' } }, `${doneCount} of ${flat.length} lessons completed`)),
     heroBox));
   page.append(h('div', { class: 'row', style: { marginTop: '18px', justifyContent: 'space-between' } }, h('h2', { style: { margin: 0 } }, 'Course'),
     h('a', { class: 'btn ghost', href: '#/print', html: I.print + 'Print theory' })));
