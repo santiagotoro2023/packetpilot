@@ -45,6 +45,8 @@ export function helpFor(dev) {
   if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
   if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)', 'rdisc6 [eth1]         ask the routers for their advertisement (IPv6)');
   if (dev.type === 'router') l.push('show ipv6 route / show ipv6 neighbors   IPv6 state in FRR style');
+  if (dev.bgp) l.push('show ip bgp summary   BGP neighbors, states, prefixes', 'show ip bgp [prefix]  BGP table: all paths, the best marked with >',
+    'show ip bgp neighbors <ip> advertised-routes | received-routes', 'clear ip bgp * | <ip>   reset BGP sessions');
   if (dev.wg) l.push('wg show               WireGuard: keys, peers, endpoints, latest handshake', 'wg genkey / wg pubkey <key>   make a key pair');
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
   if (dev.type === 'switch') l.push('show spanning-tree    STP status: root, roles, states',
@@ -53,7 +55,7 @@ export function helpFor(dev) {
     'spanning-tree priority <0-61440>   bridge priority (multiples of 4096)',
     'spanning-tree portfast <port> on|off   port as edge port',
     'spanning-tree cost <port> <cost>       port cost');
-  if (dev.type === 'vtep') l.push('show vxlan            VXLAN segments, flood lists, MTU');
+  if (dev.type === 'vtep') l.push('show vxlan            VXLAN segments, flood lists, MTU', 'show evpn [mac]       EVPN: remote VTEPs per VNI, MAC table', 'show bgp l2vpn evpn   EVPN routes (type 2 and type 3)');
   l.push('clear                 clear the console');
   return l;
 }
@@ -453,8 +455,8 @@ export function runCommand(dev, line) {
       return;
     }
     if (p[0] === 'show' && p[1] === 'ip' && p[2] === 'route' && dev.l3) {
-      say('Codes: C - connected, S - static, O - OSPF, > - selected route, * - FIB route');
-      const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, O: 110 }[r.proto];
+      say('Codes: C - connected, S - static, O - OSPF, B - BGP, W - WireGuard, > - selected route, * - FIB route');
+      const ad = r => r.proto === 'S' ? r.distance || 1 : r.proto === 'B' ? (r.ibgp ? 200 : 20) : { C: 0, O: 110, W: 0 }[r.proto];
       const all = dev.l3.routes();
       const sel = r => !!r.dev && !all.some(x => x !== r && x.dev && x.net === r.net && x.len === r.len && (ad(x) < ad(r) || (ad(x) === ad(r) && (x.metric || 0) < (r.metric || 0))));
       let prev = null;
@@ -465,10 +467,18 @@ export function runCommand(dev, line) {
         const lead = more ? `  ${sel(r) ? '*' : ' '} ${' '.repeat(`${r.net}/${r.len}`.length + (r.proto === 'O' ? 9 : 6))}` : null;
         if (r.proto === 'C') say(`C${mark} ${r.net}/${r.len} is directly connected, ${r.dev}`);
         else if (r.proto === 'O') say(more ? `${lead}via ${r.via}, ${r.dev}` : `O${mark} ${r.net}/${r.len} [110/${r.metric}] via ${r.via}, ${r.dev}`);
+        else if (r.proto === 'B') say(`B${mark} ${r.net}/${r.len} [${r.ibgp ? 200 : 20}/${r.metric || 0}] via ${r.bgpNh}${r.bgpNh !== r.via ? ` (recursive via ${r.via})` : ''}, ${r.dev}${r.ibgp ? '  (iBGP)' : ''}`);
+        else if (r.proto === 'W') say(`W${mark} ${r.net}/${r.len} is directly connected, wg0 (peer ${r.peer || '?'})`);
         else say(more ? `${lead}via ${r.via}${r.dev ? ', ' + r.dev : ' inactive'}` : `S${mark} ${r.net}/${r.len} [${r.distance || 1}/0] via ${r.via}${r.dev ? ', ' + r.dev : r.bfdDown ? ' inactive (BFD down)' : ' inactive'}`);
         prev = r;
       }
       return;
+    }
+    if (p[0] === 'show' && (p[1] === 'bgp' || (p[1] === 'ip' && p[2] === 'bgp')) && dev.bgp) return showBgp(dev, p[1] === 'ip' ? p.slice(3) : p.slice(2), say);
+    if (p[0] === 'clear' && (p[1] === 'bgp' || (p[1] === 'ip' && p[2] === 'bgp')) && dev.bgp) {
+      const t = (p[1] === 'ip' ? p[3] : p[2]) || '*';
+      if (t !== '*' && !dev.bgp.peers.has(t)) return say(`% No such neighbor ${t}`);
+      dev.bgp.clear(t); return say(`BGP session${t === '*' ? 's' : ' ' + t} reset`);
     }
     if (p[0] === 'show' && p[1] === 'bfd' && dev.bfd) {
       const t = dev.bfd.table();
@@ -508,7 +518,19 @@ export function runCommand(dev, line) {
     if (p[0] === 'show' && p[1] === 'vxlan' && dev.type === 'vtep') {
       const ms = dev.maps();
       if (!ms.length) return say('(no VXLAN segments)');
-      for (const m of ms) say(`vxlan${m.vni}: VNI ${m.vni} ↔ VLAN ${m.vlan}, local ${dev.localIp()}, dstport ${m.dstport || 4789}, mtu ${dev.vxlanMtu(m)}, flood ${(m.flood || []).join(', ') || '(empty)'}`);
+      for (const m of ms) say(`vxlan${m.vni}: VNI ${m.vni} ↔ VLAN ${m.vlan}, local ${dev.localIp()}, dstport ${m.dstport || 4789}, mtu ${dev.vxlanMtu(m)}, flood ${dev.evpn.floodList(m).join(', ') || '(empty)'}${m.evpn ? ' (EVPN' + (m.arpSuppress ? ', ARP suppression' : '') + ')' : ''}`);
+      return;
+    }
+    if (p[0] === 'show' && p[1] === 'evpn' && dev.type === 'vtep') {
+      const e = dev.evpn;
+      if (!e.on()) return say('EVPN is not active: turn on BGP and mark the VXLAN segments as EVPN');
+      if (p[2] === 'mac') {
+        say(`${pad('VNI', 8)}${pad('MAC', 20)}${pad('Type', 8)}${pad('Where', 18)}IP`);
+        for (const r of e.localRoutes().filter(x => x.rt === 2)) say(`${pad(r.vni, 8)}${pad(r.mac, 20)}${pad('local', 8)}${pad('this VTEP', 18)}${r.ip || ''}`);
+        for (const r of e.macs.values()) say(`${pad(r.vni, 8)}${pad(r.mac, 20)}${pad('remote', 8)}${pad(r.vtep, 18)}${r.ip || ''}`);
+        return;
+      }
+      for (const m of e.maps()) say(`VNI ${m.vni}  VLAN ${m.vlan}  remote VTEPs: ${[...(e.vteps.get(Number(m.vni)) || [])].join(', ') || 'none'}  MACs: ${[...e.macs.values()].filter(x => Number(x.vni) === Number(m.vni)).length} remote`);
       return;
     }
     say(`Unknown command: ${p[0]}. Type help for an overview.`);
@@ -610,4 +632,88 @@ function ip6Command(dev, p, say) {
     return;
   }
   return say('Unknown ip -6 command. Try ip -6 addr, ip -6 route, ip -6 neigh.');
+}
+
+// ---------------------------------------------------------------- BGP (FRR style)
+const hms = s => s === null ? 'never' : [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(x => String(x).padStart(2, '0')).join(':');
+function showBgp(dev, args, say) {
+  const b = dev.bgp;
+  if (!b.enabled) return say('% BGP instance not found (Configuration, Add a feature, BGP)');
+  if (args[0] === 'l2vpn' || args[0] === 'evpn') return showEvpn(dev, say);
+  if (args[0] === 'summary' || (args[0] === 'ipv4' && args[2] === 'summary')) {
+    say(`BGP router identifier ${b.rid}, local AS number ${b.asn}`);
+    const rows = b.summary();
+    say(`RIB entries ${b.best.size}, peers ${rows.length}`);
+    say('');
+    say(`${pad('Neighbor', 16)}V ${pad('AS', 8)}${pad('MsgRcvd', 9)}${pad('MsgSent', 9)}${pad('Up/Down', 10)}State/PfxRcd`);
+    for (const r of rows) say(`${pad(r.ip, 16)}4 ${pad(r.as, 8)}${pad(r.msgsIn, 9)}${pad(r.msgsOut, 9)}${pad(hms(r.up), 10)}${r.state === 'Established' ? r.pfx + (r.evpn ? ` (+${r.evpn} EVPN)` : '') : r.state}`);
+    for (const r of rows) if (r.state !== 'Established' && r.error) say(`  ${r.ip}: ${r.error}`);
+    return;
+  }
+  if (args[0] === 'neighbors' || args[0] === 'neighbor') {
+    const ip = args[1], what = args[2];
+    const p = ip && b.peers.get(ip);
+    if (!p) {
+      for (const r of b.summary()) say(`BGP neighbor is ${r.ip}, remote AS ${r.as}, ${r.type === 'iBGP' ? 'internal' : 'external'} link\n  BGP state = ${r.state}${r.up !== null ? ', up for ' + hms(r.up) : ''}${r.error ? '\n  Last error: ' + r.error : ''}`);
+      return;
+    }
+    if (what === 'advertised-routes' || what === 'received-routes' || what === 'routes') {
+      const list = what === 'advertised-routes' ? [...p.out].map(([k, v]) => [k, JSON.parse(v)]) : [...p.rx];
+      if (!list.length) return say('(none)');
+      say(`   ${pad('Network', 19)}${pad('Next Hop', 17)}${pad('Metric', 7)}${pad('LocPrf', 7)}Path`);
+      for (const [k, a] of list) say(`   ${pad(k, 19)}${pad(a.nextHop, 17)}${pad(a.med ?? '', 7)}${pad(a.localPref ?? '', 7)}${[...(a.asPath || []), a.origin || 'i'].join(' ')}`);
+      return;
+    }
+    const r = b.summary().find(x => x.ip === ip);
+    say(`BGP neighbor is ${ip}, remote AS ${r.as}, local AS ${b.asn}, ${r.type === 'iBGP' ? 'internal' : 'external'} link`);
+    say(`  BGP version 4, remote router ID ${p.remoteRid || '0.0.0.0'}`);
+    say(`  BGP state = ${r.state}${r.up !== null ? ', up for ' + hms(r.up) : ''}`);
+    say(`  Hold time is ${p.holdTime || b.timersCfg().hold}, keepalive interval is ${Math.floor((p.holdTime || b.timersCfg().hold) / 3)} seconds`);
+    say(`  Messages: ${r.msgsIn} received, ${r.msgsOut} sent. Prefixes received: ${r.pfx}`);
+    if (p.cfg.updateSource) say(`  Update source is ${p.cfg.updateSource}`);
+    if (p.cfg.nextHopSelf) say('  NEXT_HOP is always this router (next-hop-self)');
+    if (p.cfg.rrClient) say('  Route-Reflector Client');
+    if (p.sock) say(`  Local host: ${p.sock.local}, Local port: ${p.sock.lport}\n  Foreign host: ${ip}, Foreign port: ${p.sock.rport}`);
+    if (r.error) say(`  Last reset: ${r.error}`);
+    return;
+  }
+  const filter = args.find(a => /\d+\.\d+\.\d+\.\d+/.test(a));
+  const rows = b.table().filter(r => !filter || r.prefix === filter || r.prefix.split('/')[0] === filter);
+  if (filter) {
+    if (!rows.length) return say('% Network not in table');
+    say(`BGP routing table entry for ${rows[0].prefix}`);
+    say(`Paths: (${rows.length} available${rows.some(r => r.best) ? ', best #' + (rows.findIndex(r => r.best) + 1) : ', no best path'})`);
+    for (const r of rows) {
+      say(`  ${r.asPath.length ? r.asPath.join(' ') : 'Local'}${r.ibgp ? '' : ''}`);
+      say(`    ${r.nextHop} ${r.valid ? '' : '(inaccessible) '}from ${r.from === 'local' ? '0.0.0.0' : r.from}`);
+      say(`      Origin ${{ i: 'IGP', e: 'EGP', '?': 'incomplete' }[r.origin]}, metric ${r.med}${r.localPref !== null ? ', localpref ' + r.localPref : ''}, weight ${r.weight}, ${r.valid ? 'valid' : 'invalid'}, ${r.from === 'local' ? 'sourced' : r.ibgp ? 'internal' : 'external'}${r.best ? ', best (' + r.reason + ')' : ''}`);
+      if (!r.valid && r.why) say(`      Not usable: ${r.why}`);
+    }
+    return;
+  }
+  say(`BGP table version is ${b.best.size}, local router ID is ${b.rid}, vrf id 0`);
+  say('Status codes:  * valid, > best, i internal');
+  say('Origin codes:  i - IGP, e - EGP, ? - incomplete');
+  say('');
+  say(`   ${pad('Network', 19)}${pad('Next Hop', 17)}${pad('Metric', 7)}${pad('LocPrf', 7)}${pad('Weight', 7)}Path`);
+  let last = null;
+  for (const r of rows) {
+    const code = `${r.valid ? '*' : ' '}${r.best ? '>' : ' '}${r.ibgp ? 'i' : ' '}`;
+    say(`${code}${pad(r.prefix === last ? '' : r.prefix, 19)}${pad(r.nextHop, 17)}${pad(r.med, 7)}${pad(r.localPref ?? '', 7)}${pad(r.weight, 7)}${[...r.asPath, r.origin].join(' ')}${r.valid ? '' : '  (' + (r.why || 'invalid') + ')'}`);
+    last = r.prefix;
+  }
+  say('');
+  say(`Displayed ${new Set(rows.map(r => r.prefix)).size} routes and ${rows.length} total paths`);
+}
+function showEvpn(dev, say) {
+  const e = dev.evpn;
+  if (!e) return say('% EVPN is not active on this device');
+  const rows = e.bgpTable();
+  if (!rows.length) return say('(no EVPN routes)');
+  say('Route types: [2]:[VNI]:[MAC]:[IP] MAC/IP advertisement, [3]:[VNI]:[VTEP] inclusive multicast');
+  say('');
+  for (const r of rows) {
+    say(`*> ${r.rt === 2 ? `[2]:[${r.vni}]:[${r.mac}]${r.ip ? ':[' + r.ip + ']' : ''}` : `[3]:[${r.vni}]:[${r.nextHop}]`}`);
+    say(`      VTEP ${r.nextHop}, ${r.from === 'local' ? 'local' : 'from ' + r.from}`);
+  }
 }

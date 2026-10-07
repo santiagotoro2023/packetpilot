@@ -153,6 +153,9 @@ export function configPanel(dev, ctx) {
         { id: 'wg', title: 'WireGuard VPN', desc: 'An encrypted tunnel wg0 to other sites or devices, with keys and allowed IPs',
           inUse: !!c.wg?.enabled, status: c.wg?.enabled ? `wg0 ${c.ifaces.wg0?.ip || ''}, ${plural((c.wg.peers || []).length, 'peer')}` : 'off', render: () => wgEditor(dev, upd, rerender),
           onAdd: () => upd(() => { c.wg.enabled = true; c.wg.privateKey ||= wgGenKey(dev.id + Date.now()); c.ifaces.wg0 ??= { ip: '10.99.0.1', prefix: 24 }; }, `${dev.name}: WireGuard on`) },
+        { id: 'bgp', title: 'BGP', desc: 'Exchange routes with other autonomous systems (eBGP) and inside your own (iBGP)',
+          inUse: !!c.bgp?.enabled, status: c.bgp?.enabled ? `AS ${c.bgp.asn || '?'}, ${(dev.bgp?.summary() || []).filter(x => x.state === 'Established').length}/${(c.bgp.neighbors || []).length} up` : 'off', render: () => bgpEditor(dev, upd, rerender),
+          onAdd: () => upd(() => { c.bgp.enabled = true; c.bgp.asn ||= 65001; }, `${dev.name}: BGP on`) },
         { id: 'rules', title: 'Rules', desc: 'Allow, drop or reject forwarded packets (firewall)', inUse: c.acl.length > 0, status: plural(c.acl.length, 'rule'), render: () => aclEditor(dev, upd) },
         { id: 'nat', title: 'NAT', desc: 'Inside hosts share the outside address, port forwards', inUse: !!c.nat.outside, status: c.nat.outside ? `outside ${c.nat.outside}` : 'off', render: () => natEditor(dev, upd, rerender) },
         { id: 'dhcp', title: 'DHCP', desc: 'Hand out addresses, or relay requests to a DHCP server', inUse: c.dhcpServer.enabled || relay,
@@ -210,7 +213,12 @@ export function configPanel(dev, ctx) {
     ], rerender, locked));
   }
 
-  if (c.type === 'vtep') box.append(vxlanEditor(dev, upd, sim));
+  if (c.type === 'vtep') {
+    box.append(vxlanEditor(dev, upd, sim));
+    box.append(features(dev, [{ id: 'bgp', title: 'BGP (EVPN)', desc: 'Find the other VTEPs and all MAC addresses over BGP instead of static flood lists',
+      inUse: !!c.bgp?.enabled, status: c.bgp?.enabled ? `AS ${c.bgp.asn || '?'}, ${(dev.bgp?.summary() || []).filter(x => x.state === 'Established').length}/${(c.bgp.neighbors || []).length} up` : 'off', render: () => bgpEditor(dev, upd, rerender),
+      onAdd: () => upd(() => { c.bgp.enabled = true; c.bgp.asn ||= 65000; }, `${dev.name}: BGP on`) }], rerender, locked));
+  }
   if (locked) box.querySelectorAll('input,select,button').forEach(e => e.disabled = true);
   return box;
 }
@@ -454,8 +462,12 @@ function vxlanEditor(dev, upd, sim) {
           h('label', { class: 'field' }, 'Local VLAN', numInput(m.vlan, 1, 4094, v => upd(() => m.vlan = v, `${dev.name}: VLAN ${v}`))),
           h('label', { class: 'field' }, 'UDP dest. port', numInput(m.dstport ?? 4789, 1, 65535, v => upd(() => m.dstport = v ?? 4789, `${dev.name}: port ${v}`))),
           h('label', { class: 'field' }, `MTU (auto ${dev.vxlanMtu({ ...m, mtu: null })})`, numInput(m.mtu, 68, 9000, v => upd(() => m.mtu = v, `${dev.name}: VXLAN MTU ${v ?? 'auto'}`), 'auto'))),
-        h('label', { class: 'field' }, 'Flood list (remote VTEPs)', flood),
-        h('label', { class: 'row small' }, learn, 'Learn MAC addresses from the tunnel (flood and learn)')));
+        h('label', { class: 'field' }, m.evpn ? `Static flood list (EVPN adds: ${[...(dev.evpn.vteps.get(Number(m.vni)) || [])].join(', ') || 'nothing yet'})` : 'Flood list (remote VTEPs)', flood),
+        h('label', { class: 'row small' }, learn, 'Learn MAC addresses from the tunnel (flood and learn)'),
+        (() => { const e = h('input', { type: 'checkbox', checked: m.evpn ? true : null }); e.addEventListener('change', () => { upd(() => m.evpn = e.checked, `${dev.name}: EVPN for VNI ${m.vni} ${e.checked ? 'on' : 'off'}`); draw(); });
+          return h('label', { class: 'row small', title: 'Flood list and remote MACs come from BGP (type 3 and type 2 routes). Needs BGP with an EVPN neighbor.' }, e, 'EVPN: learn VTEPs and MACs over BGP'); })(),
+        m.evpn ? (() => { const a = h('input', { type: 'checkbox', checked: m.arpSuppress ? true : null }); a.addEventListener('change', () => upd(() => m.arpSuppress = a.checked, `${dev.name}: ARP suppression ${a.checked ? 'on' : 'off'}`));
+          return h('label', { class: 'row small' }, a, 'ARP suppression: answer ARP requests for remote hosts locally'); })() : null));
     });
     if (!c.vxlans.length) list.append(h('div', { class: 'empty' }, 'No segment. A segment connects a local VLAN to a VNI.'));
     wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Add segment',
@@ -685,6 +697,51 @@ function ipv6RouterEditor(dev, upd, sim, rerender) {
     h('div', { style: { marginTop: '8px' } }, v6AddrTable(dev, dev.l3.v6.ifnames())));
 }
 
+function bgpEditor(dev, upd, rerender) {
+  const c = dev.cfg, b = c.bgp;
+  const sum = new Map((dev.bgp?.summary() || []).map(x => [x.ip, x]));
+  const text = (val, ph, set, cls = 'input mono') => { const i = h('input', { class: cls, value: val ?? '', placeholder: ph, spellcheck: 'false' }); i.addEventListener('change', () => set(i.value.trim())); return i; };
+  const nets = text((b.networks || []).join(', '), '10.1.0.0/24', v => {
+    const list = v.split(/[\s,]+/).filter(Boolean);
+    if (list.some(x => !parseCidr(x))) return;
+    upd(() => b.networks = list.map(x => `${parseCidr(x).net}/${parseCidr(x).len}`), `${dev.name}: BGP networks ${list.join(', ') || 'none'}`);
+  });
+  const srcOpts = [['', 'auto (outgoing interface)'], ...Object.keys(c.ifaces).filter(n => isIp(c.ifaces[n].ip)).map(n => [n, `${n} ${c.ifaces[n].ip}`])];
+  const list = h('div', { class: 'list' });
+  (b.neighbors || []).forEach((n, idx) => {
+    const st = sum.get(n.ip);
+    const cb = (k, label, title) => { const i = h('input', { type: 'checkbox', checked: n[k] ? true : null }); i.addEventListener('change', () => upd(() => n[k] = i.checked, `${dev.name}: ${n.ip} ${k} ${i.checked ? 'on' : 'off'}`)); return h('label', { class: 'row small', title }, i, label); };
+    const num = (k, ph, title, min, max) => { const i = numInput(n[k] === '' ? null : n[k], min, max, v => upd(() => n[k] = v ?? '', `${dev.name}: ${n.ip} ${k} ${v ?? 'default'}`), ph); i.title = title; return i; };
+    const ebgp = Number(n.remoteAs) && Number(n.remoteAs) !== Number(b.asn);
+    list.append(h('div', { class: 'item' },
+      h('div', { class: 'row' }, h('span', { class: 'grp grow' }, ipInput(n.ip, v => upd(() => n.ip = v, `${dev.name}: BGP neighbor ${v}`), 'neighbor address'),
+        h('span', { class: 'small muted' }, 'AS'), num('remoteAs', 'remote AS', 'The AS number of the neighbor (remote-as). The same as your own: iBGP', 1, 4294967295)),
+        h('span', { class: `small ${st?.state === 'Established' ? 'ok-text' : 'muted'}`, title: st?.error || '' }, st ? `${ebgp ? 'eBGP' : 'iBGP'}, ${st.state}${st.state === 'Established' ? ', ' + st.pfx + ' prefixes' : ''}` : ''),
+        h('button', { class: 'btn icon ghost', title: 'Remove neighbor', html: I.trash, onclick: () => { upd(() => b.neighbors.splice(idx, 1), `${dev.name}: BGP neighbor removed`); rerender?.(); } })),
+      h('div', { class: 'row', style: { marginTop: '4px' } },
+        h('label', { class: 'row small', title: 'Source address of the session (update-source). For iBGP between loopbacks: lo' }, 'Source', select(srcOpts, n.updateSource || '', v => upd(() => n.updateSource = v, `${dev.name}: ${n.ip} update-source ${v || 'auto'}`))),
+        cb('nextHopSelf', 'next-hop-self', 'Announce yourself as next hop to iBGP neighbors, instead of the address of the external neighbor'),
+        cb('rrClient', 'RR client', 'This router reflects iBGP routes to and from this neighbor (route reflector)'),
+        cb('evpn', 'EVPN', 'Also exchange EVPN routes (address family l2vpn evpn) with this neighbor')),
+      h('div', { class: 'row small', style: { marginTop: '4px' } },
+        h('span', { class: 'muted' }, 'In: local pref'), num('localPref', '100', 'LOCAL_PREF for routes from this neighbor: the highest wins inside the AS', 0, 4294967295),
+        h('span', { class: 'muted' }, 'Out: MED'), num('med', '-', 'MED sent to this neighbor: a hint which entrance to prefer, the lowest wins', 0, 4294967295),
+        h('span', { class: 'muted' }, 'prepend'), num('prepend', '0', 'Add your own AS this many extra times to the AS path towards this neighbor: makes the path look longer', 0, 10),
+        ...(ebgp ? [h('span', { class: 'muted' }, 'multihop'), num('multihop', '1', 'ebgp-multihop: TTL for eBGP neighbors that are not directly connected', 0, 255)] : []))));
+  });
+  if (!(b.neighbors || []).length) list.append(h('div', { class: 'empty' }, 'No neighbors yet.'));
+  return h('div', {},
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: b.enabled ? true : null, onchange: e => { upd(() => b.enabled = e.target.checked, `${dev.name}: BGP ${e.target.checked ? 'on' : 'off'}`); rerender?.(); } }), 'BGP on'),
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr', marginTop: '6px' } },
+      h('span', {}, 'Local AS'), numInput(b.asn, 1, 4294967295, v => upd(() => b.asn = v ?? '', `${dev.name}: AS ${v}`), '65001'),
+      h('span', {}, 'Router ID'), ipInput(b.rid, v => upd(() => b.rid = v, `${dev.name}: BGP router ID ${v || 'auto'}`), `auto: ${dev.bgp?.rid || ''}`),
+      h('span', {}, 'Timers'), select([['fast', 'fast (keepalive 3 s, hold 9 s)'], ['standard', 'standard (60 s / 180 s)']], b.timers || 'fast', v => upd(() => b.timers = v, `${dev.name}: BGP timers ${v}`)),
+      h('span', {}, 'Networks'), nets),
+    h('p', { class: 'small muted', style: { margin: '4px 0' } }, 'Networks are only announced when exactly this prefix is in the routing table (connected, static or OSPF).'),
+    h('label', { class: 'row small' }, h('input', { type: 'checkbox', checked: b.redistributeConnected ? true : null, onchange: e => upd(() => b.redistributeConnected = e.target.checked, `${dev.name}: redistribute connected ${e.target.checked ? 'on' : 'off'}`) }), 'Also announce all connected networks (redistribute connected)'),
+    h('h4', {}, 'Neighbors'), list,
+    h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Neighbor', onclick: () => { upd(() => (b.neighbors ||= []).push({ ip: '', remoteAs: '', updateSource: '', nextHopSelf: false, rrClient: false, localPref: '', med: '', prepend: 0, multihop: 0 }), `${dev.name}: new BGP neighbor`); rerender?.(); } }));
+}
 function wgEditor(dev, upd, rerender) {
   const c = dev.cfg, w = c.wg;
   c.ifaces.wg0 ??= { ip: '', prefix: 24 };
@@ -732,7 +789,7 @@ export function tablesPanel(dev, sim) {
   };
   if (dev.l3) {
     box.append(h('h4', {}, 'Routing table'),
-      tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.dhcp ? 'DHCP' : (r.dev ? (r.bfd ? 'S, BFD' : 'S') : r.bfdDown ? 'S, BFD down' : 'S inactive')])));
+      tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.proto === 'B' ? (r.ibgp ? 'B (iBGP)' : 'B (eBGP)') : r.proto === 'W' ? 'WireGuard' : r.dhcp ? 'DHCP' : (r.dev ? (r.bfd ? 'S, BFD' : 'S') : r.bfdDown ? 'S, BFD down' : 'S inactive')])));
     if (dev.l3.v6.on) {
       box.append(h('h4', {}, 'IPv6 routes'), tbl(['Destination', 'via', 'dev', ''], dev.l3.v6.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', { C: 'C', K: 'C (SLAAC)', S: r.dev ? 'S' : 'S inactive', RA: 'RA' }[r.proto]])));
       box.append(h('h4', {}, 'IPv6 neighbors (NDP)'), tbl(['IPv6', 'MAC', 'dev', 'State'], dev.l3.v6.neighborTable().map(e => [e.ip, e.mac || '–', e.ifname, e.state + (e.router ? ', router' : '')])));
@@ -748,6 +805,12 @@ export function tablesPanel(dev, sim) {
     if (dev.cfg.nat?.outside) box.append(h('h4', {}, 'NAT translations'), tbl(['Inside', 'Outside', 'Remote'], dev.l3.natTable.map(e => [`${e.inIp}:${e.inPort}`, `${e.outIp}:${e.outPort}`, `${e.remIp}:${e.remPort}`])));
     if (dev.vrrp?.groups.length) box.append(h('h4', {}, 'VRRP'), tbl(['Group', 'Port', 'Virtual IP', 'State', 'Prio'], dev.vrrp.table().map(g => [g.vrid, g.ifname, g.vip, g.state, g.prio])));
     if (dev.bfd?.table().length) box.append(h('h4', {}, 'BFD sessions'), tbl(['Peer', 'Port', 'State', 'For'], dev.bfd.table().map(x => [x.peer, x.ifname, x.state, x.clients.join(', ')])));
+    if (dev.bgp?.enabled) {
+      box.append(h('h4', {}, `BGP neighbors (AS ${dev.bgp.asn})`), tbl(['Neighbor', 'AS', 'Type', 'State', 'Prefixes'], dev.bgp.summary().map(x => [x.ip, x.as, x.type, x.state, x.state === 'Established' ? x.pfx : '–'])));
+      box.append(h('h4', {}, 'BGP table'), tbl(['', 'Network', 'Next hop', 'AS path', 'LocPrf'], dev.bgp.table().map(r => [`${r.valid ? '*' : ' '}${r.best ? '>' : ''}${r.ibgp ? 'i' : ''}`, r.prefix, r.valid ? r.nextHop : `${r.nextHop} (inaccessible)`, [...r.asPath, r.origin].join(' '), r.localPref ?? ''])));
+    }
+    if (dev.evpn?.on()) box.append(h('h4', {}, 'EVPN MAC table'), tbl(['VNI', 'MAC', 'IP', 'Where'], [...dev.evpn.localRoutes().filter(r => r.rt === 2).map(r => [r.vni, r.mac, r.ip, 'local']),
+      ...[...dev.evpn.macs.values()].map(r => [r.vni, r.mac, r.ip, `VTEP ${r.vtep}`])]));
     if (dev.ospf?.enabled) box.append(h('h4', {}, 'OSPF neighbors'), tbl(['Router ID', 'Address', 'Port', 'State'], dev.ospf.neighborTable().map(n => [n.rid, n.ip, n.ifname, n.state])));
     if (dev.wg?.on) box.append(h('h4', {}, 'WireGuard peers'), tbl(['Peer', 'Endpoint', 'Allowed IPs', 'Handshake'], dev.wg.table().map(x => [x.name || shortKey(x.publicKey), x.endpoint, x.allowed, x.handshake === null ? 'none' : `${x.handshake} s ago`])));
     if (dev.cfg.recursion?.enabled) box.append(h('h4', {}, 'DNS cache'), tbl(['Name', 'Type', 'Data', 'TTL left'], (dev.l3.resolverSvc?.dump() || []).map(e => [e.name || '.', e.type, e.data, `${e.ttl} s`])));

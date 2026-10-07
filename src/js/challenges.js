@@ -1,6 +1,6 @@
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo, ipv6Topo, vpnTopo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo, ipv6Topo, vpnTopo, bgpPairTopo, ibgpTopo, bgpMultiTopo, evpnTopo } from './presets.js';
 import { macFor } from './net.js';
 import { wgPubKey, wgGenKey } from './vpn.js';
 
@@ -224,6 +224,55 @@ export const CHALLENGES = [
     goals: [{ text: 'pcA pings srvB (10.2.0.10).', check: pingAfterStart('pcA', '10.2.0.10') }],
     hints: ['wg show on both gateways: is there a latest handshake?', 'Read the log of the gateways: WireGuard drops silently, but the simulator tells you why.', 'Compare the keys: the public key gwA shows for itself must be the one gwB has for gwA, and the other way round.'],
     presets: { pcA: ['ping -c 2 10.2.0.10', 'traceroute 10.2.0.10'], gwA: ['wg show', 'ip route'], gwB: ['wg show', 'ip route'], isp: ['ip route'] } },
+
+  { id: 'bgpebgp', level: 1, title: 'The partner network stays invisible', topics: ['BGP', 'eBGP'],
+    symptom: '<p>AS 65001 (r1) and the partner AS 65002 (r2) want to exchange their networks with BGP. pc1 still cannot reach the server srv2 (10.2.0.10) in the partner network.</p>',
+    topo: () => bgpPairTopo(),
+    variants: [
+      { fault: t => { dev(t, 'r2').bgp.neighbors[0].remoteAs = 65003; }, cause: 'r2 expected its neighbor in AS 65003. r1 announced AS 65001 in its OPEN, r2 answered with a NOTIFICATION "Bad Peer AS" and closed the session, again and again.' },
+      { fault: t => { dev(t, 'r2').bgp.neighbors[0].ip = '10.0.12.5'; }, cause: 'r2 had 10.0.12.5 as its neighbor instead of 10.0.12.1. It refused the connection of r1, which came from an address it did not know.' },
+      { fault: t => { dev(t, 'r2').bgp.networks = ['10.2.0.0/16']; }, cause: 'r2 announced 10.2.0.0/16, but only 10.2.0.0/24 is in its routing table. A network statement needs an exact match, so r2 announced nothing at all. The session was up the whole time.' },
+      { fault: t => { dev(t, 'r1').bgp.neighbors[0].ip = '10.2.0.1'; }, cause: 'r1 had the LAN address of r2 (10.2.0.1) as its neighbor. That address is not directly connected, and eBGP only talks to directly connected neighbors unless ebgp-multihop is set.' }],
+    goals: [{ text: 'pc1 pings srv2 (10.2.0.10).', check: pingAfterStart('pc1', '10.2.0.10') }],
+    hints: ['show ip bgp summary on both routers: which state, and what does the last error say?', 'If the session is Established: show ip bgp. Which networks are announced?'],
+    presets: { pc1: ['ping -c 2 10.2.0.10'], r1: ['show ip bgp summary', 'show ip bgp'], r2: ['show ip bgp summary', 'show ip bgp'] } },
+
+  { id: 'bgpibgp', level: 2, title: 'The branch has no internet', topics: ['BGP', 'iBGP', 'OSPF'],
+    symptom: '<p>In AS 65001, r1 is connected to the provider. Behind r3, pc3 cannot reach the web server 198.51.100.80 on the internet. OSPF inside the AS is up.</p>',
+    topo: () => ibgpTopo(),
+    variants: [
+      { fault: t => { for (const n of dev(t, 'r1').bgp.neighbors) n.nextHopSelf = false; }, cause: 'r1 passed the provider routes on without next-hop-self. r3 got the next hop 192.0.2.1, which OSPF does not know: the route was inaccessible.' },
+      { fault: t => { dev(t, 'r3').bgp.neighbors.find(n => n.ip === '10.255.0.1').updateSource = ''; dev(t, 'r2').bgp.neighbors.find(n => n.ip === '10.255.0.3').ip = '10.255.0.33'; }, cause: 'r3 opened its iBGP session to r1 from its interface address instead of its loopback (update-source missing), so r1 refused it. And r2 had a typo in the address of r3, so r3 had no second way to learn the routes.' },
+      { fault: t => { dev(t, 'r3').bgp.networks = []; }, cause: 'r3 did not announce its network 10.3.0.0/24. The requests reached the web server, but the provider had no route back to pc3.' },
+      { fault: t => { delete dev(t, 'r1').ospf.ifaces.lo; }, cause: 'r1 did not put its loopback 10.255.0.1 into OSPF. The other routers had no route to it, so no iBGP session to r1 could come up.' },
+      { fault: t => { dev(t, 'isp').bgp.neighbors[0].remoteAs = 65002; }, cause: 'The provider had AS 65002 configured for us instead of 65001. Its NOTIFICATION "Bad Peer AS" closed the eBGP session, so no internet route ever reached AS 65001.' }],
+    goals: [{ text: 'pc3 pings the web server 198.51.100.80.', check: pingAfterStart('pc3', '198.51.100.80') }],
+    hints: ['Follow the routes: does r1 have 198.51.100.0/24? Does r3? Does the provider know 10.3.0.0/24?', 'show ip bgp on r3 tells you whether a route is there but inaccessible.', 'iBGP sessions run between the loopbacks: are they reachable via OSPF, and do the sessions start from them?'],
+    presets: { pc3: ['ping -c 2 198.51.100.80', 'traceroute 198.51.100.80'], r1: ['show ip bgp summary', 'show ip bgp'], r3: ['show ip bgp summary', 'show ip bgp', 'show ip route'], isp: ['show ip bgp summary', 'show ip bgp'] } },
+
+  { id: 'bgppolicy', level: 3, title: 'Everything leaves through the expensive provider', topics: ['BGP', 'Local preference', 'Policy'],
+    symptom: '<p>Our AS 65001 has two providers. Provider 2 (at r3) is much cheaper, and all outgoing traffic is supposed to use it. A traceroute from pc2 to the web server 198.51.100.80 still goes through r1 and provider 1.</p>',
+    topo: () => bgpMultiTopo(),
+    variants: [
+      { fault: () => {}, cause: 'Nobody had set a policy. With equal local preference, the shorter AS path via provider 1 won. Local preference 200 on r3 for the routes of provider 2 changes that for the whole AS.' },
+      { fault: t => { dev(t, 'r3').bgp.neighbors.find(n => n.ip === '10.255.0.2').localPref = 200; }, cause: 'The local preference 200 was set on the iBGP neighbor r2, not on provider 2 (192.0.2.5). It changed nothing, because r2 does not send r3 any provider route.' },
+      { fault: t => { dev(t, 'r3').bgp.neighbors.find(n => n.ip === '192.0.2.5').localPref = 200; dev(t, 'r1').bgp.neighbors.find(n => n.ip === '192.0.2.1').localPref = 300; }, cause: 'r3 had local preference 200 for provider 2, but somebody had set 300 on r1 for provider 1 earlier. The highest value wins in the whole AS.' }],
+    goals: [{ text: 'A traceroute from pc2 to 198.51.100.80 goes through r3 (10.0.23.3).', check: sim => sim.log.some(e => e.dev === 'pc2' && e.tag === 'trace-done' && e.data.reached && e.data.path.includes('10.0.23.3')) }],
+    hints: ['show ip bgp 198.51.100.0/24 on r2 shows both paths and why one is the best.', 'Local preference is set per neighbor, for the routes received from it. Check all neighbors of r1 and r3.'],
+    presets: { pc2: ['traceroute 198.51.100.80'], r2: ['show ip bgp 198.51.100.0/24'], r1: ['show ip bgp 198.51.100.0/24'], r3: ['show ip bgp 198.51.100.0/24'] } },
+
+  { id: 'evpn', level: 3, title: 'The new rack stays alone', topics: ['EVPN', 'BGP', 'VXLAN'],
+    symptom: '<p>A new rack with vtep3 was added to the EVPN fabric yesterday. srv1 and srv2 reach each other in VNI 10010, but nobody reaches srv3 (192.168.10.13).</p>',
+    topo: () => evpnTopo(),
+    variants: [
+      { fault: t => { dev(t, 'vtep3').vxlans[0].vni = 10030; }, cause: 'vtep3 put its servers into VNI 10030 instead of 10010. Its type 3 route was for a VNI nobody else had, so the other VTEPs ignored it.' },
+      { fault: t => { for (const n of dev(t, 'spine').bgp.neighbors) n.rrClient = false; }, cause: 'The spine was not a route reflector. Over iBGP it did not pass the routes of one VTEP on to the others (iBGP split horizon), so no VTEP learned about any other.' },
+      { fault: t => { dev(t, 'spine').bgp.neighbors.find(n => n.ip === '10.255.0.3').evpn = false; }, cause: 'The spine had not activated the EVPN address family towards vtep3. The session was up, but only IPv4 routes were exchanged with it.' },
+      { fault: t => { dev(t, 'vtep3').routes = []; }, cause: 'vtep3 had no underlay route to the loopback of the spine. Its BGP session could never come up.' },
+      { fault: t => { dev(t, 'vtep3').vxlans[0].evpn = false; }, cause: 'The segment on vtep3 was not marked for EVPN. vtep3 had BGP, but announced no type 3 route and used an empty static flood list.' }],
+    goals: [{ text: 'srv1 pings srv3 (192.168.10.13).', check: pingAfterStart('srv1', '192.168.10.13') }, { text: 'srv2 pings srv3.', check: pingAfterStart('srv2', '192.168.10.13') }],
+    hints: ['show ip bgp summary on vtep3 and on the spine: are the sessions up, and how many EVPN routes come in?', 'show vxlan on vtep1: is 10.255.0.3 in the flood list? show bgp l2vpn evpn shows which type 3 routes exist.'],
+    presets: { srv1: ['ping -c 2 192.168.10.13'], vtep1: ['show vxlan', 'show bgp l2vpn evpn'], vtep3: ['show ip bgp summary', 'show vxlan', 'ip route'], spine: ['show ip bgp summary'] } },
 
   { id: 'ospf', level: 2, title: 'One site is missing from the map', topics: ['OSPF'],
     symptom: '<p>Three sites run OSPF. pc1 cannot reach the server srv3 at site 3.</p>',

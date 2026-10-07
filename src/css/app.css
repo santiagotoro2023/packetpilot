@@ -559,3 +559,4 @@ svg.net .lnk-g.trace .lnk { stroke: var(--l-vxlan); stroke-width: 3.2; }
 svg.net .pkt text.side { text-anchor: start; }
 .fb-grp { font-size: .74rem; font-weight: 650; color: var(--ink-3); margin: 6px 0 -2px; text-transform: uppercase; letter-spacing: .04em; }
 .fb-grp:first-child { margin-top: 0; }
+.ok-text { color: var(--ok, #1F9D68); }

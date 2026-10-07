@@ -92,6 +92,18 @@ export const PRESETS = [
   { id: 'vpn', title: 'Site-to-site VPN with WireGuard', topics: ['VPN', 'WireGuard', 'Tunnel'],
     text: 'gwA and gwB join two private networks through a provider that only knows public addresses. Ping srvB from pcA and look at the outer and the inner packet. wg show on the gateways.',
     make: () => vpnTopo() },
+  { id: 'bgp', title: 'eBGP between two companies', topics: ['BGP', 'eBGP', 'AS'],
+    text: 'r1 (AS 65001) and r2 (AS 65002) exchange their networks over BGP. Try show ip bgp summary and show ip bgp.',
+    make: () => bgpPairTopo() },
+  { id: 'ibgp', title: 'iBGP and eBGP with a provider', topics: ['BGP', 'iBGP', 'OSPF', 'Next hop'],
+    text: 'An AS with three routers: OSPF carries the loopbacks, iBGP the external routes, eBGP talks to the provider. pc3 reaches the web server on the internet.',
+    make: () => ibgpTopo() },
+  { id: 'bgpmulti', title: 'Two providers (multihoming)', topics: ['BGP', 'Local preference', 'AS path prepending'],
+    text: 'AS 65001 is connected to two providers. Which way do the packets of pc2 take to the web server, and which way do the answers come back? Change it with local preference and AS path prepending.',
+    make: () => bgpMultiTopo() },
+  { id: 'evpn', title: 'EVPN with three VTEPs', topics: ['EVPN', 'BGP', 'VXLAN', 'Route reflector'],
+    text: 'The VTEPs find each other with BGP type 3 routes and learn every MAC with type 2 routes. No static flood lists, no flood and learn, ARP suppression on.',
+    make: () => evpnTopo() },
   { id: 'failover', title: 'Failover with gratuitous ARP', topics: ['ARP', 'GARP', 'Failover'],
     text: 'The service address 10.0.0.100 moves from srvA to srvB. Try it with and without gratuitous ARP.',
     make: () => failoverTopo() },
@@ -286,6 +298,79 @@ export function vpnTopo({ peerB = true, allowedB = '10.99.0.1/32, 10.1.0.0/24', 
   [link('pcA', 'eth1', 'swA', 'eth1'), link('pcA2', 'eth1', 'swA', 'eth2'), link('swA', 'eth8', 'gwA', 'eth1'), link('gwA', 'eth2', 'isp', 'eth1'), link('isp', 'eth2', 'gwB', 'eth1'), link('gwB', 'eth2', 'srvB', 'eth1')],
   [{ x: 20, y: 60, w: 380, h: 340, label: 'Site A 10.1.0.0/24', color: 'blue' }, { x: 450, y: 120, w: 160, h: 200, label: 'Internet', color: 'gray' },
     { x: 660, y: 60, w: 320, h: 340, label: 'Site B 10.2.0.0/24', color: 'green' }]);
+}
+// -------------------------------------------------------------- BGP
+const bgpCfg = (asn, neighbors, networks = [], extra = {}) => ({ enabled: true, asn, rid: '', timers: 'fast', networks, redistributeConnected: false, neighbors, ...extra });
+const nb = (ip, remoteAs, extra = {}) => ({ ip, remoteAs, updateSource: '', nextHopSelf: false, rrClient: false, localPref: '', med: '', multihop: 0, ...extra });
+/** Two companies, two autonomous systems, one eBGP session */
+export function bgpPairTopo({ r2 = true, r2As = 65001 } = {}) {
+  const r1 = router('r1', 330, 230, { eth1: '10.1.0.1/24', eth2: '10.0.12.1/30' }, [], { bgp: bgpCfg(65001, [nb('10.0.12.2', 65002)], ['10.1.0.0/24']) });
+  const r2d = router('r2', 590, 230, { eth1: '10.0.12.2/30', eth2: '10.2.0.1/24' }, [], { bgp: r2 ? bgpCfg(65002, [nb('10.0.12.1', r2As)], ['10.2.0.0/24']) : bgpCfg(65002, [], [], { enabled: false }) });
+  return topo('eBGP between two autonomous systems', [host('pc1', 100, 230, '10.1.0.10', 24, '10.1.0.1'), r1, r2d, server('srv2', 820, 230, '10.2.0.10', 24, '10.2.0.1')],
+    [link('pc1', 'eth1', 'r1', 'eth1'), link('r1', 'eth2', 'r2', 'eth1'), link('r2', 'eth2', 'srv2', 'eth1')],
+    [{ x: 30, y: 110, w: 380, h: 240, label: 'AS 65001', color: 'blue' }, { x: 510, y: 110, w: 380, h: 240, label: 'AS 65002', color: 'green' }]);
+}
+/** An AS with three routers: OSPF inside, iBGP between the loopbacks, eBGP to the provider */
+export function ibgpTopo({ nhs = true, fullMesh = true, rr = false, lo1 = true } = {}) {
+  const ospf = (ifs) => ospfOn(Object.fromEntries(ifs.map(([k, v]) => [k, v || {}])));
+  const ib = (ip, extra = {}) => nb(ip, 65001, { updateSource: lo1 ? 'lo' : '', ...extra });
+  const isp = router('isp', 120, 120, { eth1: '192.0.2.1/30', eth2: '198.51.100.1/24' }, [], { bgp: bgpCfg(65100, [nb('192.0.2.2', 65001)], ['198.51.100.0/24']) });
+  const r1 = router('r1', 330, 230, { eth1: '192.0.2.2/30', eth2: '10.0.12.1/30', lo: '10.255.0.1/32' }, [], {
+    bgp: bgpCfg(65001, [nb('192.0.2.1', 65100), ib('10.255.0.2', { nextHopSelf: nhs }), ...(fullMesh ? [ib('10.255.0.3', { nextHopSelf: nhs })] : [])]) });
+  r1.ospf = ospf([['eth2'], ['lo', { passive: true }]]);
+  const r2 = router('r2', 540, 230, { eth1: '10.0.12.2/30', eth2: '10.0.23.2/30', lo: '10.255.0.2/32' }, [], {
+    bgp: bgpCfg(65001, [ib('10.255.0.1', { rrClient: rr }), ib('10.255.0.3', { rrClient: rr })]) });
+  r2.ospf = ospf([['eth1'], ['eth2'], ['lo', { passive: true }]]);
+  const r3 = router('r3', 750, 230, { eth1: '10.0.23.3/30', eth2: '10.3.0.1/24', lo: '10.255.0.3/32' }, [], {
+    bgp: bgpCfg(65001, [...(fullMesh ? [ib('10.255.0.1')] : []), ib('10.255.0.2')], ['10.3.0.0/24']) });
+  r3.ospf = ospf([['eth1'], ['eth2', { passive: true }], ['lo', { passive: true }]]);
+  const web = server('web', 120, 360, '198.51.100.80', 24, '198.51.100.1');
+  web.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  return topo('iBGP inside an AS, eBGP to the provider', [isp, web, r1, r2, r3, host('pc3', 900, 360, '10.3.0.10', 24, '10.3.0.1')],
+    [link('isp', 'eth1', 'r1', 'eth1'), link('isp', 'eth2', 'web', 'eth1'), link('r1', 'eth2', 'r2', 'eth1'), link('r2', 'eth2', 'r3', 'eth1'), link('r3', 'eth2', 'pc3', 'eth1')],
+    [{ x: 30, y: 40, w: 200, h: 400, label: 'Provider AS 65100', color: 'gray' }, { x: 260, y: 120, w: 720, h: 330, label: 'AS 65001: OSPF inside, iBGP between the loopbacks', color: 'blue' }]);
+}
+/** One AS with two providers: which exit is used, and which entrance do the others use? */
+export function bgpMultiTopo({ lpR3 = '', lpR1 = '', lpR3Ibgp = '', prependR1 = 0 } = {}) {
+  const ospf = (ifs) => ospfOn(Object.fromEntries(ifs.map(([k, v]) => [k, v || {}])));
+  const ib = (ip, extra = {}) => nb(ip, 65001, { updateSource: 'lo', ...extra });
+  const isp1 = router('isp1', 330, 70, { eth1: '192.0.2.1/30', eth2: '198.51.100.1/24', eth3: '203.0.113.1/30' }, [], { bgp: bgpCfg(65100, [nb('192.0.2.2', 65001), nb('203.0.113.2', 65200)], ['198.51.100.0/24']) });
+  const isp2 = router('isp2', 750, 70, { eth1: '192.0.2.5/30', eth3: '203.0.113.2/30' }, [], { bgp: bgpCfg(65200, [nb('192.0.2.6', 65001), nb('203.0.113.1', 65100)]) });
+  const web = server('web', 120, 70, '198.51.100.80', 24, '198.51.100.1');
+  web.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  const r1 = router('r1', 330, 260, { eth1: '192.0.2.2/30', eth2: '10.0.12.1/30', lo: '10.255.0.1/32' }, [], {
+    bgp: bgpCfg(65001, [nb('192.0.2.1', 65100, { localPref: lpR1, prepend: prependR1 }), ib('10.255.0.2', { nextHopSelf: true }), ib('10.255.0.3', { nextHopSelf: true })]) });
+  r1.ospf = ospf([['eth2'], ['lo', { passive: true }]]);
+  const r2 = router('r2', 540, 380, { eth1: '10.0.12.2/30', eth2: '10.0.23.2/30', eth3: '10.2.0.1/24', lo: '10.255.0.2/32' }, [], {
+    bgp: bgpCfg(65001, [ib('10.255.0.1'), ib('10.255.0.3')], ['10.2.0.0/24']) });
+  r2.ospf = ospf([['eth1'], ['eth2'], ['eth3', { passive: true }], ['lo', { passive: true }]]);
+  const r3 = router('r3', 750, 260, { eth1: '192.0.2.6/30', eth2: '10.0.23.3/30', lo: '10.255.0.3/32' }, [], {
+    bgp: bgpCfg(65001, [nb('192.0.2.5', 65200, { localPref: lpR3 }), ib('10.255.0.1', { nextHopSelf: true }), ib('10.255.0.2', { nextHopSelf: true, localPref: lpR3Ibgp })]) });
+  r3.ospf = ospf([['eth2'], ['lo', { passive: true }]]);
+  return topo('Two providers: choosing the way out and in', [web, isp1, isp2, r1, r2, r3, host('pc2', 540, 520, '10.2.0.10', 24, '10.2.0.1')],
+    [link('web', 'eth1', 'isp1', 'eth2'), link('isp1', 'eth1', 'r1', 'eth1'), link('isp1', 'eth3', 'isp2', 'eth3'), link('isp2', 'eth1', 'r3', 'eth1'),
+      link('r1', 'eth2', 'r2', 'eth1'), link('r2', 'eth2', 'r3', 'eth2'), link('r2', 'eth3', 'pc2', 'eth1')],
+    [{ x: 30, y: 10, w: 400, h: 130, label: 'Provider 1, AS 65100 (with the web server)', color: 'gray' }, { x: 650, y: 10, w: 200, h: 130, label: 'Provider 2, AS 65200', color: 'gray' },
+      { x: 250, y: 200, w: 600, h: 380, label: 'Our AS 65001', color: 'blue' }]);
+}
+/** EVPN: three VTEPs learn about each other and about all MACs over BGP, the spine reflects the routes */
+export function evpnTopo({ rr = true, evpn = ['vtep1', 'vtep2', 'vtep3'], vni = {}, suppress = true, nbrEvpn = ['vtep1', 'vtep2', 'vtep3'] } = {}) {
+  const v = (n, x) => {
+    const id = 'vtep' + n;
+    const d = vtep(id, x, 240, { uplink: `10.0.${n}.2/24`, lo: `10.255.0.${n}`, routes: [['10.255.0.0/24', `10.0.${n}.1`]], ports: { eth2: acc(10) },
+      vxlans: [{ vni: vni[id] ?? 10010, vlan: 10, flood: [], dstport: 4789, learning: true, evpn: evpn.includes(id), arpSuppress: suppress }] });
+    d.bgp = bgpCfg(65000, [nb('10.255.0.254', 65000, { updateSource: 'lo', evpn: true })]);
+    return d;
+  };
+  const spine = router('spine', 450, 440, { eth1: '10.0.1.1/24', eth2: '10.0.2.1/24', eth3: '10.0.3.1/24', lo: '10.255.0.254/32' },
+    [['10.255.0.1/32', '10.0.1.2'], ['10.255.0.2/32', '10.0.2.2'], ['10.255.0.3/32', '10.0.3.2']],
+    { bgp: bgpCfg(65000, [1, 2, 3].map(n => nb(`10.255.0.${n}`, 65000, { updateSource: 'lo', rrClient: rr, evpn: nbrEvpn.includes('vtep' + n) }))) });
+  return topo('EVPN: BGP as the control plane of VXLAN', [v(1, 170), v(2, 450), v(3, 730), spine,
+    server('srv1', 170, 90, '192.168.10.11'), server('srv2', 450, 90, '192.168.10.12'), server('srv3', 730, 90, '192.168.10.13')],
+  [link('vtep1', 'eth1', 'spine', 'eth1'), link('vtep2', 'eth1', 'spine', 'eth2'), link('vtep3', 'eth1', 'spine', 'eth3'),
+    link('srv1', 'eth1', 'vtep1', 'eth2'), link('srv2', 'eth1', 'vtep2', 'eth2'), link('srv3', 'eth1', 'vtep3', 'eth2')],
+  [{ x: 40, y: 30, w: 820, h: 120, label: 'Overlay: VNI 10010, 192.168.10.0/24', kind: 'overlay' },
+    { x: 60, y: 360, w: 780, h: 160, label: 'Underlay: routed, the spine is the BGP route reflector', kind: 'underlay' }]);
 }
 export function failoverTopo() {
   const a = server('srvA', 600, 110, '10.0.0.100'), b = server('srvB', 600, 330, '10.0.0.12');

@@ -134,6 +134,32 @@ const SOLUTIONS = {
     assert.ok(sim.log.some(e => e.dev === 'gwB' && e.tag === 'wg-notallowed'));
     sim.dev('gwB').cfg.wg.peers[0].allowedIps = '10.99.0.1/32, 10.1.0.0/24'; sim.configChanged('gwB');
     runT(sim, 'pcA2', 'ping -c 2 10.2.0.10', 8000); } },
+  'm14-l2': { answers: ['idle', null, null, '65002', null], act: (sim, ctx) => {
+    sim.runFor(3000);
+    Object.assign(sim.dev('r2').cfg.bgp, { enabled: true, asn: 65002, networks: ['10.2.0.0/24'], neighbors: [{ ip: '10.0.12.1', remoteAs: 65001 }] }); sim.configChanged('r2');
+    sim.runFor(8000); runT(sim, 'pc1', 'ping -c 1 10.2.0.10', 3000);
+    ctx.inspected.push(sim.log.find(e => e.frame?.payload?.l4?.bgp?.type === 'UPDATE' && e.frame.payload.l4.bgp.nlri.length)); } },
+  'm14-l4': { answers: [null, 'inaccessible', null, '10.255.0.1', '200'], act: sim => {
+    sim.runFor(15000); runT(sim, 'pc3', 'ping -c 1 198.51.100.80', 5000);
+    for (const n of sim.dev('r1').cfg.bgp.neighbors) if (n.remoteAs === 65001) n.nextHopSelf = true;
+    sim.configChanged('r1'); sim.runFor(3000); runT(sim, 'pc3', 'ping -c 1 198.51.100.80', 3000); } },
+  'm14-l5': { answers: [null, '0', null, 'originator_id'], act: sim => {
+    sim.runFor(15000); runT(sim, 'pc3', 'ping -c 1 198.51.100.80', 5000);
+    for (const n of sim.dev('r2').cfg.bgp.neighbors) n.rrClient = true;
+    sim.configChanged('r2'); sim.runFor(3000); runT(sim, 'pc3', 'ping -c 1 198.51.100.80', 3000); } },
+  'm14-l6': { answers: ['r1', 'as path length', null, '65001', null], act: sim => {
+    sim.runFor(15000); runT(sim, 'pc2', 'traceroute 198.51.100.80', 8000);
+    sim.dev('r3').cfg.bgp.neighbors.find(n => n.ip === '192.0.2.5').localPref = 200; sim.configChanged('r3'); sim.runFor(3000);
+    runT(sim, 'pc2', 'traceroute 198.51.100.80', 8000);
+    sim.dev('r1').cfg.bgp.neighbors.find(n => n.ip === '192.0.2.1').prepend = 2; sim.configChanged('r1'); sim.runFor(3000); } },
+  'm15-l2': { answers: [null, '1', null, '3', '10.255.0.254', null], act: (sim, ctx) => {
+    sim.runFor(6000); runT(sim, 'srv1', 'ping -c 1 192.168.10.12', 3000);
+    sim.dev('vtep3').cfg.vxlans[0].evpn = true; sim.configChanged('vtep3'); sim.runFor(3000);
+    runT(sim, 'srv1', 'ping -c 1 192.168.10.13', 3000);
+    ctx.inspected.push(sim.log.find(e => e.frame?.payload?.l4?.bgp?.evpn?.length)); } },
+  'm15-l3': { answers: [null, 'vtep2', null, '2', '10.255.0.3'], act: sim => {
+    sim.runFor(6000); runT(sim, 'srv1', 'ping -c 1 192.168.10.13', 3000); runT(sim, 'srv2', 'ping -c 1 192.168.10.13', 3000);
+    assert.ok(sim.dev('vtep1').evpn.macs.size >= 2, 'vtep1 learned remote MACs over BGP'); } },
   'm11-l2': { answers: [null, '198.41.0.4', '3', 'no', null, 'ns.partner.lab', 'REFUSED'], act: sim => {
     run(sim, 'client', 'dig www.firma.lab');
     assert.equal(sim.log.filter(e => e.dev === 'resolver' && e.tag === 'dns-iter').length, 3);

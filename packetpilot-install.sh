@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.6.0
+#  PacketPilot 2.7.0
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -31,7 +31,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.6.0"
+PP_VERSION="2.7.0"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -668,6 +668,7 @@ svg.net .lnk-g.trace .lnk { stroke: var(--l-vxlan); stroke-width: 3.2; }
 svg.net .pkt text.side { text-anchor: start; }
 .fb-grp { font-size: .74rem; font-weight: 650; color: var(--ink-3); margin: 6px 0 -2px; text-transform: uppercase; letter-spacing: .04em; }
 .fb-grp:first-child { margin-top: 0; }
+.ok-text { color: var(--ok, #1F9D68); }
 __PACKETPILOT_FILE_END__
   cat > "$W/index.html" <<'__PACKETPILOT_FILE_END__'
 <!doctype html>
@@ -798,7 +799,7 @@ function viewHome() {
         h('p', { class: 'muted small' }, 'Broken networks with a symptom and a hidden cause. Find it and fix it.'), h('div', { class: 'small muted' }, `${solved} of ${CHALLENGES.length} solved`)),
       h('a', { class: 'netcard chcard', href: '#/subnetting' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('span', { class: 'pico', html: I.calc }), h('h3', { style: { margin: 0 } }, 'Subnetting trainer')),
         h('p', { class: 'muted small' }, 'Network, broadcast, masks and subnet sizes with random addresses and worked solutions.'), h('div', { class: 'small muted' }, sub.right ? `${sub.right} right so far, best streak ${sub.best}` : 'Endless questions'))));
-  page.append(h('h2', { style: { marginTop: '28px' } }, 'Coming soon'),
+  if (UPCOMING.length) page.append(h('h2', { style: { marginTop: '28px' } }, 'Coming soon'),
     h('div', { class: 'netgrid' }, UPCOMING.map(u => h('div', { class: 'netcard' }, h('h3', {}, u.title), h('p', { class: 'muted small' }, u.text)))));
   page.append(h('div', { class: 'row', style: { marginTop: '28px' } },
     h('button', { class: 'btn', html: I.download + 'Export progress and networks', onclick: () => download('packetpilot-export.json', store.exportAll()) }),
@@ -1145,10 +1146,477 @@ route();
 moveCard();
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
+  cat > "$W/js/bgp.js" <<'__PACKETPILOT_FILE_END__'
+// BGP-4: sessions over TCP 179 with the real state machine, eBGP and iBGP, path attributes,
+// best path selection, route reflection and the EVPN address family for VXLAN.
+import { PROTO, isIp, parseCidr, inNet, ipToInt } from './net.js';
+import { ipPacket, tcp } from './packets.js';
+
+export const BGP_PORT = 179;
+export const BGP_TIMERS = { fast: { keepalive: 3, hold: 9, retry: 5 }, standard: { keepalive: 60, hold: 180, retry: 30 } };
+const ipCmp = (a, b) => (ipToInt(a) ?? 0) - (ipToInt(b) ?? 0);
+const pfx = c => `${c.net}/${c.len}`;
+const NOTIF = { '2/2': 'OPEN Message Error: Bad Peer AS', '2/3': 'OPEN Message Error: Bad BGP Identifier', '4/0': 'Hold Timer Expired', '6/2': 'Cease: Administrative Shutdown', '6/4': 'Cease: Administrative Reset' };
+export const notifText = (c, s) => NOTIF[`${c}/${s}`] || `code ${c}/${s}`;
+
+/** Message length on the wire: 19 byte header plus the body */
+export function bgpLen(m) {
+  if (m.type === 'KEEPALIVE') return 19;
+  if (m.type === 'OPEN') return 29 + 8 * (m.caps?.length || 1);
+  if (m.type === 'NOTIFICATION') return 21;
+  const attrs = m.nlri?.length || m.evpn?.length ? 4 + 4 + 4 * (m.attrs?.asPath?.length || 0) + 7 + (m.attrs?.localPref != null ? 7 : 0) + (m.attrs?.med != null ? 7 : 0) + (m.attrs?.originatorId ? 7 : 0) + (m.attrs?.clusterList?.length ? 3 + 4 * m.attrs.clusterList.length : 0) : 0;
+  return 23 + 4 * (m.withdrawn?.length || 0) + attrs + 4 * (m.nlri?.length || 0) + 40 * ((m.evpn?.length || 0) + (m.evpnWithdrawn?.length || 0));
+}
+export const asPathText = p => (p?.length ? p.join(' ') : '');
+
+export class Bgp {
+  constructor(dev) { this.dev = dev; this.sim = dev.sim; this.l3 = dev.l3; this.peers = new Map(); this.best = new Map(); this.evpnBest = new Map(); this.timers = []; this.gen = 0; }
+  get cfg() { return this.dev.cfg.bgp || {}; }
+  get enabled() { return !!this.cfg.enabled && Number(this.cfg.asn) > 0; }
+  get asn() { return Number(this.cfg.asn); }
+  timersCfg() { return BGP_TIMERS[this.cfg.timers] || BGP_TIMERS.fast; }
+  get rid() {
+    if (isIp(this.cfg.rid)) return this.cfg.rid;
+    const lo = this.l3.ifaces().find(i => i.name === 'lo');
+    const ips = this.l3.ifaces().map(i => i.ip).sort(ipCmp);
+    return lo?.ip || ips[ips.length - 1] || '0.0.0.0';
+  }
+  rec(kind, text, extra) { return this.dev.record(kind, text, extra); }
+  later(ms, fn) { const g = this.gen; const ev = this.sim.schedule(ms, () => { this.timers = this.timers.filter(x => x !== ev); if (g === this.gen) fn(); }); this.timers.push(ev); return ev; }
+  nbrs() { return (this.cfg.neighbors || []).filter(n => isIp(n.ip) && n.enabled !== false); }
+  isRR() { return this.nbrs().some(n => n.rrClient); }
+  ebgp(n) { return Number(n.remoteAs) !== this.asn; }
+  localIp(n) {
+    if (n.updateSource) return this.l3.ifaces().find(i => i.name === n.updateSource)?.ip || null;
+    const r = this.l3.lookup(n.ip);
+    return r ? this.l3.ifIp(r.dev) : null;
+  }
+
+  // ---- Life cycle
+  start() {
+    this.stop();
+    this.snap = this.snapshot();
+    if (!this.enabled) return;
+    this.rec('info', `BGP starts: AS ${this.asn}, router ID ${this.rid}, ${this.nbrs().length} neighbor${this.nbrs().length === 1 ? '' : 's'}`, { tag: 'bgp-start' });
+    for (const n of this.nbrs()) {
+      const p = this.peer(n);
+      this.later(100 + this.sim.random() * 300, () => this.connect(p));
+    }
+    const scan = () => { this.recompute(); this.later(1000, scan); };
+    this.later(500, scan);
+  }
+  stop() {
+    this.gen++;
+    for (const t of this.timers) this.sim.cancel(t);
+    this.timers = [];
+    this.peers.clear(); this.best.clear(); this.evpnBest.clear(); this.routesCache = [];
+  }
+  snapshot() { return JSON.stringify(this.cfg); }
+  onConfig() {
+    const s = this.snapshot();
+    if (s === this.snap) return;
+    const old = this.snap ? JSON.parse(this.snap) : null;
+    this.snap = s;
+    // AS or router ID changed: everything starts over. Otherwise only the neighbors that changed.
+    if (!old || old.enabled !== this.cfg.enabled || Number(old.asn) !== this.asn || old.rid !== this.cfg.rid || old.timers !== this.cfg.timers || !this.enabled) return this.start();
+    const was = new Map((old.neighbors || []).map(n => [n.ip, JSON.stringify(n)]));
+    for (const n of this.nbrs()) {
+      const p = this.peers.get(n.ip);
+      if (!p) { this.later(100, () => this.connect(this.peer(n))); continue; }
+      const prev = was.get(n.ip) ? JSON.parse(was.get(n.ip)) : null;
+      p.cfg = n;
+      // Policy changes (local preference, MED, next-hop-self, reflection) take effect without a reset, like a soft clear
+      const hard = !prev || ['remoteAs', 'updateSource', 'multihop', 'evpn'].some(k => String(prev[k] ?? '') !== String(n[k] ?? ''));
+      if (hard && p.state !== 'Idle') this.reset(p, 'neighbor configuration changed', true);
+    }
+    for (const [ip, p] of [...this.peers]) if (!this.nbrs().some(n => n.ip === ip)) { if (p.state === 'Established') this.notify(p, 6, 2); this.down(p, 'neighbor removed', false); this.peers.delete(ip); }
+    this.recompute();
+  }
+  peer(n) {
+    if (!this.peers.has(n.ip)) this.peers.set(n.ip, { ip: n.ip, cfg: n, state: 'Idle', sock: null, rx: new Map(), rxEvpn: new Map(), out: new Map(), outEvpn: new Map(), msgsIn: 0, msgsOut: 0, upSince: null, hold: null, ka: null, retry: null, holdTime: 0, remoteRid: null, lastError: '' });
+    const p = this.peers.get(n.ip); p.cfg = n; return p;
+  }
+  setState(p, st, why = '') {
+    if (p.state === st) return;
+    const old = p.state; p.state = st;
+    this.rec(st === 'Established' ? 'ok' : st === 'Idle' && old === 'Established' ? 'err' : 'info', `BGP neighbor ${p.ip} (AS ${p.cfg.remoteAs}): ${old} → ${st}${why ? ', ' + why : ''}`, { tag: 'bgp-state', data: { peer: p.ip, state: st, from: old } });
+    this.sim.emit('config', this.dev.id);
+  }
+
+  // ---- Connecting
+  connect(p) {
+    if (!this.enabled || !this.peers.has(p.ip) || ['OpenSent', 'OpenConfirm', 'Established'].includes(p.state)) return;
+    const n = p.cfg, t = this.timersCfg();
+    this.sim.cancel(p.retry);
+    p.retry = this.later(t.retry * 1000, () => { if (!['OpenSent', 'OpenConfirm', 'Established'].includes(p.state)) this.connect(p); });
+    if (!Number(n.remoteAs)) { p.lastError = 'no remote AS configured'; return; }
+    const local = this.localIp(n);
+    if (!this.l3.lookup(n.ip) || !local) {
+      p.lastError = n.updateSource && !local ? `update source ${n.updateSource} has no address` : `no route to ${n.ip}`;
+      if (p.state !== 'Idle') this.setState(p, 'Idle', p.lastError);
+      else if (!p.warned) { p.warned = true; this.rec('err', `BGP neighbor ${n.ip}: ${p.lastError}, waiting`, { tag: 'bgp-noroute', data: { peer: n.ip } }); }
+      return;
+    }
+    // eBGP neighbors must be directly connected, unless ebgp-multihop allows more hops (TTL)
+    if (this.ebgp(n) && !Number(n.multihop) && !this.l3.ifaces().some(i => i.name !== 'lo' && inNet(n.ip, i.ip, i.prefix))) {
+      p.lastError = 'eBGP neighbor is not directly connected (ebgp-multihop missing)';
+      if (!p.warned) { p.warned = true; this.rec('err', `BGP neighbor ${n.ip} is an eBGP neighbor, but not on a directly connected network: no session without ebgp-multihop`, { tag: 'bgp-noconnect', data: { peer: n.ip } }); }
+      if (p.state !== 'Idle') this.setState(p, 'Idle', p.lastError);
+      return;
+    }
+    p.warned = false;
+    // To avoid two crossing connections, the side with the lower address opens it; the other one listens
+    if (ipCmp(local, n.ip) < 0) {
+      this.setState(p, 'Connect');
+      p.sock = { lport: 49152 + Math.floor(this.sim.random() * 16000), rport: BGP_PORT, local, seq: Math.floor(this.sim.random() * 4e9) >>> 0 };
+      this.rec('info', `opens a TCP connection to the BGP neighbor ${n.ip}:179 from ${local}`, { tag: 'bgp-connect', data: { peer: n.ip } });
+      this.sendSeg(p, { SYN: true });
+    } else this.setState(p, 'Active', 'waiting for the neighbor to connect');
+  }
+  ttlFor(n) { return this.ebgp(n) ? Math.max(1, Number(n.multihop) || 1) : 64; }
+  sendSeg(p, flags, msg = null) {
+    const s = p.sock;
+    const seg = tcp(s.lport, s.rport, s.seq, s.ack || 0, flags, msg ? { dataLen: bgpLen(msg), bgp: msg, app: `BGP ${msg.type}` } : { mss: 1460 });
+    if (msg) s.seq = (s.seq + bgpLen(msg)) >>> 0; else if (flags.SYN) s.seq = (s.seq + 1) >>> 0;
+    const pkt = ipPacket({ src: s.local, dst: p.ip, ttl: this.ttlFor(p.cfg), proto: PROTO.TCP, df: true, l4: seg });
+    return this.l3.output(pkt, {});
+  }
+  send(p, msg) {
+    if (!p.sock) return;
+    p.msgsOut++;
+    this.sendSeg(p, { PSH: true, ACK: true }, msg);
+  }
+  /** A TCP segment to or from port 179. Returns true when BGP took care of it. */
+  onTcp(ip) {
+    const s = ip.l4;
+    if (s.dport !== BGP_PORT && s.sport !== BGP_PORT) return false;
+    if (!this.enabled) return false;
+    const n = this.nbrs().find(x => x.ip === ip.src);
+    if (s.dport === BGP_PORT && s.flags.SYN && !s.flags.ACK) {
+      if (!n) {
+        this.rec('drop', `refuses a BGP connection from ${ip.src}: not a configured neighbor (connection reset)`, { tag: 'bgp-refused', data: { from: ip.src } });
+        this.l3.sendTcp(ip.src, tcp(BGP_PORT, s.sport, 0, s.seq + 1, { RST: true, ACK: true }), ip.dst);
+        return true;
+      }
+      const p = this.peer(n);
+      if (['OpenSent', 'OpenConfirm', 'Established'].includes(p.state) && p.sock?.rport !== s.sport) {
+        this.l3.sendTcp(ip.src, tcp(BGP_PORT, s.sport, 0, s.seq + 1, { RST: true, ACK: true }), ip.dst);
+        return true;
+      }
+      if (ip.dst !== this.localIp(n)) {
+        this.rec('drop', `refuses a BGP connection from ${ip.src} to ${ip.dst}: the session is configured from ${this.localIp(n) || '?'} (update-source)`, { tag: 'bgp-refused', data: { from: ip.src } });
+        this.l3.sendTcp(ip.src, tcp(BGP_PORT, s.sport, 0, s.seq + 1, { RST: true, ACK: true }), ip.dst);
+        return true;
+      }
+      p.sock = { lport: BGP_PORT, rport: s.sport, local: ip.dst, seq: Math.floor(this.sim.random() * 4e9) >>> 0, ack: s.seq + 1, passive: true };
+      this.sendSeg(p, { SYN: true, ACK: true });
+      if (p.state === 'Idle' || p.state === 'Connect') this.setState(p, 'Active', 'TCP connection accepted');
+      return true;
+    }
+    const p = n && this.peers.get(n.ip);
+    if (!p || !p.sock || s.dport !== p.sock.lport || s.sport !== p.sock.rport) {
+      // A rejected connection (RST from the other side) or something for a session that is gone
+      if (s.flags.RST && p) { p.lastError = 'connection refused by the neighbor'; this.rec('err', `BGP neighbor ${ip.src} refuses the connection (RST)`, { tag: 'bgp-rst', data: { peer: ip.src } }); this.setState(p, 'Active', 'connection refused'); }
+      return true;
+    }
+    if (s.flags.RST) { p.lastError = 'connection reset'; this.down(p, 'TCP connection reset by the neighbor'); return true; }
+    if (s.flags.SYN && s.flags.ACK && p.state === 'Connect') {
+      p.sock.ack = s.seq + 1;
+      this.sendSeg(p, { ACK: true });
+      this.sendOpen(p);
+      this.setState(p, 'OpenSent', 'TCP connection established, OPEN sent');
+      return true;
+    }
+    if (s.bgp) { p.sock.ack = (s.seq + s.dataLen) >>> 0; p.msgsIn++; this.onMessage(p, s.bgp, ip); }
+    return true;
+  }
+  sendOpen(p) {
+    const t = this.timersCfg();
+    this.send(p, { type: 'OPEN', version: 4, asn: this.asn, hold: t.hold, rid: this.rid, caps: ['IPv4 unicast', ...(p.cfg.evpn ? ['L2VPN EVPN'] : []), '4-octet AS'] });
+  }
+  notify(p, code, sub, text = '') {
+    this.rec('err', `sends NOTIFICATION to ${p.ip}: ${notifText(code, sub)}${text ? ' (' + text + ')' : ''}`, { tag: 'bgp-notify-sent', data: { peer: p.ip, code, sub } });
+    this.send(p, { type: 'NOTIFICATION', code, sub, text });
+  }
+
+  // ---- Messages
+  onMessage(p, m, ip) {
+    const t = this.timersCfg();
+    if (m.type === 'OPEN') {
+      if (Number(m.asn) !== Number(p.cfg.remoteAs)) {
+        p.lastError = `Bad Peer AS: the neighbor says AS ${m.asn}, configured is AS ${p.cfg.remoteAs}`;
+        this.rec('err', `OPEN from ${p.ip} with AS ${m.asn}, but remote-as is ${p.cfg.remoteAs}: the session is refused`, { tag: 'bgp-badas', data: { peer: p.ip, got: m.asn, want: Number(p.cfg.remoteAs) } });
+        this.notify(p, 2, 2, `expected ${p.cfg.remoteAs}`);
+        return this.down(p, 'Bad Peer AS');
+      }
+      if (m.rid === this.rid) { this.notify(p, 2, 3); return this.down(p, 'same router ID on both sides'); }
+      p.remoteRid = m.rid;
+      p.holdTime = Math.min(t.hold, m.hold);
+      p.remoteCaps = m.caps || [];
+      if (p.state === 'Active') { this.sendOpen(p); this.send(p, { type: 'KEEPALIVE' }); this.setState(p, 'OpenConfirm', 'OPEN received and answered'); }
+      else if (p.state === 'OpenSent') { this.send(p, { type: 'KEEPALIVE' }); this.setState(p, 'OpenConfirm', 'OPEN received'); }
+      this.armHold(p);
+      return;
+    }
+    if (m.type === 'NOTIFICATION') {
+      p.lastError = `received NOTIFICATION: ${notifText(m.code, m.sub)}${m.text ? ' (' + m.text + ')' : ''}`;
+      this.rec('err', `BGP neighbor ${p.ip} sends NOTIFICATION: ${notifText(m.code, m.sub)}${m.text ? ' (' + m.text + ')' : ''}`, { tag: 'bgp-notify', data: { peer: p.ip, code: m.code, sub: m.sub } });
+      return this.down(p, 'NOTIFICATION received');
+    }
+    if (m.type === 'KEEPALIVE') {
+      this.armHold(p);
+      if (p.state === 'OpenConfirm') {
+        p.upSince = this.sim.time;
+        this.setState(p, 'Established', `the session is up, hold time ${p.holdTime} s`);
+        p.out.clear(); p.outEvpn.clear();
+        this.armKeepalive(p);
+        this.recompute(true);
+      }
+      return;
+    }
+    if (m.type === 'UPDATE' && p.state === 'Established') {
+      this.armHold(p);
+      this.onUpdate(p, m);
+    }
+  }
+  armHold(p) {
+    this.sim.cancel(p.hold);
+    const h = (p.holdTime || this.timersCfg().hold) * 1000;
+    p.hold = this.later(h, () => {
+      if (!this.peers.has(p.ip) || p.state === 'Idle') return;
+      p.lastError = 'hold timer expired';
+      this.rec('err', `BGP neighbor ${p.ip}: no message for ${h / 1000} s, hold timer expired`, { tag: 'bgp-holdexp', data: { peer: p.ip } });
+      this.notify(p, 4, 0);
+      this.down(p, 'hold timer expired');
+    });
+  }
+  armKeepalive(p) {
+    this.sim.cancel(p.ka);
+    const iv = Math.max(1, Math.floor((p.holdTime || this.timersCfg().hold) / 3)) * 1000;
+    p.ka = this.later(iv, () => { if (p.state !== 'Established') return; this.send(p, { type: 'KEEPALIVE' }); this.armKeepalive(p); });
+  }
+  down(p, why, retry = true) {
+    this.sim.cancel(p.hold); this.sim.cancel(p.ka);
+    const had = p.rx.size + p.rxEvpn.size;
+    p.rx.clear(); p.rxEvpn.clear(); p.out.clear(); p.outEvpn.clear(); p.sock = null; p.upSince = null;
+    this.setState(p, 'Idle', why);
+    if (had) this.rec('info', `withdraws the ${had} route${had === 1 ? '' : 's'} learned from ${p.ip}`, { tag: 'bgp-flush', data: { peer: p.ip } });
+    this.recompute();
+    if (retry) { this.sim.cancel(p.retry); p.retry = this.later(this.timersCfg().retry * 1000, () => this.connect(p)); }
+  }
+  reset(p, why, retry = true) { if (p.state === 'Established') this.notify(p, 6, 4); this.down(p, why, retry); }
+  clear(ip = '*') {
+    for (const p of this.peers.values()) if (ip === '*' || p.ip === ip) { this.reset(p, 'clear ip bgp'); this.later(200, () => this.connect(p)); }
+  }
+  onUpdate(p, m) {
+    const ebgp = this.ebgp(p.cfg);
+    for (const w of m.withdrawn || []) if (p.rx.delete(w)) this.rec('info', `${p.ip} withdraws ${w}`, { tag: 'bgp-withdraw-rx', data: { peer: p.ip, prefix: w } });
+    for (const e of m.evpnWithdrawn || []) if (p.rxEvpn.delete(e)) this.rec('info', `${p.ip} withdraws the EVPN route ${e}`, { tag: 'bgp-evpn-withdraw', data: { peer: p.ip, key: e } });
+    const a = m.attrs || {};
+    const add = [];
+    for (const n of m.nlri || []) {
+      if (ebgp && (a.asPath || []).includes(this.asn)) { this.rec('drop', `ignores ${n} from ${p.ip}: its AS path ${asPathText(a.asPath)} already contains AS ${this.asn} (loop)`, { tag: 'bgp-loop', data: { peer: p.ip, prefix: n } }); continue; }
+      if (a.originatorId === this.rid || (a.clusterList || []).includes(this.rid)) { this.rec('drop', `ignores ${n} from ${p.ip}: it was reflected back to its own origin (originator ID / cluster list)`, { tag: 'bgp-loop', data: { peer: p.ip, prefix: n } }); continue; }
+      p.rx.set(n, { ...a });
+      add.push(n);
+    }
+    for (const e of m.evpn || []) {
+      if (e.originatorId === this.rid) continue;
+      p.rxEvpn.set(e.key, { ...e, nextHop: e.nextHop ?? a.nextHop, asPath: a.asPath || [] });
+    }
+    if (add.length) this.rec('learn', `${p.ip} announces ${add.join(', ')}: AS path ${asPathText(a.asPath) || '(empty, from its own AS)'}, next hop ${a.nextHop}${a.localPref != null && !ebgp ? ', local pref ' + a.localPref : ''}${a.med != null ? ', MED ' + a.med : ''}`, { tag: 'bgp-update-rx', data: { peer: p.ip, prefixes: add, asPath: a.asPath, nextHop: a.nextHop } });
+    if (m.evpn?.length) this.rec('learn', `${p.ip} announces ${m.evpn.length} EVPN route${m.evpn.length === 1 ? '' : 's'}: ${m.evpn.map(e => e.rt === 2 ? `type 2 ${e.mac}${e.ip ? ' ' + e.ip : ''} VNI ${e.vni}` : `type 3 VNI ${e.vni} from ${e.nextHop ?? a.nextHop}`).join(', ')}`, { tag: 'bgp-evpn-rx', data: { peer: p.ip, count: m.evpn.length } });
+    this.recompute();
+  }
+
+  // ---- Routes
+  /** Routing table entries without BGP, to find out how to reach a next hop */
+  resolve(nh) {
+    let best = null;
+    for (const r of this.l3.routes(true)) {
+      if (r.proto === 'S' && !r.dev) continue;
+      if (!inNet(nh, r.net, r.len) || r.len === 0) continue;
+      if (!best || r.len > best.len) best = r;
+    }
+    return best ? { via: best.via || nh, dev: best.dev, metric: best.proto === 'O' ? best.metric || 0 : 0 } : null;
+  }
+  localPaths() {
+    const out = [];
+    const rib = this.l3.routes(true);
+    for (const s of this.cfg.networks || []) {
+      const c = parseCidr(s);
+      if (!c) continue;
+      const exists = rib.some(r => r.net === c.net && r.len === c.len && (r.proto !== 'S' || r.dev));
+      out.push({ prefix: pfx(c), from: 'local', local: true, valid: exists, why: exists ? '' : 'not in the routing table (network needs an exact match)', attrs: { origin: 'i', asPath: [], nextHop: '0.0.0.0', med: 0, localPref: 100 }, weight: 32768 });
+    }
+    if (this.cfg.redistributeConnected) for (const r of rib) if (r.proto === 'C' && !out.some(o => o.prefix === `${r.net}/${r.len}`)) out.push({ prefix: `${r.net}/${r.len}`, from: 'local', local: true, valid: true, attrs: { origin: '?', asPath: [], nextHop: '0.0.0.0', med: 0, localPref: 100 }, weight: 32768 });
+    return out;
+  }
+  /** Best path selection in the order of FRR; returns [winner first, reason] */
+  compare(a, b) {
+    if (a.weight !== b.weight) return [b.weight - a.weight, 'weight'];
+    const lp = x => x.attrs.localPref ?? 100;
+    if (lp(a) !== lp(b)) return [lp(b) - lp(a), 'local preference'];
+    if (a.local !== b.local) return [a.local ? -1 : 1, 'locally originated'];
+    if (a.attrs.asPath.length !== b.attrs.asPath.length) return [a.attrs.asPath.length - b.attrs.asPath.length, 'AS path length'];
+    const og = { i: 0, e: 1, '?': 2 };
+    if (og[a.attrs.origin] !== og[b.attrs.origin]) return [og[a.attrs.origin] - og[b.attrs.origin], 'origin'];
+    if (a.attrs.asPath[0] === b.attrs.asPath[0] && (a.attrs.med ?? 0) !== (b.attrs.med ?? 0)) return [(a.attrs.med ?? 0) - (b.attrs.med ?? 0), 'MED'];
+    if (a.ebgp !== b.ebgp) return [a.ebgp ? -1 : 1, 'eBGP over iBGP'];
+    if ((a.igp ?? 0) !== (b.igp ?? 0)) return [(a.igp ?? 0) - (b.igp ?? 0), 'IGP metric to the next hop'];
+    const ra = a.attrs.originatorId || a.rid || '', rb = b.attrs.originatorId || b.rid || '';
+    if (ra !== rb) return [ipCmp(ra, rb), 'router ID'];
+    return [ipCmp(a.from, b.from), 'neighbor address'];
+  }
+  paths() {
+    const all = this.localPaths();
+    for (const p of this.peers.values()) {
+      if (p.state !== 'Established') continue;
+      const ebgp = this.ebgp(p.cfg);
+      // Inbound policy is applied every time, so a change takes effect at once (like a route refresh)
+      const lp = p.cfg.localPref != null && p.cfg.localPref !== '' ? Number(p.cfg.localPref) : null;
+      for (const [prefix, raw] of p.rx) {
+        const attrs = { ...raw, localPref: lp ?? (ebgp ? 100 : raw.localPref ?? 100) };
+        const r = this.resolve(attrs.nextHop);
+        all.push({ prefix, from: p.ip, rid: p.remoteRid, ebgp, ibgp: !ebgp, attrs, weight: 0, valid: !!r, why: r ? '' : `next hop ${attrs.nextHop} is not reachable (inaccessible)`, igp: r?.metric ?? 0, nh: r });
+      }
+    }
+    return all;
+  }
+  recompute(force = false) {
+    if (!this.enabled) { this.best.clear(); return; }
+    const byPrefix = new Map();
+    for (const x of this.paths()) { if (!byPrefix.has(x.prefix)) byPrefix.set(x.prefix, []); byPrefix.get(x.prefix).push(x); }
+    const best = new Map();
+    for (const [prefix, list] of byPrefix) {
+      const valid = list.filter(x => x.valid);
+      let win = null, reason = '';
+      for (const x of valid) {
+        if (!win) { win = x; continue; }
+        const [d, why] = this.compare(x, win);
+        if (d < 0) { win = x; reason = why; } else if (!reason) reason = why;
+      }
+      for (const x of list) x.best = x === win;
+      if (win) win.reason = valid.length > 1 ? reason : 'only path';
+      best.set(prefix, { list, win });
+    }
+    const before = JSON.stringify([...this.best].map(([k, v]) => [k, v.win?.from, v.win?.attrs?.nextHop]));
+    this.best = best;
+    const after = JSON.stringify([...best].map(([k, v]) => [k, v.win?.from, v.win?.attrs?.nextHop]));
+    if (before !== after && !force) {
+      const n = [...best.values()].filter(v => v.win && !v.win.local).length;
+      this.rec('info', `BGP best paths recomputed: ${n} route${n === 1 ? '' : 's'} learned from neighbors in use`, { tag: 'bgp-best', data: { routes: n } });
+    }
+    this.dev.evpn?.recomputeBgp?.();
+    for (const p of this.peers.values()) if (p.state === 'Established') this.advertise(p);
+  }
+  /** What a neighbor gets: the rules for eBGP and iBGP, split horizon and route reflection */
+  outFor(p) {
+    const out = new Map();
+    const ebgp = this.ebgp(p.cfg), rr = this.isRR();
+    const local = p.sock?.local || this.localIp(p.cfg);
+    for (const [prefix, { win }] of this.best) {
+      if (!win) continue;
+      if (win.from === p.ip) continue;
+      if (win.ibgp && !ebgp) {
+        // iBGP split horizon: never pass an iBGP route to another iBGP neighbor, unless reflecting it
+        const fromClient = !!this.nbrs().find(n => n.ip === win.from)?.rrClient;
+        if (!rr || (!fromClient && !p.cfg.rrClient)) continue;
+      }
+      const a = win.attrs;
+      let attrs;
+      if (ebgp) {
+        const prep = Math.max(0, Number(p.cfg.prepend) || 0);
+        attrs = { origin: a.origin, asPath: [...Array(prep + 1).fill(this.asn), ...a.asPath], nextHop: local, ...(p.cfg.med !== '' && p.cfg.med != null ? { med: Number(p.cfg.med) } : {}) };
+      } else {
+        const self = win.local || p.cfg.nextHopSelf && win.ebgp;
+        attrs = { origin: a.origin, asPath: [...a.asPath], nextHop: self ? local : a.nextHop, localPref: a.localPref ?? 100, ...(a.med != null ? { med: a.med } : {}) };
+        if (win.ibgp && rr) { attrs.originatorId = a.originatorId || win.rid; attrs.clusterList = [this.rid, ...(a.clusterList || [])]; }
+      }
+      out.set(prefix, attrs);
+    }
+    return out;
+  }
+  advertise(p) {
+    const want = this.outFor(p);
+    const withdrawn = [...p.out.keys()].filter(k => !want.has(k));
+    const groups = new Map();
+    for (const [prefix, attrs] of want) {
+      const key = JSON.stringify(attrs);
+      if (p.out.get(prefix) === key) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(prefix);
+    }
+    for (const w of withdrawn) p.out.delete(w);
+    if (withdrawn.length) { this.send(p, { type: 'UPDATE', withdrawn, nlri: [], attrs: {} }); this.rec('info', `withdraws ${withdrawn.join(', ')} at ${p.ip}`, { tag: 'bgp-withdraw-sent', data: { peer: p.ip } }); }
+    for (const [key, list] of groups) {
+      const attrs = JSON.parse(key);
+      for (const x of list) p.out.set(x, key);
+      this.send(p, { type: 'UPDATE', withdrawn: [], nlri: list, attrs });
+      this.rec('info', `announces ${list.join(', ')} to ${p.ip}: AS path ${asPathText(attrs.asPath) || '(empty)'}, next hop ${attrs.nextHop}`, { tag: 'bgp-update-sent', data: { peer: p.ip, prefixes: list } });
+    }
+    this.advertiseEvpn(p);
+  }
+  /** EVPN routes, only when both sides announced the address family in their OPEN */
+  evpnOk(p) { return !!p.cfg.evpn && (p.remoteCaps || []).includes('L2VPN EVPN'); }
+  evpnOut(p) {
+    const out = new Map();
+    if (!this.evpnOk(p)) return out;
+    const local = p.sock?.local || this.localIp(p.cfg);
+    for (const r of this.dev.evpn?.localRoutes() || []) out.set(r.key, { ...r, nextHop: local });
+    const rr = this.isRR();
+    for (const q of this.peers.values()) {
+      if (q === p || q.state !== 'Established' || !this.evpnOk(q)) continue;
+      // The same reflection rules as for IPv4 routes
+      if (!rr || (!q.cfg.rrClient && !p.cfg.rrClient)) continue;
+      for (const [k, e] of q.rxEvpn) {
+        if (out.has(k) || (e.originatorId || q.remoteRid) === p.remoteRid) continue;
+        out.set(k, { ...e, originatorId: e.originatorId || q.remoteRid });
+      }
+    }
+    return out;
+  }
+  advertiseEvpn(p) {
+    const want = this.evpnOut(p);
+    const withdrawn = [...p.outEvpn.keys()].filter(k => !want.has(k));
+    const add = [];
+    for (const [k, e] of want) { const j = JSON.stringify(e); if (p.outEvpn.get(k) !== j) { add.push(e); p.outEvpn.set(k, j); } }
+    for (const k of withdrawn) p.outEvpn.delete(k);
+    if (!add.length && !withdrawn.length) return;
+    this.send(p, { type: 'UPDATE', withdrawn: [], nlri: [], evpn: add, evpnWithdrawn: withdrawn, attrs: { origin: 'i', asPath: [], nextHop: add[0]?.nextHop || p.sock?.local, localPref: 100 } });
+    if (add.length) this.rec('info', `announces ${add.length} EVPN route${add.length === 1 ? '' : 's'} to ${p.ip}: ${add.map(e => e.rt === 2 ? `type 2 ${e.mac}` : `type 3 VNI ${e.vni}`).join(', ')}`, { tag: 'bgp-evpn-sent', data: { peer: p.ip, count: add.length } });
+  }
+  /** Routes for the routing table: the best path of every prefix learned from a neighbor */
+  routes() {
+    if (!this.enabled) return [];
+    const out = [];
+    for (const [prefix, { win }] of this.best) {
+      if (!win || win.local || !win.valid) continue;
+      const nh = this.resolve(win.attrs.nextHop);
+      if (!nh) continue;
+      const c = parseCidr(prefix);
+      out.push({ net: c.net, len: c.len, via: nh.via, dev: nh.dev, proto: 'B', ibgp: win.ibgp, metric: win.attrs.med ?? 0, bgpNh: win.attrs.nextHop, asPath: win.attrs.asPath });
+    }
+    return out;
+  }
+  summary() {
+    return [...this.peers.values()].map(p => ({ ip: p.ip, as: Number(p.cfg.remoteAs), state: p.state, up: p.upSince === null ? null : Math.round((this.sim.time - p.upSince) / 1000),
+      pfx: p.rx.size, evpn: p.rxEvpn.size, msgsIn: p.msgsIn, msgsOut: p.msgsOut, type: this.ebgp(p.cfg) ? 'eBGP' : 'iBGP', error: p.lastError }));
+  }
+  table() {
+    const rows = [];
+    for (const [prefix, { list }] of [...this.best].sort((a, b) => ipCmp(a[0].split('/')[0], b[0].split('/')[0]))) {
+      for (const x of list.sort((a, b) => (b.best - a.best))) rows.push({ prefix, best: x.best, valid: x.valid, ibgp: !!x.ibgp, nextHop: x.attrs.nextHop, med: x.attrs.med ?? 0, localPref: x.local || x.ibgp ? x.attrs.localPref ?? 100 : null, weight: x.weight, asPath: x.attrs.asPath, origin: x.attrs.origin, from: x.from, why: x.why, reason: x.reason });
+    }
+    return rows;
+  }
+}
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js"
   cat > "$W/js/challenges.js" <<'__PACKETPILOT_FILE_END__'
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo, ipv6Topo, vpnTopo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo, ipv6Topo, vpnTopo, bgpPairTopo, ibgpTopo, bgpMultiTopo, evpnTopo } from './presets.js';
 import { macFor } from './net.js';
 import { wgPubKey, wgGenKey } from './vpn.js';
 
@@ -1373,6 +1841,55 @@ export const CHALLENGES = [
     hints: ['wg show on both gateways: is there a latest handshake?', 'Read the log of the gateways: WireGuard drops silently, but the simulator tells you why.', 'Compare the keys: the public key gwA shows for itself must be the one gwB has for gwA, and the other way round.'],
     presets: { pcA: ['ping -c 2 10.2.0.10', 'traceroute 10.2.0.10'], gwA: ['wg show', 'ip route'], gwB: ['wg show', 'ip route'], isp: ['ip route'] } },
 
+  { id: 'bgpebgp', level: 1, title: 'The partner network stays invisible', topics: ['BGP', 'eBGP'],
+    symptom: '<p>AS 65001 (r1) and the partner AS 65002 (r2) want to exchange their networks with BGP. pc1 still cannot reach the server srv2 (10.2.0.10) in the partner network.</p>',
+    topo: () => bgpPairTopo(),
+    variants: [
+      { fault: t => { dev(t, 'r2').bgp.neighbors[0].remoteAs = 65003; }, cause: 'r2 expected its neighbor in AS 65003. r1 announced AS 65001 in its OPEN, r2 answered with a NOTIFICATION "Bad Peer AS" and closed the session, again and again.' },
+      { fault: t => { dev(t, 'r2').bgp.neighbors[0].ip = '10.0.12.5'; }, cause: 'r2 had 10.0.12.5 as its neighbor instead of 10.0.12.1. It refused the connection of r1, which came from an address it did not know.' },
+      { fault: t => { dev(t, 'r2').bgp.networks = ['10.2.0.0/16']; }, cause: 'r2 announced 10.2.0.0/16, but only 10.2.0.0/24 is in its routing table. A network statement needs an exact match, so r2 announced nothing at all. The session was up the whole time.' },
+      { fault: t => { dev(t, 'r1').bgp.neighbors[0].ip = '10.2.0.1'; }, cause: 'r1 had the LAN address of r2 (10.2.0.1) as its neighbor. That address is not directly connected, and eBGP only talks to directly connected neighbors unless ebgp-multihop is set.' }],
+    goals: [{ text: 'pc1 pings srv2 (10.2.0.10).', check: pingAfterStart('pc1', '10.2.0.10') }],
+    hints: ['show ip bgp summary on both routers: which state, and what does the last error say?', 'If the session is Established: show ip bgp. Which networks are announced?'],
+    presets: { pc1: ['ping -c 2 10.2.0.10'], r1: ['show ip bgp summary', 'show ip bgp'], r2: ['show ip bgp summary', 'show ip bgp'] } },
+
+  { id: 'bgpibgp', level: 2, title: 'The branch has no internet', topics: ['BGP', 'iBGP', 'OSPF'],
+    symptom: '<p>In AS 65001, r1 is connected to the provider. Behind r3, pc3 cannot reach the web server 198.51.100.80 on the internet. OSPF inside the AS is up.</p>',
+    topo: () => ibgpTopo(),
+    variants: [
+      { fault: t => { for (const n of dev(t, 'r1').bgp.neighbors) n.nextHopSelf = false; }, cause: 'r1 passed the provider routes on without next-hop-self. r3 got the next hop 192.0.2.1, which OSPF does not know: the route was inaccessible.' },
+      { fault: t => { dev(t, 'r3').bgp.neighbors.find(n => n.ip === '10.255.0.1').updateSource = ''; dev(t, 'r2').bgp.neighbors.find(n => n.ip === '10.255.0.3').ip = '10.255.0.33'; }, cause: 'r3 opened its iBGP session to r1 from its interface address instead of its loopback (update-source missing), so r1 refused it. And r2 had a typo in the address of r3, so r3 had no second way to learn the routes.' },
+      { fault: t => { dev(t, 'r3').bgp.networks = []; }, cause: 'r3 did not announce its network 10.3.0.0/24. The requests reached the web server, but the provider had no route back to pc3.' },
+      { fault: t => { delete dev(t, 'r1').ospf.ifaces.lo; }, cause: 'r1 did not put its loopback 10.255.0.1 into OSPF. The other routers had no route to it, so no iBGP session to r1 could come up.' },
+      { fault: t => { dev(t, 'isp').bgp.neighbors[0].remoteAs = 65002; }, cause: 'The provider had AS 65002 configured for us instead of 65001. Its NOTIFICATION "Bad Peer AS" closed the eBGP session, so no internet route ever reached AS 65001.' }],
+    goals: [{ text: 'pc3 pings the web server 198.51.100.80.', check: pingAfterStart('pc3', '198.51.100.80') }],
+    hints: ['Follow the routes: does r1 have 198.51.100.0/24? Does r3? Does the provider know 10.3.0.0/24?', 'show ip bgp on r3 tells you whether a route is there but inaccessible.', 'iBGP sessions run between the loopbacks: are they reachable via OSPF, and do the sessions start from them?'],
+    presets: { pc3: ['ping -c 2 198.51.100.80', 'traceroute 198.51.100.80'], r1: ['show ip bgp summary', 'show ip bgp'], r3: ['show ip bgp summary', 'show ip bgp', 'show ip route'], isp: ['show ip bgp summary', 'show ip bgp'] } },
+
+  { id: 'bgppolicy', level: 3, title: 'Everything leaves through the expensive provider', topics: ['BGP', 'Local preference', 'Policy'],
+    symptom: '<p>Our AS 65001 has two providers. Provider 2 (at r3) is much cheaper, and all outgoing traffic is supposed to use it. A traceroute from pc2 to the web server 198.51.100.80 still goes through r1 and provider 1.</p>',
+    topo: () => bgpMultiTopo(),
+    variants: [
+      { fault: () => {}, cause: 'Nobody had set a policy. With equal local preference, the shorter AS path via provider 1 won. Local preference 200 on r3 for the routes of provider 2 changes that for the whole AS.' },
+      { fault: t => { dev(t, 'r3').bgp.neighbors.find(n => n.ip === '10.255.0.2').localPref = 200; }, cause: 'The local preference 200 was set on the iBGP neighbor r2, not on provider 2 (192.0.2.5). It changed nothing, because r2 does not send r3 any provider route.' },
+      { fault: t => { dev(t, 'r3').bgp.neighbors.find(n => n.ip === '192.0.2.5').localPref = 200; dev(t, 'r1').bgp.neighbors.find(n => n.ip === '192.0.2.1').localPref = 300; }, cause: 'r3 had local preference 200 for provider 2, but somebody had set 300 on r1 for provider 1 earlier. The highest value wins in the whole AS.' }],
+    goals: [{ text: 'A traceroute from pc2 to 198.51.100.80 goes through r3 (10.0.23.3).', check: sim => sim.log.some(e => e.dev === 'pc2' && e.tag === 'trace-done' && e.data.reached && e.data.path.includes('10.0.23.3')) }],
+    hints: ['show ip bgp 198.51.100.0/24 on r2 shows both paths and why one is the best.', 'Local preference is set per neighbor, for the routes received from it. Check all neighbors of r1 and r3.'],
+    presets: { pc2: ['traceroute 198.51.100.80'], r2: ['show ip bgp 198.51.100.0/24'], r1: ['show ip bgp 198.51.100.0/24'], r3: ['show ip bgp 198.51.100.0/24'] } },
+
+  { id: 'evpn', level: 3, title: 'The new rack stays alone', topics: ['EVPN', 'BGP', 'VXLAN'],
+    symptom: '<p>A new rack with vtep3 was added to the EVPN fabric yesterday. srv1 and srv2 reach each other in VNI 10010, but nobody reaches srv3 (192.168.10.13).</p>',
+    topo: () => evpnTopo(),
+    variants: [
+      { fault: t => { dev(t, 'vtep3').vxlans[0].vni = 10030; }, cause: 'vtep3 put its servers into VNI 10030 instead of 10010. Its type 3 route was for a VNI nobody else had, so the other VTEPs ignored it.' },
+      { fault: t => { for (const n of dev(t, 'spine').bgp.neighbors) n.rrClient = false; }, cause: 'The spine was not a route reflector. Over iBGP it did not pass the routes of one VTEP on to the others (iBGP split horizon), so no VTEP learned about any other.' },
+      { fault: t => { dev(t, 'spine').bgp.neighbors.find(n => n.ip === '10.255.0.3').evpn = false; }, cause: 'The spine had not activated the EVPN address family towards vtep3. The session was up, but only IPv4 routes were exchanged with it.' },
+      { fault: t => { dev(t, 'vtep3').routes = []; }, cause: 'vtep3 had no underlay route to the loopback of the spine. Its BGP session could never come up.' },
+      { fault: t => { dev(t, 'vtep3').vxlans[0].evpn = false; }, cause: 'The segment on vtep3 was not marked for EVPN. vtep3 had BGP, but announced no type 3 route and used an empty static flood list.' }],
+    goals: [{ text: 'srv1 pings srv3 (192.168.10.13).', check: pingAfterStart('srv1', '192.168.10.13') }, { text: 'srv2 pings srv3.', check: pingAfterStart('srv2', '192.168.10.13') }],
+    hints: ['show ip bgp summary on vtep3 and on the spine: are the sessions up, and how many EVPN routes come in?', 'show vxlan on vtep1: is 10.255.0.3 in the flood list? show bgp l2vpn evpn shows which type 3 routes exist.'],
+    presets: { srv1: ['ping -c 2 192.168.10.13'], vtep1: ['show vxlan', 'show bgp l2vpn evpn'], vtep3: ['show ip bgp summary', 'show vxlan', 'ip route'], spine: ['show ip bgp summary'] } },
+
   { id: 'ospf', level: 2, title: 'One site is missing from the map', topics: ['OSPF'],
     symptom: '<p>Three sites run OSPF. pc1 cannot reach the server srv3 at site 3.</p>',
     topo: () => ospfTopo(),
@@ -1475,6 +1992,8 @@ export function helpFor(dev) {
   if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
   if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)', 'rdisc6 [eth1]         ask the routers for their advertisement (IPv6)');
   if (dev.type === 'router') l.push('show ipv6 route / show ipv6 neighbors   IPv6 state in FRR style');
+  if (dev.bgp) l.push('show ip bgp summary   BGP neighbors, states, prefixes', 'show ip bgp [prefix]  BGP table: all paths, the best marked with >',
+    'show ip bgp neighbors <ip> advertised-routes | received-routes', 'clear ip bgp * | <ip>   reset BGP sessions');
   if (dev.wg) l.push('wg show               WireGuard: keys, peers, endpoints, latest handshake', 'wg genkey / wg pubkey <key>   make a key pair');
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
   if (dev.type === 'switch') l.push('show spanning-tree    STP status: root, roles, states',
@@ -1483,7 +2002,7 @@ export function helpFor(dev) {
     'spanning-tree priority <0-61440>   bridge priority (multiples of 4096)',
     'spanning-tree portfast <port> on|off   port as edge port',
     'spanning-tree cost <port> <cost>       port cost');
-  if (dev.type === 'vtep') l.push('show vxlan            VXLAN segments, flood lists, MTU');
+  if (dev.type === 'vtep') l.push('show vxlan            VXLAN segments, flood lists, MTU', 'show evpn [mac]       EVPN: remote VTEPs per VNI, MAC table', 'show bgp l2vpn evpn   EVPN routes (type 2 and type 3)');
   l.push('clear                 clear the console');
   return l;
 }
@@ -1883,8 +2402,8 @@ export function runCommand(dev, line) {
       return;
     }
     if (p[0] === 'show' && p[1] === 'ip' && p[2] === 'route' && dev.l3) {
-      say('Codes: C - connected, S - static, O - OSPF, > - selected route, * - FIB route');
-      const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, O: 110 }[r.proto];
+      say('Codes: C - connected, S - static, O - OSPF, B - BGP, W - WireGuard, > - selected route, * - FIB route');
+      const ad = r => r.proto === 'S' ? r.distance || 1 : r.proto === 'B' ? (r.ibgp ? 200 : 20) : { C: 0, O: 110, W: 0 }[r.proto];
       const all = dev.l3.routes();
       const sel = r => !!r.dev && !all.some(x => x !== r && x.dev && x.net === r.net && x.len === r.len && (ad(x) < ad(r) || (ad(x) === ad(r) && (x.metric || 0) < (r.metric || 0))));
       let prev = null;
@@ -1895,10 +2414,18 @@ export function runCommand(dev, line) {
         const lead = more ? `  ${sel(r) ? '*' : ' '} ${' '.repeat(`${r.net}/${r.len}`.length + (r.proto === 'O' ? 9 : 6))}` : null;
         if (r.proto === 'C') say(`C${mark} ${r.net}/${r.len} is directly connected, ${r.dev}`);
         else if (r.proto === 'O') say(more ? `${lead}via ${r.via}, ${r.dev}` : `O${mark} ${r.net}/${r.len} [110/${r.metric}] via ${r.via}, ${r.dev}`);
+        else if (r.proto === 'B') say(`B${mark} ${r.net}/${r.len} [${r.ibgp ? 200 : 20}/${r.metric || 0}] via ${r.bgpNh}${r.bgpNh !== r.via ? ` (recursive via ${r.via})` : ''}, ${r.dev}${r.ibgp ? '  (iBGP)' : ''}`);
+        else if (r.proto === 'W') say(`W${mark} ${r.net}/${r.len} is directly connected, wg0 (peer ${r.peer || '?'})`);
         else say(more ? `${lead}via ${r.via}${r.dev ? ', ' + r.dev : ' inactive'}` : `S${mark} ${r.net}/${r.len} [${r.distance || 1}/0] via ${r.via}${r.dev ? ', ' + r.dev : r.bfdDown ? ' inactive (BFD down)' : ' inactive'}`);
         prev = r;
       }
       return;
+    }
+    if (p[0] === 'show' && (p[1] === 'bgp' || (p[1] === 'ip' && p[2] === 'bgp')) && dev.bgp) return showBgp(dev, p[1] === 'ip' ? p.slice(3) : p.slice(2), say);
+    if (p[0] === 'clear' && (p[1] === 'bgp' || (p[1] === 'ip' && p[2] === 'bgp')) && dev.bgp) {
+      const t = (p[1] === 'ip' ? p[3] : p[2]) || '*';
+      if (t !== '*' && !dev.bgp.peers.has(t)) return say(`% No such neighbor ${t}`);
+      dev.bgp.clear(t); return say(`BGP session${t === '*' ? 's' : ' ' + t} reset`);
     }
     if (p[0] === 'show' && p[1] === 'bfd' && dev.bfd) {
       const t = dev.bfd.table();
@@ -1938,7 +2465,19 @@ export function runCommand(dev, line) {
     if (p[0] === 'show' && p[1] === 'vxlan' && dev.type === 'vtep') {
       const ms = dev.maps();
       if (!ms.length) return say('(no VXLAN segments)');
-      for (const m of ms) say(`vxlan${m.vni}: VNI ${m.vni} ↔ VLAN ${m.vlan}, local ${dev.localIp()}, dstport ${m.dstport || 4789}, mtu ${dev.vxlanMtu(m)}, flood ${(m.flood || []).join(', ') || '(empty)'}`);
+      for (const m of ms) say(`vxlan${m.vni}: VNI ${m.vni} ↔ VLAN ${m.vlan}, local ${dev.localIp()}, dstport ${m.dstport || 4789}, mtu ${dev.vxlanMtu(m)}, flood ${dev.evpn.floodList(m).join(', ') || '(empty)'}${m.evpn ? ' (EVPN' + (m.arpSuppress ? ', ARP suppression' : '') + ')' : ''}`);
+      return;
+    }
+    if (p[0] === 'show' && p[1] === 'evpn' && dev.type === 'vtep') {
+      const e = dev.evpn;
+      if (!e.on()) return say('EVPN is not active: turn on BGP and mark the VXLAN segments as EVPN');
+      if (p[2] === 'mac') {
+        say(`${pad('VNI', 8)}${pad('MAC', 20)}${pad('Type', 8)}${pad('Where', 18)}IP`);
+        for (const r of e.localRoutes().filter(x => x.rt === 2)) say(`${pad(r.vni, 8)}${pad(r.mac, 20)}${pad('local', 8)}${pad('this VTEP', 18)}${r.ip || ''}`);
+        for (const r of e.macs.values()) say(`${pad(r.vni, 8)}${pad(r.mac, 20)}${pad('remote', 8)}${pad(r.vtep, 18)}${r.ip || ''}`);
+        return;
+      }
+      for (const m of e.maps()) say(`VNI ${m.vni}  VLAN ${m.vlan}  remote VTEPs: ${[...(e.vteps.get(Number(m.vni)) || [])].join(', ') || 'none'}  MACs: ${[...e.macs.values()].filter(x => Number(x.vni) === Number(m.vni)).length} remote`);
       return;
     }
     say(`Unknown command: ${p[0]}. Type help for an overview.`);
@@ -2041,6 +2580,90 @@ function ip6Command(dev, p, say) {
   }
   return say('Unknown ip -6 command. Try ip -6 addr, ip -6 route, ip -6 neigh.');
 }
+
+// ---------------------------------------------------------------- BGP (FRR style)
+const hms = s => s === null ? 'never' : [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(x => String(x).padStart(2, '0')).join(':');
+function showBgp(dev, args, say) {
+  const b = dev.bgp;
+  if (!b.enabled) return say('% BGP instance not found (Configuration, Add a feature, BGP)');
+  if (args[0] === 'l2vpn' || args[0] === 'evpn') return showEvpn(dev, say);
+  if (args[0] === 'summary' || (args[0] === 'ipv4' && args[2] === 'summary')) {
+    say(`BGP router identifier ${b.rid}, local AS number ${b.asn}`);
+    const rows = b.summary();
+    say(`RIB entries ${b.best.size}, peers ${rows.length}`);
+    say('');
+    say(`${pad('Neighbor', 16)}V ${pad('AS', 8)}${pad('MsgRcvd', 9)}${pad('MsgSent', 9)}${pad('Up/Down', 10)}State/PfxRcd`);
+    for (const r of rows) say(`${pad(r.ip, 16)}4 ${pad(r.as, 8)}${pad(r.msgsIn, 9)}${pad(r.msgsOut, 9)}${pad(hms(r.up), 10)}${r.state === 'Established' ? r.pfx + (r.evpn ? ` (+${r.evpn} EVPN)` : '') : r.state}`);
+    for (const r of rows) if (r.state !== 'Established' && r.error) say(`  ${r.ip}: ${r.error}`);
+    return;
+  }
+  if (args[0] === 'neighbors' || args[0] === 'neighbor') {
+    const ip = args[1], what = args[2];
+    const p = ip && b.peers.get(ip);
+    if (!p) {
+      for (const r of b.summary()) say(`BGP neighbor is ${r.ip}, remote AS ${r.as}, ${r.type === 'iBGP' ? 'internal' : 'external'} link\n  BGP state = ${r.state}${r.up !== null ? ', up for ' + hms(r.up) : ''}${r.error ? '\n  Last error: ' + r.error : ''}`);
+      return;
+    }
+    if (what === 'advertised-routes' || what === 'received-routes' || what === 'routes') {
+      const list = what === 'advertised-routes' ? [...p.out].map(([k, v]) => [k, JSON.parse(v)]) : [...p.rx];
+      if (!list.length) return say('(none)');
+      say(`   ${pad('Network', 19)}${pad('Next Hop', 17)}${pad('Metric', 7)}${pad('LocPrf', 7)}Path`);
+      for (const [k, a] of list) say(`   ${pad(k, 19)}${pad(a.nextHop, 17)}${pad(a.med ?? '', 7)}${pad(a.localPref ?? '', 7)}${[...(a.asPath || []), a.origin || 'i'].join(' ')}`);
+      return;
+    }
+    const r = b.summary().find(x => x.ip === ip);
+    say(`BGP neighbor is ${ip}, remote AS ${r.as}, local AS ${b.asn}, ${r.type === 'iBGP' ? 'internal' : 'external'} link`);
+    say(`  BGP version 4, remote router ID ${p.remoteRid || '0.0.0.0'}`);
+    say(`  BGP state = ${r.state}${r.up !== null ? ', up for ' + hms(r.up) : ''}`);
+    say(`  Hold time is ${p.holdTime || b.timersCfg().hold}, keepalive interval is ${Math.floor((p.holdTime || b.timersCfg().hold) / 3)} seconds`);
+    say(`  Messages: ${r.msgsIn} received, ${r.msgsOut} sent. Prefixes received: ${r.pfx}`);
+    if (p.cfg.updateSource) say(`  Update source is ${p.cfg.updateSource}`);
+    if (p.cfg.nextHopSelf) say('  NEXT_HOP is always this router (next-hop-self)');
+    if (p.cfg.rrClient) say('  Route-Reflector Client');
+    if (p.sock) say(`  Local host: ${p.sock.local}, Local port: ${p.sock.lport}\n  Foreign host: ${ip}, Foreign port: ${p.sock.rport}`);
+    if (r.error) say(`  Last reset: ${r.error}`);
+    return;
+  }
+  const filter = args.find(a => /\d+\.\d+\.\d+\.\d+/.test(a));
+  const rows = b.table().filter(r => !filter || r.prefix === filter || r.prefix.split('/')[0] === filter);
+  if (filter) {
+    if (!rows.length) return say('% Network not in table');
+    say(`BGP routing table entry for ${rows[0].prefix}`);
+    say(`Paths: (${rows.length} available${rows.some(r => r.best) ? ', best #' + (rows.findIndex(r => r.best) + 1) : ', no best path'})`);
+    for (const r of rows) {
+      say(`  ${r.asPath.length ? r.asPath.join(' ') : 'Local'}${r.ibgp ? '' : ''}`);
+      say(`    ${r.nextHop} ${r.valid ? '' : '(inaccessible) '}from ${r.from === 'local' ? '0.0.0.0' : r.from}`);
+      say(`      Origin ${{ i: 'IGP', e: 'EGP', '?': 'incomplete' }[r.origin]}, metric ${r.med}${r.localPref !== null ? ', localpref ' + r.localPref : ''}, weight ${r.weight}, ${r.valid ? 'valid' : 'invalid'}, ${r.from === 'local' ? 'sourced' : r.ibgp ? 'internal' : 'external'}${r.best ? ', best (' + r.reason + ')' : ''}`);
+      if (!r.valid && r.why) say(`      Not usable: ${r.why}`);
+    }
+    return;
+  }
+  say(`BGP table version is ${b.best.size}, local router ID is ${b.rid}, vrf id 0`);
+  say('Status codes:  * valid, > best, i internal');
+  say('Origin codes:  i - IGP, e - EGP, ? - incomplete');
+  say('');
+  say(`   ${pad('Network', 19)}${pad('Next Hop', 17)}${pad('Metric', 7)}${pad('LocPrf', 7)}${pad('Weight', 7)}Path`);
+  let last = null;
+  for (const r of rows) {
+    const code = `${r.valid ? '*' : ' '}${r.best ? '>' : ' '}${r.ibgp ? 'i' : ' '}`;
+    say(`${code}${pad(r.prefix === last ? '' : r.prefix, 19)}${pad(r.nextHop, 17)}${pad(r.med, 7)}${pad(r.localPref ?? '', 7)}${pad(r.weight, 7)}${[...r.asPath, r.origin].join(' ')}${r.valid ? '' : '  (' + (r.why || 'invalid') + ')'}`);
+    last = r.prefix;
+  }
+  say('');
+  say(`Displayed ${new Set(rows.map(r => r.prefix)).size} routes and ${rows.length} total paths`);
+}
+function showEvpn(dev, say) {
+  const e = dev.evpn;
+  if (!e) return say('% EVPN is not active on this device');
+  const rows = e.bgpTable();
+  if (!rows.length) return say('(no EVPN routes)');
+  say('Route types: [2]:[VNI]:[MAC]:[IP] MAC/IP advertisement, [3]:[VNI]:[VTEP] inclusive multicast');
+  say('');
+  for (const r of rows) {
+    say(`*> ${r.rt === 2 ? `[2]:[${r.vni}]:[${r.mac}]${r.ip ? ':[' + r.ip + ']' : ''}` : `[3]:[${r.vni}]:[${r.nextHop}]`}`);
+    say(`      VTEP ${r.nextHop}, ${r.from === 'local' ? 'local' : 'from ' + r.from}`);
+  }
+}
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js/course"
   cat > "$W/js/course/helpers.js" <<'__PACKETPILOT_FILE_END__'
@@ -2088,11 +2711,12 @@ import m10 from './m10.js';
 import m11 from './m11.js';
 import m12 from './m12.js';
 import m13 from './m13.js';
+import m14 from './m14.js';
+import m15 from './m15.js';
 
 // Display order: all of layer 2, then layer 3, VLAN/VXLAN, transport, then the network services
-export const MODULES = [m1, m4, m2, m12, m3, m5, m11, m6, m7, m8, m9, m10, m13];
+export const MODULES = [m1, m4, m2, m12, m3, m5, m11, m6, m7, m8, m9, m10, m14, m15, m13];
 export const UPCOMING = [
-  { title: 'BGP and EVPN', text: 'Routing between networks and a real control plane for VXLAN.' }
 ]
 export function findLesson(id) {
   for (const m of MODULES) {
@@ -2869,6 +3493,229 @@ ${note('The most common IPsec problem is a mismatch: one side proposes AES-256 w
         { q: 'Which ports and protocols does a firewall have to allow for IPsec with NAT traversal?', options: ['TCP 443', 'UDP 500, UDP 4500 and IP protocol 50', 'UDP 51820', 'Only ICMP'], correct: 1 },
         { q: 'What is the SPI in an ESP packet for?', options: ['Encryption', 'It tells the receiver which security association (keys) to use', 'Routing', 'Compression'], correct: 1 },
         { q: 'Two gateways connect two office networks. Which IPsec mode do they use?', options: ['Transport', 'Tunnel'], correct: 1 }] }
+    ] }
+  ]
+};
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/course"
+  cat > "$W/js/course/m14.js" <<'__PACKETPILOT_FILE_END__'
+import { note, tag, inspected, pingOk } from './helpers.js';
+import { bgpPairTopo, ibgpTopo, bgpMultiTopo } from '../presets.js';
+import { macFor } from '../net.js';
+const M = (id, port) => macFor(id + '/' + port);
+
+const isUpdate = f => f.type === 'ipv4' && f.payload.l4?.bgp?.type === 'UPDATE' && f.payload.l4.bgp.nlri?.length > 0;
+const failed = (from, to) => tag(from, 'ping-done', d => d.dst === to && d.received === 0);
+const up = (dev, peer) => tag(dev, 'bgp-state', d => d.peer === peer && d.state === 'Established');
+const traceVia = (from, hop) => tag(from, 'trace-done', d => (d.path || []).includes(hop) && d.reached);
+
+export default {
+  id: 'm14', title: 'BGP: routing between networks', bands: ['tcp', 'rt'],
+  text: 'How the internet routes between tens of thousands of networks: autonomous systems, eBGP and iBGP, the next hop, route reflectors and policy with local preference and AS path prepending.',
+  lessons: [
+    { id: 'm14-l1', title: 'Autonomous systems and eBGP', minutes: 15, steps: [
+      { type: 'theory', title: 'The protocol of the internet', html: `
+<p>OSPF finds the shortest path inside one network you control. Between networks of different owners that is the wrong question: a provider does not want to carry the traffic of a competitor, a company with two providers wants to decide which one it uses. And the internet has about a million prefixes. This is the job of <b>BGP</b> (Border Gateway Protocol).</p>
+<h2>Autonomous systems</h2>
+<p>Every network under one administration is an <b>autonomous system</b> (AS) with a number: 3303 Swisscom, 13335 Cloudflare. Private AS numbers 64512 to 65534 are free for internal use, like 10.0.0.0/8 for addresses.</p>
+<table><tr><th>Session</th><th>Between</th><th>Example</th></tr>
+<tr><td><b>eBGP</b> (external)</td><td>routers in different ASes</td><td>your edge router and your provider</td></tr>
+<tr><td><b>iBGP</b> (internal)</td><td>routers in the same AS</td><td>your two edge routers, to share what they learned</td></tr></table>
+<h2>A path vector protocol</h2>
+<p>BGP does not count hops or costs. Every route carries the list of ASes it passed, the <b>AS_PATH</b>. Each router that passes a route to an eBGP neighbor puts its own AS in front. A router that finds its own AS in a path drops it: that is the loop protection. All else equal, the shortest AS path wins.</p>
+<pre>10.2.0.0/24   AS_PATH 65002          learned directly from AS 65002
+10.2.0.0/24   AS_PATH 65100 65002    the same network, one AS further away</pre>
+<h2>Sessions over TCP</h2>
+<p>BGP runs over <b>TCP port 179</b>: reliable, ordered, no own retransmission needed. Neighbors are configured by hand, there is no discovery. Four messages:</p>
+<table><tr><th>Message</th><th>Content</th></tr>
+<tr><td>OPEN</td><td>my AS, router ID, hold time, capabilities</td></tr>
+<tr><td>KEEPALIVE</td><td>"still here", every hold time / 3</td></tr>
+<tr><td>UPDATE</td><td>new networks with their attributes, or withdrawn networks</td></tr>
+<tr><td>NOTIFICATION</td><td>an error, then the session closes</td></tr></table>
+<p>The states of a session: <b>Idle</b> → <b>Connect</b> (TCP is being opened) or <b>Active</b> (waiting for the neighbor) → <b>OpenSent</b> → <b>OpenConfirm</b> → <b>Established</b>. Only in Established are routes exchanged.</p>
+${note('BGP announces a network only if it is in the own routing table with exactly that prefix: <code>network 10.1.0.0/24</code> does nothing if the router only knows 10.1.0.0/16.')}` },
+      { type: 'stack', title: 'A session comes up', hint: 'From the first packet to the first route. The top is the first message.',
+        items: [{ name: 'r1 → r2: TCP SYN to port 179', kind: 'tcp' }, { name: 'r2 → r1: SYN, ACK', kind: 'tcp' }, { name: 'r1 → r2: ACK', kind: 'tcp' },
+          { name: 'r1 → r2: OPEN (AS 65001)', kind: 'rt' }, { name: 'r2 → r1: OPEN (AS 65002)', kind: 'rt' }, { name: 'r1 → r2: KEEPALIVE', kind: 'rt' },
+          { name: 'r2 → r1: KEEPALIVE, both Established', kind: 'rt' }, { name: 'UPDATE: 10.1.0.0/24, AS_PATH 65001', kind: 'rt' }],
+        explain: 'First TCP, then the OPENs, each confirmed with a KEEPALIVE. Only then do the UPDATEs carry the networks.' },
+      { type: 'build', title: 'Build the OPEN of r1', blocks: ['eth', 'ip', 'icmp', 'udp', 'tcp', 'bgp', 'data'],
+        task: '<p>r1 (AS 65001, 10.0.12.1 on eth2) has opened the TCP connection to its eBGP neighbor r2 (10.0.12.2, AS 65002). Build the frame with the OPEN message r1 sends next.</p>',
+        addresses: { mac: [[M('r1', 'eth2'), 'r1 eth2'], [M('r2', 'eth1'), 'r2 eth1'], [M('r1', 'eth1'), 'r1 eth1 (LAN)']], ip: [['10.0.12.1', 'r1 eth2'], ['10.0.12.2', 'r2 eth1'], ['10.1.0.1', 'r1 LAN'], ['10.2.0.1', 'r2 LAN']] },
+        expected: [
+          { block: 'eth', fields: { dst: M('r2', 'eth1'), src: M('r1', 'eth2'), type: '0x0800' } },
+          { block: 'ip', fields: { src: '10.0.12.1', dst: '10.0.12.2', proto: '6', ttl: '1' } },
+          { block: 'tcp', fields: { sport: { range: [1024, 65535] }, dport: '179', flags: 'PSH,ACK' } },
+          { block: 'bgp', fields: { type: 'OPEN' } }],
+        explain: 'eBGP sends with TTL 1: the neighbor must be directly connected, a packet from further away would never arrive. r1 opened the connection, so it uses an ephemeral source port and the destination port 179.' },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'Which port does BGP use?', input: ['179', 'tcp 179'] },
+        { q: 'r3 in AS 65003 receives 10.9.0.0/24 with AS_PATH 65002 65003 65001. What does it do?', options: ['Install it', 'Drop it: its own AS is in the path (loop)', 'Shorten the path', 'Send a NOTIFICATION'], correct: 1 },
+        { q: 'A session stays in "Active". What does that mean?', options: ['Everything is fine', 'The router waits for the TCP connection of its neighbor, it is not up', 'Routes are being exchanged', 'The neighbor sent an error'], correct: 1,
+          explain: 'Active sounds good, but it means: not established yet. Only Established exchanges routes.' },
+        { q: 'Why does the internet use BGP and not OSPF between providers?', options: ['BGP is faster', 'Each AS decides with policy which routes it takes and passes on; OSPF only knows shortest paths in one network', 'OSPF cannot do IPv4', 'BGP needs no configuration'], correct: 1 }] }
+    ] },
+
+    { id: 'm14-l2', title: 'eBGP in the lab', minutes: 18, steps: [
+      { type: 'lab', title: 'Two companies exchange their networks', topo: () => bgpPairTopo({ r2: false }), edit: 'config',
+        intro: '<p>r1 belongs to AS 65001 and is configured: neighbor 10.0.12.2 in AS 65002, network 10.1.0.0/24. On r2 (AS 65002), BGP is still off.</p>',
+        presets: { r1: ['show ip bgp summary', 'show ip bgp', 'show ip route'], r2: ['show ip bgp summary', 'show ip bgp'], pc1: ['ping -c 2 10.2.0.10'] },
+        goals: [
+          { text: 'Look at <code>show ip bgp summary</code> on r1. Which state does the neighbor 10.0.12.2 have?', ask: true, expect: () => ['active', 'connect', 'idle'], placeholder: 'state' },
+          { text: 'Turn on BGP on r2: AS 65002, neighbor 10.0.12.1 with remote AS 65001, network 10.2.0.0/24. The session comes up.', check: up('r1', '10.0.12.2') },
+          { text: 'pc1 pings srv2 (10.2.0.10).', check: pingOk('pc1', '10.2.0.10') },
+          { text: 'Which AS path does r1 see for 10.2.0.0/24?', ask: true, expect: () => ['65002', '65002 i'] },
+          { text: 'Click a BGP UPDATE in the log and look at its attributes in the packet inspector.', check: inspected(isUpdate) }],
+        hints: ['BGP is under Configuration on r2: Add a feature, BGP.', 'In the log of r1 you see the TCP connection being refused while r2 has BGP off.', 'Networks are entered as 10.2.0.0/24.'],
+        outro: '<p>Without BGP on r2, nobody listened on TCP 179: r1 got a reset and stayed in Active. With both sides configured, the session went through OpenSent and OpenConfirm to Established, and each router announced its network with its own AS in the path.</p>' }
+    ] },
+
+    { id: 'm14-l3', title: 'iBGP and the next hop', minutes: 15, steps: [
+      { type: 'theory', title: 'Carrying external routes through your AS', html: `
+<p>A company or provider has several routers. The edge router r1 learns the internet from its provider over eBGP. The other routers inside the AS need these routes too: they get them over <b>iBGP</b>. Three rules make iBGP different:</p>
+<h2>1. The next hop stays</h2>
+<p>An eBGP router puts its own address as next hop. Over iBGP the next hop is passed on <b>unchanged</b>: r3 learns "198.51.100.0/24 via 192.0.2.1", the address of the provider. r3 does not know 192.0.2.1, so the route is <b>inaccessible</b> and is not installed. Two fixes:</p>
+<ul><li><code>next-hop-self</code> on r1 towards its iBGP neighbors: r1 puts its own address.</li>
+<li>Or announce the link to the provider in the IGP (OSPF).</li></ul>
+<h2>2. iBGP split horizon</h2>
+<p>A route learned over iBGP is <b>never passed on to another iBGP neighbor</b>. Inside an AS the AS path does not grow, so loops would go unnoticed. Consequence: every iBGP router needs a session to every other one (<b>full mesh</b>), n·(n-1)/2 sessions. With 100 routers that is 4950.</p>
+<p>The way out is a <b>route reflector</b>: a router that may pass iBGP routes on to its <i>clients</i>. It adds ORIGINATOR_ID and CLUSTER_LIST so that a route never comes back to where it started.</p>
+<h2>3. Sessions between loopbacks</h2>
+<p>iBGP neighbors are usually not directly connected. They peer between their <b>loopback addresses</b>, which OSPF carries through the AS. If one link fails, OSPF finds another way and the session stays up. For that, the session must start from the loopback: <code>update-source lo</code>. Without it, the neighbor sees a connection from an unknown address and refuses it.</p>
+<table><tr><th>Source of the route</th><th>Administrative distance</th></tr>
+<tr><td>eBGP</td><td>20 (better than OSPF)</td></tr>
+<tr><td>OSPF</td><td>110</td></tr>
+<tr><td>iBGP</td><td>200 (worse than OSPF)</td></tr></table>
+${note('The IGP (OSPF) carries the loopbacks and links of the own AS. BGP carries everything else, including all external routes. Never redistribute the full BGP table into OSPF.', true)}` },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'r1 learns 8.8.8.0/24 from its provider (next hop 192.0.2.1) and passes it to r3 over iBGP. Which next hop does r3 see without next-hop-self?', input: ['192.0.2.1'] },
+        { q: 'r1, r2 and r3 are in the same AS. r1 peers with r2, r2 with r3, no route reflector. Does r3 learn the routes r1 sends to r2?', options: ['Yes', 'No: r2 does not pass iBGP routes to other iBGP neighbors'], correct: 1 },
+        { q: 'How many iBGP sessions does a full mesh of 5 routers need?', input: ['10'] },
+        { q: 'What is update-source lo for?', options: ['Faster convergence', 'The session uses the loopback address, so it survives the failure of a single link', 'It encrypts the session', 'It sets the next hop'], correct: 1 }] }
+    ] },
+
+    { id: 'm14-l4', title: 'iBGP in the lab', minutes: 20, steps: [
+      { type: 'lab', title: 'The routes arrive, but they are not used', topo: () => ibgpTopo({ nhs: false }), edit: 'config',
+        intro: '<p>AS 65001 has three routers. OSPF carries the loopbacks 10.255.0.1 to .3, iBGP runs as a full mesh between them, r1 talks eBGP to the provider (AS 65100). r1 has no next-hop-self yet.</p>',
+        presets: { pc3: ['ping -c 2 198.51.100.80', 'traceroute 198.51.100.80'], r3: ['show ip bgp', 'show ip bgp 198.51.100.0/24', 'show ip route', 'show ip bgp summary'], r1: ['show ip bgp summary', 'show ip bgp neighbors 10.255.0.3 advertised-routes'] },
+        goals: [
+          { text: 'pc3 pings the web server 198.51.100.80. It does not work.', check: failed('pc3', '198.51.100.80') },
+          { text: 'r3 knows the network 198.51.100.0/24 from BGP. What does <code>show ip bgp</code> on r3 say about its next hop?', ask: true, expect: () => ['inaccessible', 'not reachable', 'unreachable'] },
+          { text: 'Fix it on r1, so that pc3 reaches the web server.', check: pingOk('pc3', '198.51.100.80') },
+          { text: 'Which next hop does r3 now have for 198.51.100.0/24?', ask: true, expect: () => ['10.255.0.1'] },
+          { text: 'Which administrative distance does this route have in <code>show ip route</code> on r3?', ask: true, expect: () => ['200'] }],
+        hints: ['192.0.2.1 is the provider\'s address. OSPF in AS 65001 does not know that link.', 'On r1: Configuration, BGP, check next-hop-self for both iBGP neighbors (10.255.0.2 and 10.255.0.3).'],
+        outro: '<p>With next-hop-self, r1 announces itself (its loopback, the source of the session) as next hop. r3 finds 10.255.0.1 through OSPF and installs the route recursively: BGP says where, OSPF says how. The 200 shows it is an iBGP route; an eBGP route would have 20.</p>' }
+    ] },
+
+    { id: 'm14-l5', title: 'Route reflector', minutes: 15, steps: [
+      { type: 'lab', title: 'Without a full mesh', topo: () => ibgpTopo({ fullMesh: false }), edit: 'config',
+        intro: '<p>The same AS, but r1 and r3 have no session with each other: both only peer with r2 in the middle. Next-hop-self is configured on r1.</p>',
+        presets: { pc3: ['ping -c 2 198.51.100.80'], r2: ['show ip bgp', 'show ip bgp summary'], r3: ['show ip bgp summary', 'show ip bgp'], isp: ['show ip bgp'] },
+        goals: [
+          { text: 'pc3 pings the web server. It does not work.', check: failed('pc3', '198.51.100.80') },
+          { text: 'How many prefixes does r3 receive from r2? (show ip bgp summary on r3)', ask: true, expect: () => ['0'] },
+          { text: 'Make r2 a route reflector with r1 and r3 as its clients. pc3 reaches the web server.', check: pingOk('pc3', '198.51.100.80') },
+          { text: 'Which attribute does r2 add so that it can recognize a reflected route that comes back to the router it started at?', ask: true, expect: () => ['originator_id', 'originator id', 'originator-id', 'cluster_list', 'cluster list', 'cluster-list'] }],
+        hints: ['r2 has the route of the provider, but iBGP split horizon forbids passing it to r3.', 'On r2: Configuration, BGP, check "RR client" for both neighbors.', 'Click a reflected UPDATE from r2 in the log.'],
+        outro: '<p>Without a reflector, r2 knew everything but kept it to itself: iBGP split horizon. As a route reflector it passes routes between its clients and marks them with ORIGINATOR_ID and CLUSTER_LIST. Large networks have a few reflectors instead of a full mesh.</p>' }
+    ] },
+
+    { id: 'm14-l6', title: 'Policy: choosing the way out and in', minutes: 20, steps: [
+      { type: 'theory', title: 'Best path selection and how to influence it', html: `
+<p>If a router knows several paths to a network, it compares them in a fixed order. The first difference decides:</p>
+<table><tr><th>#</th><th>Criterion</th><th>Better</th></tr>
+<tr><td>1</td><td>Weight (only on this router)</td><td>higher</td></tr>
+<tr><td>2</td><td><b>LOCAL_PREF</b> (inside the AS)</td><td>higher</td></tr>
+<tr><td>3</td><td>Originated by this router</td><td>yes</td></tr>
+<tr><td>4</td><td><b>AS_PATH</b> length</td><td>shorter</td></tr>
+<tr><td>5</td><td>Origin (IGP, EGP, incomplete)</td><td>IGP</td></tr>
+<tr><td>6</td><td><b>MED</b> (only from the same neighbor AS)</td><td>lower</td></tr>
+<tr><td>7</td><td>eBGP over iBGP</td><td>eBGP</td></tr>
+<tr><td>8</td><td>IGP metric to the next hop</td><td>lower</td></tr>
+<tr><td>9</td><td>Router ID, neighbor address</td><td>lower</td></tr></table>
+<h2>The way out: local preference</h2>
+<p>You decide which exit your own traffic takes. Set <b>local preference</b> higher on the routes from the provider you prefer (e.g. 200 instead of the default 100). It is passed to all iBGP neighbors, so the whole AS agrees, and it wins before the AS path length is even looked at.</p>
+<h2>The way in: AS path prepending and MED</h2>
+<p>How the others reach you is <i>their</i> decision. You can only make one path less attractive: put your own AS several times into the path towards the provider you want to avoid (<b>prepending</b>): <code>65001 65001 65001</code> looks three ASes long. MED is a softer hint, which only works between two connections to the same neighbor AS.</p>
+${note('Changing the way out does not change the way back: traffic can leave through provider 2 and return through provider 1. Asymmetric routing is normal on the internet, but stateful firewalls at the edge do not like it.', true)}` },
+      { type: 'lab', title: 'The cheaper provider', topo: () => bgpMultiTopo(), edit: 'config',
+        intro: '<p>AS 65001 has two providers: provider 1 (AS 65100, at r1) and provider 2 (AS 65200, at r3). The web server is at provider 1. Provider 2 is cheaper, so management wants all outgoing traffic to use it.</p>',
+        presets: { pc2: ['traceroute 198.51.100.80'], r2: ['show ip bgp', 'show ip bgp 198.51.100.0/24'], r3: ['show ip bgp 198.51.100.0/24'], isp1: ['show ip bgp 10.2.0.0/24'] },
+        goals: [
+          { text: 'traceroute from pc2 to the web server. Through which of our edge routers does it go?', ask: true, expect: () => ['r1'] },
+          { text: 'Why does r2 prefer that path? (show ip bgp 198.51.100.0/24 on r2 shows the reason)', ask: true, expect: () => ['as path length', 'as path', 'as-path', 'shorter as path', 'as_path'] },
+          { text: 'Make the whole AS leave through provider 2: give its routes a higher local preference on r3. Then traceroute again.', check: traceVia('pc2', '10.0.23.3') },
+          { text: 'Now look at isp1: <code>show ip bgp 10.2.0.0/24</code>. Through which AS do the answers come back to us?', ask: true, expect: () => ['65001', 'directly', 'r1', 'via r1', 'as 65001'] },
+          { text: 'Make provider 1 send the answers through provider 2 as well: prepend AS 65001 twice towards provider 1 on r1. isp1 then prefers the path via AS 65200.', check: sim => (sim.dev('isp1')?.bgp?.table() || []).some(r => r.prefix === '10.2.0.0/24' && r.best && r.asPath[0] === 65200) }],
+        hints: ['Local preference is an inbound setting: on r3, neighbor 192.0.2.5 (provider 2), "In: local pref" 200.', 'Prepending is outbound: on r1, neighbor 192.0.2.1, "prepend" 2.', 'Every change takes effect at once (like a soft reset), the sessions stay up.'],
+        outro: '<p>Local preference beat the shorter AS path because it comes earlier in the selection, and r3 told the whole AS about it over iBGP. For the way in you could only make the other path look worse: with prepending, provider 1 saw 65001 65001 65001 and preferred the path through provider 2.</p>' }
+    ] }
+  ]
+};
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/course"
+  cat > "$W/js/course/m15.js" <<'__PACKETPILOT_FILE_END__'
+import { note, tag, inspected, pingOk } from './helpers.js';
+import { evpnTopo } from '../presets.js';
+
+const isEvpnUpdate = f => f.type === 'ipv4' && (f.payload.l4?.bgp?.evpn?.length || 0) > 0;
+
+export default {
+  id: 'm15', title: 'EVPN: BGP for VXLAN', bands: ['vxlan', 'rt'],
+  text: 'VXLAN with a real control plane: the VTEPs find each other and learn every MAC address over BGP, instead of static lists and flooding.',
+  lessons: [
+    { id: 'm15-l1', title: 'Why VXLAN needs a control plane', minutes: 14, steps: [
+      { type: 'theory', title: 'From flood and learn to EVPN', html: `
+<p>Plain VXLAN works like a big switch stretched over IP: unknown destinations are flooded to all VTEPs of the segment, and MAC addresses are learned from the packets that come back (<b>flood and learn</b>). That has three problems:</p>
+<ul><li>Every VTEP needs a <b>static flood list</b> of all other VTEPs. A new VTEP means touching every other one.</li>
+<li>Broadcast, unknown unicast and multicast (BUM) are copied to every VTEP. Every ARP request crosses the whole fabric.</li>
+<li>A MAC is only known after it has sent something, and after a move the old entry stays until it ages out.</li></ul>
+<p><b>EVPN</b> (Ethernet VPN, RFC 7432 and 8365) solves this with BGP: the VTEPs announce what they know, like routers announce networks. The address family is <code>l2vpn evpn</code>, the transport iBGP or eBGP as usual.</p>
+<h2>Route types</h2>
+<table><tr><th>Type</th><th>Name</th><th>Meaning</th></tr>
+<tr><td><b>2</b></td><td>MAC/IP advertisement</td><td>"The host with this MAC (and IP) is behind me, in VNI 10010"</td></tr>
+<tr><td><b>3</b></td><td>Inclusive multicast</td><td>"I take part in VNI 10010: send me its flooded traffic"</td></tr>
+<tr><td>5</td><td>IP prefix</td><td>routing between VNIs (not in this course)</td></tr>
+<tr><td>1, 4</td><td>Ethernet segment</td><td>one host connected to two VTEPs (multihoming)</td></tr></table>
+<p>Type 3 routes build the flood lists automatically. Type 2 routes fill the MAC tables of all VTEPs, so even unknown unicast no longer has to be flooded. With <b>ARP suppression</b> a VTEP even answers an ARP request itself when it knows the IP from a type 2 route.</p>
+<h2>Who talks to whom</h2>
+<p>In a leaf-spine fabric the leaves are VTEPs. They do not peer with each other: the spines are <b>route reflectors</b>, every leaf has one iBGP session per spine. The route reflector itself does not need VXLAN, it only passes the EVPN routes on.</p>
+${note('Each route also carries a route distinguisher and route targets, so that several tenants can use the same MAC or IP. Here every VNI simply has its own.')}` },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'A new VTEP joins VNI 10010. Which route tells the others to include it in their flood list?', options: ['Type 2', 'Type 3', 'Type 5', 'A static entry'], correct: 1 },
+        { q: 'vtep1 knows the MAC of a host behind vtep3 before the host ever sent a frame to vtep1. Why?', options: ['Flood and learn', 'vtep3 announced it in a type 2 route', 'ARP', 'The spine told vtep1 over VXLAN'], correct: 1 },
+        { q: 'What does ARP suppression save?', options: ['Bandwidth on the access port', 'Flooding ARP requests to all VTEPs', 'BGP sessions', 'The MAC table'], correct: 1 },
+        { q: 'Does the spine route reflector need its own VXLAN interface for EVPN?', options: ['Yes', 'No, it only reflects the BGP routes'], correct: 1 }] }
+    ] },
+
+    { id: 'm15-l2', title: 'VTEPs find each other', minutes: 16, steps: [
+      { type: 'lab', title: 'A VTEP without EVPN', topo: () => evpnTopo({ evpn: ['vtep1', 'vtep2'] }), edit: 'config',
+        intro: '<p>Three VTEPs carry VNI 10010. None has a static flood list. vtep1 and vtep2 use EVPN, vtep3 runs BGP but its segment is not marked for EVPN yet. The spine reflects the routes.</p>',
+        presets: { srv1: ['ping -c 2 192.168.10.12', 'ping -c 2 192.168.10.13'], vtep1: ['show vxlan', 'show bgp l2vpn evpn', 'show evpn mac'], vtep3: ['show vxlan', 'show ip bgp summary'], spine: ['show ip bgp summary'] },
+        goals: [
+          { text: 'srv1 pings srv2 (192.168.10.12).', check: pingOk('srv1', '192.168.10.12') },
+          { text: 'How many remote VTEPs does vtep1 have in its flood list? (show vxlan)', ask: true, expect: () => ['1', 'one'] },
+          { text: 'Turn on EVPN for the segment on vtep3. srv1 then reaches srv3 (192.168.10.13).', check: pingOk('srv1', '192.168.10.13') },
+          { text: 'Which route type told vtep1 that vtep3 takes part in VNI 10010?', ask: true, expect: () => ['3', 'type 3'] },
+          { text: 'From which BGP neighbor did vtep1 receive that route?', ask: true, expect: () => ['10.255.0.254', 'spine'] },
+          { text: 'Click a BGP UPDATE with EVPN routes in the log and look at it in the packet inspector.', check: inspected(isEvpnUpdate) }],
+        hints: ['The segment settings of vtep3 are under Configuration: the checkbox "EVPN".', 'show bgp l2vpn evpn on vtep1 lists every route with its type and where it came from.'],
+        outro: '<p>As soon as vtep3 announced its type 3 route, the spine reflected it to vtep1 and vtep2, and both added 10.255.0.3 to their flood lists. Nobody had to type an address. That is the difference to plain VXLAN with static flood lists.</p>' }
+    ] },
+
+    { id: 'm15-l3', title: 'MAC learning over BGP', minutes: 16, steps: [
+      { type: 'lab', title: 'Nothing is flooded twice', topo: () => evpnTopo(), edit: 'config',
+        intro: '<p>All three VTEPs use EVPN with ARP suppression. At the start no VTEP knows any MAC address, because no host has sent anything yet.</p>',
+        presets: { srv1: ['ping -c 1 192.168.10.13'], srv2: ['ping -c 1 192.168.10.13'], vtep1: ['show evpn mac', 'show bgp l2vpn evpn'], vtep2: ['show evpn mac'] },
+        goals: [
+          { text: 'srv1 pings srv3 (192.168.10.13).', check: pingOk('srv1', '192.168.10.13') },
+          { text: 'Now srv2 pings srv3. Who answers the ARP request of srv2 for 192.168.10.13? (the log of vtep2)', ask: true, expect: () => ['vtep2'] },
+          { text: 'The ARP request of srv2 was not flooded into the fabric.', check: tag('vtep2', 'evpn-arp-suppress') },
+          { text: 'vtep1 knows the MAC of srv2, although srv2 never sent a frame to vtep1. With which route type did it learn it?', ask: true, expect: () => ['2', 'type 2'] },
+          { text: 'Behind which VTEP is 192.168.10.13? (show evpn mac on vtep1)', ask: true, expect: () => ['10.255.0.3', 'vtep3'] }],
+        hints: ['Each VTEP announces the MACs it learns on its access ports as type 2 routes, with the IP it saw in their ARP or IP packets.', 'Filter the log to vtep2 and look for "ARP suppression".'],
+        outro: '<p>The first ARP request of srv1 still had to be flooded: nobody knew srv3 yet. Its reply taught vtep3 the MAC and IP of srv3, which went out to all VTEPs as a type 2 route. From then on, vtep2 could answer the ARP request of srv2 itself. In a data center with thousands of hosts this removes most of the flooding.</p>' }
     ] }
   ]
 };
@@ -4312,6 +5159,8 @@ import { ethFrame, arpPacket, ipPacket, icmp, icmp6, udp, tcp, ipChecksum, summa
 import { serveDns, rrText, fqdn, resolverOf } from './dns.js';
 import { Ip6, icmp6Name } from './ipv6.js';
 import { Wg, wgDataLen } from './vpn.js';
+import { Bgp } from './bgp.js';
+import { Evpn } from './evpn.js';
 import { dhcpOn67, natIn, natOut, Vrrp, Ospf, Bfd, BFD_PORT, DHCP_TIMING, vrrpMac } from './services.js';
 
 export const PORTS = {
@@ -4492,6 +5341,7 @@ export function flowHash(ip, policy = 'l3') {
 }
 export function isHello(f) {
   if (f?.type === 'ipv6') return !!f.payload.l4?.periodic;
+  if (f?.type === 'ipv4' && f.payload.l4?.bgp?.type === 'KEEPALIVE') return true;
   const l4 = f?.type === 'ipv4' ? f.payload.l4 : null;
   return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello') || (l4.kind === 'udp' && l4.payload?.kind === 'bfd')
     || (l4.kind === 'udp' && l4.payload?.kind === 'wg' && l4.payload.type === 'data' && !l4.payload.inner));
@@ -4533,6 +5383,7 @@ export function normalizeDevice(cfg) {
     cfg.ipv6 = { enabled: false, ra: [], rdnss: '', ...(cfg.ipv6 || {}) };
     cfg.ospf.ifaces ??= {};
   }
+  if (t === 'router' || t === 'vtep') cfg.bgp = { enabled: false, asn: '', rid: '', timers: 'fast', networks: [], redistributeConnected: false, neighbors: [], ...(cfg.bgp || {}) };
   if (t === 'router' || t === 'server') cfg.dhcpServer = { enabled: false, pools: [], ...(cfg.dhcpServer || {}) };
   if (t === 'switch') {
     cfg.ports ??= {};
@@ -4623,7 +5474,7 @@ class L3 {
   mtu(ifname) { return ifname === 'lo' ? 65536 : ifname === 'wg0' ? (this.dev.wg?.mtu() ?? 1420) : this.sim.mtuOf(this.dev.id, this.phys(ifname)); }
   linkUp(ifname) { if (ifname === 'lo' || ifname === 'wg0') return true; const l = this.sim.linkAt(this.dev.id, this.phys(ifname)); return !!l && l.up; }
 
-  routes() {
+  routes(skipBgp = false) {
     const out = [];
     for (const i of this.ifaces()) {
       if (i.name === 'lo') continue;
@@ -4643,6 +5494,7 @@ class L3 {
     }
     for (const r of this.dev.ospf?.routes || []) out.push({ net: r.net, len: r.len, via: r.via, dev: r.dev, proto: 'O', metric: r.cost });
     for (const r of this.dev.wg?.routes() || []) out.push(r);
+    if (!skipBgp) for (const r of this.dev.bgp?.routes() || []) out.push(r);
     return out;
   }
   /** All equally good routes to dst: longest prefix, then the administrative distance
@@ -4650,7 +5502,7 @@ class L3 {
   lookupAll(dst, skipDev = null) {
     // A static route can carry its own distance (a "floating" backup route, e.g. 200). Routes
     // into the WireGuard tunnel win like wg-quick's own routing table.
-    const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, W: 0, O: 110 }[r.proto] ?? 255;
+    const ad = r => r.proto === 'S' ? r.distance || 1 : r.proto === 'B' ? (r.ibgp ? 200 : 20) : { C: 0, W: 0, O: 110 }[r.proto] ?? 255;
     let best = [];
     const better = (a, b) => a.len !== b.len ? a.len > b.len : ad(a) !== ad(b) ? ad(a) < ad(b) : (a.metric || 0) < (b.metric || 0);
     for (const r of this.routes()) {
@@ -5089,6 +5941,7 @@ class L3 {
   }
   mssFor(dst) { const r = this.lookup(dst); return (r ? this.mtu(r.dev) : 1500) - (isIp6(dst) ? 60 : 40); }
   onTcp(ip, frame) {
+    if (this.dev.bgp?.onTcp(ip)) return;
     const s = ip.l4;
     const key = `${s.dport}|${ip.src}|${s.sport}`;
     const c = this.tcp.get(key);
@@ -5689,14 +6542,15 @@ class Router extends Host {
   // VRRP and OSPF only restart when their own settings change, not on every configuration change
   start() {
     super.start();
-    this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop();
+    this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop(); this.bgp?.stop();
     this.bfd = new Bfd(this);
+    this.bgp = new Bgp(this); this.bgp.start();
     this.vrrp = new Vrrp(this); this.vrrp.start(); this.vrrpSnap = JSON.stringify(this.cfg.vrrp);
     this.ospf = new Ospf(this); this.ospf.start(); this.ospfSnap = JSON.stringify(this.cfg.ospf);
     this.bfd.start(); this.bfdSnap = JSON.stringify(this.cfg.bfd);
     this.addrSnap = JSON.stringify(this.l3.ifaces());
   }
-  stop() { super.stop(); this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop(); }
+  stop() { super.stop(); this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop(); this.bgp?.stop(); }
   onConfig() {
     super.onConfig();
     const v = JSON.stringify(this.cfg.vrrp), o = JSON.stringify(this.cfg.ospf), a = JSON.stringify(this.l3.ifaces()), b = JSON.stringify(this.cfg.bfd);
@@ -5705,6 +6559,7 @@ class Router extends Host {
     if (o !== this.ospfSnap) { this.ospfSnap = o; this.ospf.start(); }
     else if (a !== this.addrSnap) this.ospf.originate();
     this.addrSnap = a;
+    this.bgp.onConfig();
   }
   onLink(ifname, up) { super.onLink(ifname, up); this.bfd?.onLink(ifname, up); this.vrrp?.onLink(ifname, up); this.ospf?.onLink(ifname, up); }
 }
@@ -6245,7 +7100,10 @@ class Switch extends Device {
 }
 
 class Vtep extends Device {
-  constructor(sim, cfg) { super(sim, cfg); this.l3 = new L3(this); this.bridge = new Bridge(this); }
+  constructor(sim, cfg) { super(sim, cfg); this.l3 = new L3(this); this.bridge = new Bridge(this); this.bgp = new Bgp(this); this.evpn = new Evpn(this); }
+  start() { this.bgp.start(); }
+  stop() { this.bgp.stop(); }
+  onConfig() { this.bgp.onConfig(); }
   maps() { return (this.cfg.vxlans || []).filter(m => m.vni && m.vlan); }
   portCfg(p) {
     if (p.startsWith('vxlan')) { const m = this.maps().find(x => 'vxlan' + x.vni === p); return m ? { mode: 'access', vlan: Number(m.vlan) } : null; }
@@ -6256,6 +7114,7 @@ class Vtep extends Device {
   vxlanMtu(m) { return m.mtu ? Number(m.mtu) : this.sim.mtuOf(this.id, 'eth1') - 50; }
   receive(ifname, frame) {
     if (ifname === 'eth1') return this.l3.receive(ifname, frame);
+    if (this.evpn.on()) { this.evpn.snoop(frame); if (this.evpn.suppress(ifname, frame)) return; }
     this.bridge.receive(ifname, frame);
   }
   vxlanOut(port, inner, remote) {
@@ -6267,8 +7126,8 @@ class Vtep extends Device {
       this.record('drop', `${port}: frame with ${plen} bytes of payload is larger than the MTU ${vm} of the VXLAN interface, silently dropped (no ICMP message on layer 2)`, { frame: inner, tag: 'vxlan-mtu-drop', data: { mtu: vm, len: plen } });
       return;
     }
-    const targets = remote ? [remote] : (m.flood || []).filter(isIp);
-    if (!targets.length) { this.record('drop', `${port}: flood list is empty, frame goes to no VTEP`, { frame: inner, tag: 'vxlan-no-flood' }); return; }
+    const targets = remote ? [remote] : this.evpn.floodList(m).filter(isIp);
+    if (!targets.length) { this.record('drop', `${port}: flood list is empty, frame goes to no VTEP${m.evpn ? ' (no type 3 route from another VTEP in this VNI)' : ''}`, { frame: inner, tag: 'vxlan-no-flood' }); return; }
     const src = this.localIp();
     for (const t of targets) {
       const pkt = ipPacket({ src, dst: t, proto: PROTO.UDP, df: false, trace: traceOf(inner) ?? undefined,
@@ -6286,7 +7145,8 @@ class Vtep extends Device {
     const m = onPort.find(x => Number(x.vni) === l4.payload.vni);
     if (!m) { this.record('drop', `Received VXLAN with VNI ${l4.payload.vni} from ${ip.src}, but no segment with this VNI: dropped`, { tag: 'vxlan-vni-unknown', data: { vni: l4.payload.vni } }); return true; }
     this.record('info', `decapsulates VXLAN from ${ip.src} (VNI ${m.vni} → VLAN ${m.vlan})`, { tag: 'vxlan-decap', data: { vni: Number(m.vni), from: ip.src } });
-    this.bridge.receive('vxlan' + m.vni, clone(l4.payload.frame), { vid: Number(m.vlan), remote: ip.src, learning: m.learning !== false });
+    // With EVPN the control plane knows the remote MACs: no learning from the data plane
+    this.bridge.receive('vxlan' + m.vni, clone(l4.payload.frame), { vid: Number(m.vlan), remote: ip.src, learning: m.learning !== false && !m.evpn });
     return true;
   }
   ping(dst, o) { return Host.prototype.ping.call(this, dst, o); }
@@ -6296,6 +7156,97 @@ class Vtep extends Device {
 
 export function newId(prefix = 'd') { return prefix + Math.random().toString(36).slice(2, 9); }
 export { TCP_HDR };
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js"
+  cat > "$W/js/evpn.js" <<'__PACKETPILOT_FILE_END__'
+// EVPN on a VTEP: type 3 routes build the flood lists, type 2 routes carry the MAC (and IP)
+// addresses behind each VTEP, so remote MACs are known without flood and learn. With ARP
+// suppression the VTEP answers ARP requests for remote hosts itself.
+import { isGroupMac } from './net.js';
+import { ethFrame, arpPacket } from './packets.js';
+
+export class Evpn {
+  constructor(dev) { this.dev = dev; this.sim = dev.sim; this.arp = new Map(); this.vteps = new Map(); this.macs = new Map(); }
+  maps() { return this.dev.maps().filter(m => m.evpn); }
+  on() { return this.maps().length > 0 && !!this.dev.bgp?.enabled; }
+  rec(kind, text, extra) { return this.dev.record(kind, text, extra); }
+  /** Watch local frames: which IP belongs to which MAC (for type 2 routes with IP) */
+  snoop(frame) {
+    if (isGroupMac(frame.src)) return;
+    if (frame.type === 'arp' && frame.payload.spa !== '0.0.0.0') this.arp.set(frame.src, frame.payload.spa);
+    else if (frame.type === 'ipv4' && frame.payload.src !== '0.0.0.0') this.arp.set(frame.src, frame.payload.src);
+  }
+  localRoutes() {
+    if (!this.on()) return [];
+    const me = this.dev.localIp(), out = [];
+    for (const m of this.maps()) {
+      out.push({ rt: 3, key: `3|${m.vni}|${me}`, vni: Number(m.vni), vtep: me });
+      for (const e of this.dev.bridge.table()) {
+        if (e.vid !== Number(m.vlan) || e.port.startsWith('vxlan') || e.remote) continue;
+        out.push({ rt: 2, key: `2|${m.vni}|${e.mac}`, vni: Number(m.vni), mac: e.mac, ip: this.arp.get(e.mac) || '', vtep: me });
+      }
+    }
+    return out;
+  }
+  received() {
+    const out = [];
+    for (const p of this.dev.bgp?.peers.values() || []) if (p.state === 'Established') for (const e of p.rxEvpn.values()) out.push({ ...e, from: p.ip });
+    return out;
+  }
+  /** Called after every BGP recomputation: flood lists and remote MACs follow the received routes */
+  recomputeBgp() {
+    if (!this.on()) return;
+    const me = this.dev.localIp();
+    const rx = this.received().filter(e => (e.vtep || e.nextHop) !== me);
+    const vteps = new Map(), macs = new Map();
+    for (const e of rx) {
+      const vtep = e.vtep || e.nextHop;
+      if (e.rt === 3) { if (!vteps.has(e.vni)) vteps.set(e.vni, new Set()); vteps.get(e.vni).add(vtep); }
+      if (e.rt === 2) macs.set(`${e.vni}|${e.mac}`, { vni: e.vni, mac: e.mac, ip: e.ip, vtep });
+    }
+    for (const [vni, set] of vteps) for (const v of set) if (!this.vteps.get(vni)?.has(v)) this.rec('learn', `EVPN: VTEP ${v} takes part in VNI ${vni} (type 3 route), added to the flood list`, { tag: 'evpn-vtep', data: { vni, vtep: v } });
+    for (const [vni, set] of this.vteps) for (const v of set) if (!vteps.get(vni)?.has(v)) this.rec('info', `EVPN: VTEP ${v} no longer in VNI ${vni}, removed from the flood list`, { tag: 'evpn-vtep-gone', data: { vni, vtep: v } });
+    this.vteps = vteps;
+    const fdb = this.dev.bridge.fdb;
+    for (const [k, x] of macs) {
+      const m = this.maps().find(y => Number(y.vni) === Number(x.vni));
+      if (!m) continue;
+      const key = `${Number(m.vlan)}|${x.mac}`;
+      const old = fdb.get(key);
+      fdb.set(key, { port: 'vxlan' + m.vni, t: this.sim.time, remote: x.vtep, evpn: true });
+      if (!this.macs.has(k) || old?.remote !== x.vtep) this.rec('learn', `EVPN: ${x.mac}${x.ip ? ' (' + x.ip + ')' : ''} is behind VTEP ${x.vtep} in VNI ${x.vni} (type 2 route), no flooding needed`, { tag: 'evpn-mac', data: { mac: x.mac, vtep: x.vtep, vni: x.vni } });
+    }
+    for (const [k, x] of this.macs) if (!macs.has(k)) {
+      const m = this.maps().find(y => Number(y.vni) === Number(x.vni));
+      if (m && fdb.get(`${Number(m.vlan)}|${x.mac}`)?.evpn) fdb.delete(`${Number(m.vlan)}|${x.mac}`);
+      this.rec('info', `EVPN: ${x.mac} withdrawn by VTEP ${x.vtep}`, { tag: 'evpn-mac-gone', data: { mac: x.mac } });
+    }
+    this.macs = macs;
+  }
+  floodList(m) {
+    const list = new Set((m.flood || []).filter(Boolean));
+    if (m.evpn) for (const v of this.vteps.get(Number(m.vni)) || []) list.add(v);
+    return [...list];
+  }
+  /** ARP suppression: answer an ARP request for a remote host from the EVPN table */
+  suppress(port, frame) {
+    if (frame.type !== 'arp' || frame.payload.op !== 1 || frame.payload.spa === frame.payload.tpa) return false;
+    const vid = this.dev.bridge.vidIn(port, frame);
+    const m = this.maps().find(x => Number(x.vlan) === vid && x.arpSuppress);
+    if (!m) return false;
+    const hit = [...this.macs.values()].find(x => Number(x.vni) === Number(m.vni) && x.ip === frame.payload.tpa);
+    if (!hit) return false;
+    this.rec('info', `ARP suppression: answers the ARP request for ${hit.ip} itself (${hit.mac}, known from EVPN), nothing is flooded`, { frame, tag: 'evpn-arp-suppress', data: { ip: hit.ip } });
+    const a = frame.payload;
+    this.dev.transmit(port, ethFrame(hit.mac, a.sha, 'arp', arpPacket(2, hit.mac, hit.ip, a.sha, a.spa)));
+    return true;
+  }
+  bgpTable() {
+    const me = this.dev.localIp();
+    return [...this.localRoutes().map(e => ({ ...e, nextHop: me, from: 'local', best: true })), ...this.received().map(e => ({ ...e, nextHop: e.vtep || e.nextHop, best: true }))]
+      .sort((a, b) => a.rt - b.rt || a.vni - b.vni);
+  }
+}
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/framebuilder.js" <<'__PACKETPILOT_FILE_END__'
@@ -6323,6 +7274,7 @@ const BLOCKS = {
   vrrp: { name: 'VRRP', size: 12, kind: 'rt', in: ['ip'], last: true, note: 'Advertisement: group, priority, virtual IP (protocol 112)' },
   ospf: { name: 'OSPF Hello', size: 48, kind: 'rt', in: ['ip'], last: true, note: 'Router ID, area, timers, neighbors (protocol 89)' },
   bfd: { name: 'BFD', size: 24, kind: 'rt', in: ['udp'], last: true, note: 'Control packet: state, discriminators, intervals (UDP 3784)' },
+  bgp: { name: 'BGP message', size: 19, kind: 'rt', in: ['tcp'], last: true, note: 'Header of every BGP message (KEEPALIVE: only this). OPEN, UPDATE and NOTIFICATION add their content. TCP port 179' },
   data: { name: 'Data', size: null, kind: 'data', note: 'Application payload' }
 };
 // Headings in the palette, so the growing list stays easy to scan
@@ -6343,6 +7295,7 @@ const PRESETS = {
   'OSPF Hello': ['eth', 'ip', 'ospf'],
   'VRRP': ['eth', 'ip', 'vrrp'],
   'BFD': ['eth', 'ip', 'udp', 'bfd'],
+  'BGP KEEPALIVE': ['eth', 'ip', 'tcp', 'bgp'],
   'Ping over VXLAN': ['eth', 'ip', 'udp', 'vxlan', 'eth', 'ip', 'icmp', 'data'],
   'Ping through WireGuard': ['eth', 'ip', 'udp', 'wg', 'ip', 'icmp', 'data'],
   'Ping through IPsec': ['eth', 'ip', 'esp', 'ip', 'icmp', 'data']
@@ -6557,8 +7510,23 @@ export const GLOSSARY = [
   ['IKE', 'Internet Key Exchange (UDP 500): authenticates the IPsec peers and creates the security associations.', ['IKEv2']],
   ['ESP', 'Encapsulating Security Payload: the IPsec header for encrypted packets, IP protocol 50.'],
   ['SPI', 'Security Parameter Index: the number in every ESP packet that tells the receiver which keys to use.'],
-  ['security association', 'IPsec: one agreed set of keys and algorithms for one direction of a tunnel.', ['security associations', 'SA']],
+  ['security association', 'IPsec: one agreed set of keys and algorithms for one direction of a tunnel.', ['security associations']],
   ['NAT traversal', 'IPsec packed into UDP 4500, so that NAT routers can translate it.', ['NAT-T']],
+  ['BGP', 'Border Gateway Protocol: the routing protocol between autonomous systems, over TCP 179, with path attributes and policy.'],
+  ['autonomous system', 'A network under one administration with its own number (ASN), e.g. a provider or a large company.', ['autonomous systems']],
+  ['eBGP', 'BGP between routers of different autonomous systems. The router puts its AS into the path and itself as next hop.'],
+  ['iBGP', 'BGP between routers of the same autonomous system. The next hop is passed on unchanged, routes are not passed to other iBGP neighbors.'],
+  ['AS path', 'The list of autonomous systems a BGP route has passed. Used for loop protection and as a tie breaker: shorter wins.', ['AS_PATH', 'AS paths']],
+  ['next-hop-self', 'BGP option: announce yourself as next hop to iBGP neighbors instead of the external neighbor.'],
+  ['route reflector', 'A BGP router that may pass iBGP routes on to its clients, so that no full mesh is needed.', ['route reflectors']],
+  ['local preference', 'BGP attribute inside an AS: the highest value decides the exit for the whole AS.', ['LOCAL_PREF', 'local pref']],
+  ['MED', 'Multi-exit discriminator: a hint to a neighbor AS which of several connections it should prefer. The lowest wins.'],
+  ['AS path prepending', 'Putting your own AS several times into the path, so the neighbor finds this path less attractive.', ['prepending']],
+  ['update-source', 'BGP option: start the session from this interface (usually the loopback) instead of the outgoing one.'],
+  ['EVPN', 'Ethernet VPN: BGP carries MAC addresses (type 2) and VNI membership (type 3) for VXLAN, instead of flood and learn.'],
+  ['type 2 route', 'EVPN MAC/IP advertisement: this MAC (and IP) is behind this VTEP, in this VNI.', ['type 2 routes']],
+  ['type 3 route', 'EVPN inclusive multicast route: this VTEP takes part in this VNI, send it the flooded traffic.', ['type 3 routes']],
+  ['ARP suppression', 'A VTEP answers ARP requests for remote hosts itself, from what EVPN told it, instead of flooding them.'],
   ['recursive resolver', 'A DNS server that finds any answer on behalf of its clients: it asks root, TLD and authoritative servers and caches the results.', ['resolver', 'resolvers', 'recursive resolvers']],
   ['stub resolver', 'The small DNS client in every operating system: it sends one question with RD set to a recursive resolver and waits.'],
   ['authoritative', 'A DNS server is authoritative for a zone it holds itself. Its answers carry the AA flag.', ['authoritatively', 'authoritative server', 'authoritative servers']],
@@ -8762,6 +9730,7 @@ export function shortLabel(f) {
   if (l4.kind === 'vrrp') return 'VRRP';
   if (l4.kind === 'ospf') return l4.type === 'hello' ? 'Hello' : 'LSU';
   if (l4.kind === 'udp') return 'UDP';
+  if (l4.kind === 'tcp' && l4.bgp) return { OPEN: 'OPEN', KEEPALIVE: 'KEEP', UPDATE: 'UPDATE', NOTIFICATION: 'NOTIFY' }[l4.bgp.type] || 'BGP';
   if (l4.kind === 'tcp') {
     const fl = l4.flags;
     if (fl.RST) return 'RST';
@@ -8792,7 +9761,7 @@ export function layerKinds(f) {
       if (l4.payload?.kind === 'wg') { out.push('vpn'); if (l4.payload.inner) out.push('ip', l4.payload.inner.l4?.kind === 'tcp' ? 'tcp' : l4.payload.inner.l4?.kind === 'udp' ? 'udp' : 'icmp'); break; }
       out.push(l4.payload?.kind === 'bfd' ? 'rt' : 'data');
     }
-    if (l4.kind === 'tcp') { out.push('tcp'); if (l4.dataLen) out.push('data'); }
+    if (l4.kind === 'tcp') { out.push('tcp'); if (l4.bgp) out.push('rt'); else if (l4.dataLen) out.push('data'); }
     break;
   }
   return out;
@@ -8861,6 +9830,13 @@ export function summary(f) {
       : ns.length ? `DNS referral ${base}: ask ${ns[0].name || '.'} at ${ns.map(n => n.data).join(', ')}` : `DNS response ${base}: ${qn} has no ${qt} record`;
   } else if (l4.kind === 'udp') {
     s = `UDP ${ip.src}.${l4.sport} > ${ip.dst}.${l4.dport}, TTL ${ip.ttl}`;
+  } else if (l4.kind === 'tcp' && l4.bgp) {
+    const m = l4.bgp, ends = `${ip.src}.${l4.sport} > ${ip.dst}.${l4.dport}`;
+    s = m.type === 'OPEN' ? `BGP OPEN ${ends}: AS ${m.asn}, hold time ${m.hold} s, router ID ${m.rid}`
+      : m.type === 'KEEPALIVE' ? `BGP KEEPALIVE ${ends}`
+      : m.type === 'NOTIFICATION' ? `BGP NOTIFICATION ${ends}: ${bgpNotif(m.code, m.sub)}`
+      : `BGP UPDATE ${ends}: ${[...(m.nlri?.length ? [`${m.nlri.join(', ')} with AS path ${(m.attrs.asPath || []).join(' ') || '(empty)'}, next hop ${m.attrs.nextHop}`] : []), ...(m.withdrawn?.length ? [`withdraws ${m.withdrawn.join(', ')}`] : []),
+        ...(m.evpn?.length ? [`${m.evpn.length} EVPN route${m.evpn.length === 1 ? '' : 's'} (${m.evpn.map(e => 'type ' + e.rt).join(', ')})`] : []), ...(m.evpnWithdrawn?.length ? [`withdraws ${m.evpnWithdrawn.length} EVPN route${m.evpnWithdrawn.length === 1 ? '' : 's'}`] : [])].join('; ') || 'empty'}`;
   } else if (l4.kind === 'tcp') {
     s = `TCP ${ip.src}.${l4.sport} > ${ip.dst}.${l4.dport} [${tcpFlags(l4.flags)}] seq ${l4.seq}${l4.flags.ACK ? ' ack ' + l4.ack : ''}${l4.dataLen ? ', ' + l4.dataLen + ' bytes of data' : ''}${l4.app ? ' (' + l4.app + ')' : ''}`;
   } else s = `IP ${base}`;
@@ -8993,13 +9969,14 @@ function l4Layers(f, ip, layers, depth, pre) {
   } else if (l4.kind === 'tcp') {
     layers.push({ kind: 'tcp', depth, name: `${pre}TCP`, bytes: tcpHdrLen(l4), fields: [
       ['Source port', String(l4.sport), l4.sport >= 49152 ? 'Ephemeral port of the client' : ''],
-      ['Destination port', String(l4.dport), l4.dport === 80 ? 'HTTP' : l4.dport === 22 ? 'SSH' : l4.dport === 443 ? 'HTTPS' : ''],
+      ['Destination port', String(l4.dport), l4.dport === 80 ? 'HTTP' : l4.dport === 22 ? 'SSH' : l4.dport === 443 ? 'HTTPS' : l4.dport === 179 || l4.sport === 179 ? 'BGP' : ''],
       ['Sequence number', String(l4.seq), 'Number of the first byte in this segment'],
       ['Acknowledgment number', l4.flags.ACK ? String(l4.ack) : '0', l4.flags.ACK ? 'Next byte expected' : 'only valid with ACK'],
       ['Header length', `${tcpHdrLen(l4)} bytes`, l4.mss ? 'with MSS option' : ''],
       ['Flags', tcpFlags(l4.flags), ''], ['Window', String(l4.win), 'How many bytes the peer may send unacknowledged'],
       ...(l4.mss ? [['MSS option', String(l4.mss), 'Largest segment this host accepts']] : [])] });
-    if (l4.dataLen) layers.push({ kind: 'data', depth, name: 'Application data', bytes: l4.dataLen, fields: [['Content', `${l4.dataLen} bytes${l4.app ? ': ' + l4.app : ''}`, '']] });
+    if (l4.bgp) layers.push(bgpLayer(l4.bgp, l4.dataLen, depth));
+    else if (l4.dataLen) layers.push({ kind: 'data', depth, name: 'Application data', bytes: l4.dataLen, fields: [['Content', `${l4.dataLen} bytes${l4.app ? ': ' + l4.app : ''}`, '']] });
   } else if (l4.kind === 'vrrp') {
     layers.push({ kind: 'rt', depth, name: `${pre}VRRP advertisement`, bytes: 8 + 4 * (l4.vips?.length || 1), fields: [
       ['Version / Type', `${l4.version || 3} / 1 (Advertisement)`, ''], ['Virtual router ID', String(l4.vrid), 'Group number, also the last byte of the virtual MAC'],
@@ -9128,6 +10105,30 @@ export function flowOf(f) {
     return { key: `${l4.kind}:${pair(a, b)}`, kind: l4.kind, label };
   }
   return { key: `${l4.kind}:${ip.src}`, kind: l4.kind, label: `${l4.kind.toUpperCase()} from ${ip.src}` };
+}
+
+const BGP_NOTIF = { '2/2': 'OPEN Message Error: Bad Peer AS', '2/3': 'OPEN Message Error: Bad BGP Identifier', '4/0': 'Hold Timer Expired', '6/2': 'Cease: Administrative Shutdown', '6/4': 'Cease: Administrative Reset' };
+const bgpNotif = (c, s) => BGP_NOTIF[`${c}/${s}`] || `code ${c}, subcode ${s}`;
+function bgpLayer(m, bytes, depth) {
+  const fields = [['Marker / Length', `16 × 0xff / ${bytes} bytes`, 'Every BGP message starts like this'], ['Type', { OPEN: '1 (OPEN)', UPDATE: '2 (UPDATE)', NOTIFICATION: '3 (NOTIFICATION)', KEEPALIVE: '4 (KEEPALIVE)' }[m.type], '']];
+  if (m.type === 'OPEN') fields.push(['Version', '4', ''], ['My AS', String(m.asn), 'Must match the remote-as the neighbor configured'], ['Hold time', `${m.hold} s`, 'The lower value of both sides applies'],
+    ['BGP identifier', m.rid, 'Router ID'], ['Capabilities', (m.caps || []).join(', '), 'Address families and features this router supports']);
+  if (m.type === 'KEEPALIVE') fields.push(['Content', 'none', 'Only the header: "I am still here". Sent every hold time / 3']);
+  if (m.type === 'NOTIFICATION') fields.push(['Error', bgpNotif(m.code, m.sub), 'After a NOTIFICATION the session is closed'], ...(m.text ? [['Data', m.text, '']] : []));
+  if (m.type === 'UPDATE') {
+    if (m.withdrawn?.length) fields.push(['Withdrawn routes', m.withdrawn.join(', '), 'No longer reachable via this neighbor']);
+    if (m.nlri?.length || m.evpn?.length) {
+      const a = m.attrs || {};
+      fields.push(['ORIGIN', { i: 'IGP', e: 'EGP', '?': 'incomplete' }[a.origin] || 'IGP', ''], ['AS_PATH', (a.asPath || []).join(' ') || '(empty)', 'Every AS on the way, the newest first. Loop protection: an AS drops paths with its own number'],
+        ['NEXT_HOP', String(a.nextHop), 'Where to send packets for these networks']);
+      if (a.localPref != null) fields.push(['LOCAL_PREF', String(a.localPref), 'Only inside the AS (iBGP): the highest wins']);
+      if (a.med != null) fields.push(['MULTI_EXIT_DISC', String(a.med), 'A hint to the neighbor AS: the lowest is preferred']);
+      if (a.originatorId) fields.push(['ORIGINATOR_ID / CLUSTER_LIST', `${a.originatorId} / ${(a.clusterList || []).join(' ')}`, 'Added by a route reflector against loops']);
+      if (m.nlri?.length) fields.push(['NLRI (networks)', m.nlri.join(', '), '']);
+      for (const e of m.evpn || []) fields.push([`EVPN type ${e.rt}`, e.rt === 2 ? `MAC ${e.mac}${e.ip ? ', IP ' + e.ip : ''}, VNI ${e.vni}` : `VNI ${e.vni}, VTEP ${e.nextHop ?? a.nextHop}`, e.rt === 2 ? 'MAC/IP advertisement: this host is behind me' : 'Inclusive multicast: send flooded traffic for this VNI to me']);
+    }
+  }
+  return { kind: 'rt', depth, name: `BGP ${m.type}`, bytes, fields };
 }
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
@@ -9287,6 +10288,9 @@ export function configPanel(dev, ctx) {
         { id: 'wg', title: 'WireGuard VPN', desc: 'An encrypted tunnel wg0 to other sites or devices, with keys and allowed IPs',
           inUse: !!c.wg?.enabled, status: c.wg?.enabled ? `wg0 ${c.ifaces.wg0?.ip || ''}, ${plural((c.wg.peers || []).length, 'peer')}` : 'off', render: () => wgEditor(dev, upd, rerender),
           onAdd: () => upd(() => { c.wg.enabled = true; c.wg.privateKey ||= wgGenKey(dev.id + Date.now()); c.ifaces.wg0 ??= { ip: '10.99.0.1', prefix: 24 }; }, `${dev.name}: WireGuard on`) },
+        { id: 'bgp', title: 'BGP', desc: 'Exchange routes with other autonomous systems (eBGP) and inside your own (iBGP)',
+          inUse: !!c.bgp?.enabled, status: c.bgp?.enabled ? `AS ${c.bgp.asn || '?'}, ${(dev.bgp?.summary() || []).filter(x => x.state === 'Established').length}/${(c.bgp.neighbors || []).length} up` : 'off', render: () => bgpEditor(dev, upd, rerender),
+          onAdd: () => upd(() => { c.bgp.enabled = true; c.bgp.asn ||= 65001; }, `${dev.name}: BGP on`) },
         { id: 'rules', title: 'Rules', desc: 'Allow, drop or reject forwarded packets (firewall)', inUse: c.acl.length > 0, status: plural(c.acl.length, 'rule'), render: () => aclEditor(dev, upd) },
         { id: 'nat', title: 'NAT', desc: 'Inside hosts share the outside address, port forwards', inUse: !!c.nat.outside, status: c.nat.outside ? `outside ${c.nat.outside}` : 'off', render: () => natEditor(dev, upd, rerender) },
         { id: 'dhcp', title: 'DHCP', desc: 'Hand out addresses, or relay requests to a DHCP server', inUse: c.dhcpServer.enabled || relay,
@@ -9344,7 +10348,12 @@ export function configPanel(dev, ctx) {
     ], rerender, locked));
   }
 
-  if (c.type === 'vtep') box.append(vxlanEditor(dev, upd, sim));
+  if (c.type === 'vtep') {
+    box.append(vxlanEditor(dev, upd, sim));
+    box.append(features(dev, [{ id: 'bgp', title: 'BGP (EVPN)', desc: 'Find the other VTEPs and all MAC addresses over BGP instead of static flood lists',
+      inUse: !!c.bgp?.enabled, status: c.bgp?.enabled ? `AS ${c.bgp.asn || '?'}, ${(dev.bgp?.summary() || []).filter(x => x.state === 'Established').length}/${(c.bgp.neighbors || []).length} up` : 'off', render: () => bgpEditor(dev, upd, rerender),
+      onAdd: () => upd(() => { c.bgp.enabled = true; c.bgp.asn ||= 65000; }, `${dev.name}: BGP on`) }], rerender, locked));
+  }
   if (locked) box.querySelectorAll('input,select,button').forEach(e => e.disabled = true);
   return box;
 }
@@ -9588,8 +10597,12 @@ function vxlanEditor(dev, upd, sim) {
           h('label', { class: 'field' }, 'Local VLAN', numInput(m.vlan, 1, 4094, v => upd(() => m.vlan = v, `${dev.name}: VLAN ${v}`))),
           h('label', { class: 'field' }, 'UDP dest. port', numInput(m.dstport ?? 4789, 1, 65535, v => upd(() => m.dstport = v ?? 4789, `${dev.name}: port ${v}`))),
           h('label', { class: 'field' }, `MTU (auto ${dev.vxlanMtu({ ...m, mtu: null })})`, numInput(m.mtu, 68, 9000, v => upd(() => m.mtu = v, `${dev.name}: VXLAN MTU ${v ?? 'auto'}`), 'auto'))),
-        h('label', { class: 'field' }, 'Flood list (remote VTEPs)', flood),
-        h('label', { class: 'row small' }, learn, 'Learn MAC addresses from the tunnel (flood and learn)')));
+        h('label', { class: 'field' }, m.evpn ? `Static flood list (EVPN adds: ${[...(dev.evpn.vteps.get(Number(m.vni)) || [])].join(', ') || 'nothing yet'})` : 'Flood list (remote VTEPs)', flood),
+        h('label', { class: 'row small' }, learn, 'Learn MAC addresses from the tunnel (flood and learn)'),
+        (() => { const e = h('input', { type: 'checkbox', checked: m.evpn ? true : null }); e.addEventListener('change', () => { upd(() => m.evpn = e.checked, `${dev.name}: EVPN for VNI ${m.vni} ${e.checked ? 'on' : 'off'}`); draw(); });
+          return h('label', { class: 'row small', title: 'Flood list and remote MACs come from BGP (type 3 and type 2 routes). Needs BGP with an EVPN neighbor.' }, e, 'EVPN: learn VTEPs and MACs over BGP'); })(),
+        m.evpn ? (() => { const a = h('input', { type: 'checkbox', checked: m.arpSuppress ? true : null }); a.addEventListener('change', () => upd(() => m.arpSuppress = a.checked, `${dev.name}: ARP suppression ${a.checked ? 'on' : 'off'}`));
+          return h('label', { class: 'row small' }, a, 'ARP suppression: answer ARP requests for remote hosts locally'); })() : null));
     });
     if (!c.vxlans.length) list.append(h('div', { class: 'empty' }, 'No segment. A segment connects a local VLAN to a VNI.'));
     wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Add segment',
@@ -9819,6 +10832,51 @@ function ipv6RouterEditor(dev, upd, sim, rerender) {
     h('div', { style: { marginTop: '8px' } }, v6AddrTable(dev, dev.l3.v6.ifnames())));
 }
 
+function bgpEditor(dev, upd, rerender) {
+  const c = dev.cfg, b = c.bgp;
+  const sum = new Map((dev.bgp?.summary() || []).map(x => [x.ip, x]));
+  const text = (val, ph, set, cls = 'input mono') => { const i = h('input', { class: cls, value: val ?? '', placeholder: ph, spellcheck: 'false' }); i.addEventListener('change', () => set(i.value.trim())); return i; };
+  const nets = text((b.networks || []).join(', '), '10.1.0.0/24', v => {
+    const list = v.split(/[\s,]+/).filter(Boolean);
+    if (list.some(x => !parseCidr(x))) return;
+    upd(() => b.networks = list.map(x => `${parseCidr(x).net}/${parseCidr(x).len}`), `${dev.name}: BGP networks ${list.join(', ') || 'none'}`);
+  });
+  const srcOpts = [['', 'auto (outgoing interface)'], ...Object.keys(c.ifaces).filter(n => isIp(c.ifaces[n].ip)).map(n => [n, `${n} ${c.ifaces[n].ip}`])];
+  const list = h('div', { class: 'list' });
+  (b.neighbors || []).forEach((n, idx) => {
+    const st = sum.get(n.ip);
+    const cb = (k, label, title) => { const i = h('input', { type: 'checkbox', checked: n[k] ? true : null }); i.addEventListener('change', () => upd(() => n[k] = i.checked, `${dev.name}: ${n.ip} ${k} ${i.checked ? 'on' : 'off'}`)); return h('label', { class: 'row small', title }, i, label); };
+    const num = (k, ph, title, min, max) => { const i = numInput(n[k] === '' ? null : n[k], min, max, v => upd(() => n[k] = v ?? '', `${dev.name}: ${n.ip} ${k} ${v ?? 'default'}`), ph); i.title = title; return i; };
+    const ebgp = Number(n.remoteAs) && Number(n.remoteAs) !== Number(b.asn);
+    list.append(h('div', { class: 'item' },
+      h('div', { class: 'row' }, h('span', { class: 'grp grow' }, ipInput(n.ip, v => upd(() => n.ip = v, `${dev.name}: BGP neighbor ${v}`), 'neighbor address'),
+        h('span', { class: 'small muted' }, 'AS'), num('remoteAs', 'remote AS', 'The AS number of the neighbor (remote-as). The same as your own: iBGP', 1, 4294967295)),
+        h('span', { class: `small ${st?.state === 'Established' ? 'ok-text' : 'muted'}`, title: st?.error || '' }, st ? `${ebgp ? 'eBGP' : 'iBGP'}, ${st.state}${st.state === 'Established' ? ', ' + st.pfx + ' prefixes' : ''}` : ''),
+        h('button', { class: 'btn icon ghost', title: 'Remove neighbor', html: I.trash, onclick: () => { upd(() => b.neighbors.splice(idx, 1), `${dev.name}: BGP neighbor removed`); rerender?.(); } })),
+      h('div', { class: 'row', style: { marginTop: '4px' } },
+        h('label', { class: 'row small', title: 'Source address of the session (update-source). For iBGP between loopbacks: lo' }, 'Source', select(srcOpts, n.updateSource || '', v => upd(() => n.updateSource = v, `${dev.name}: ${n.ip} update-source ${v || 'auto'}`))),
+        cb('nextHopSelf', 'next-hop-self', 'Announce yourself as next hop to iBGP neighbors, instead of the address of the external neighbor'),
+        cb('rrClient', 'RR client', 'This router reflects iBGP routes to and from this neighbor (route reflector)'),
+        cb('evpn', 'EVPN', 'Also exchange EVPN routes (address family l2vpn evpn) with this neighbor')),
+      h('div', { class: 'row small', style: { marginTop: '4px' } },
+        h('span', { class: 'muted' }, 'In: local pref'), num('localPref', '100', 'LOCAL_PREF for routes from this neighbor: the highest wins inside the AS', 0, 4294967295),
+        h('span', { class: 'muted' }, 'Out: MED'), num('med', '-', 'MED sent to this neighbor: a hint which entrance to prefer, the lowest wins', 0, 4294967295),
+        h('span', { class: 'muted' }, 'prepend'), num('prepend', '0', 'Add your own AS this many extra times to the AS path towards this neighbor: makes the path look longer', 0, 10),
+        ...(ebgp ? [h('span', { class: 'muted' }, 'multihop'), num('multihop', '1', 'ebgp-multihop: TTL for eBGP neighbors that are not directly connected', 0, 255)] : []))));
+  });
+  if (!(b.neighbors || []).length) list.append(h('div', { class: 'empty' }, 'No neighbors yet.'));
+  return h('div', {},
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: b.enabled ? true : null, onchange: e => { upd(() => b.enabled = e.target.checked, `${dev.name}: BGP ${e.target.checked ? 'on' : 'off'}`); rerender?.(); } }), 'BGP on'),
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr', marginTop: '6px' } },
+      h('span', {}, 'Local AS'), numInput(b.asn, 1, 4294967295, v => upd(() => b.asn = v ?? '', `${dev.name}: AS ${v}`), '65001'),
+      h('span', {}, 'Router ID'), ipInput(b.rid, v => upd(() => b.rid = v, `${dev.name}: BGP router ID ${v || 'auto'}`), `auto: ${dev.bgp?.rid || ''}`),
+      h('span', {}, 'Timers'), select([['fast', 'fast (keepalive 3 s, hold 9 s)'], ['standard', 'standard (60 s / 180 s)']], b.timers || 'fast', v => upd(() => b.timers = v, `${dev.name}: BGP timers ${v}`)),
+      h('span', {}, 'Networks'), nets),
+    h('p', { class: 'small muted', style: { margin: '4px 0' } }, 'Networks are only announced when exactly this prefix is in the routing table (connected, static or OSPF).'),
+    h('label', { class: 'row small' }, h('input', { type: 'checkbox', checked: b.redistributeConnected ? true : null, onchange: e => upd(() => b.redistributeConnected = e.target.checked, `${dev.name}: redistribute connected ${e.target.checked ? 'on' : 'off'}`) }), 'Also announce all connected networks (redistribute connected)'),
+    h('h4', {}, 'Neighbors'), list,
+    h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Neighbor', onclick: () => { upd(() => (b.neighbors ||= []).push({ ip: '', remoteAs: '', updateSource: '', nextHopSelf: false, rrClient: false, localPref: '', med: '', prepend: 0, multihop: 0 }), `${dev.name}: new BGP neighbor`); rerender?.(); } }));
+}
 function wgEditor(dev, upd, rerender) {
   const c = dev.cfg, w = c.wg;
   c.ifaces.wg0 ??= { ip: '', prefix: 24 };
@@ -9866,7 +10924,7 @@ export function tablesPanel(dev, sim) {
   };
   if (dev.l3) {
     box.append(h('h4', {}, 'Routing table'),
-      tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.dhcp ? 'DHCP' : (r.dev ? (r.bfd ? 'S, BFD' : 'S') : r.bfdDown ? 'S, BFD down' : 'S inactive')])));
+      tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.proto === 'B' ? (r.ibgp ? 'B (iBGP)' : 'B (eBGP)') : r.proto === 'W' ? 'WireGuard' : r.dhcp ? 'DHCP' : (r.dev ? (r.bfd ? 'S, BFD' : 'S') : r.bfdDown ? 'S, BFD down' : 'S inactive')])));
     if (dev.l3.v6.on) {
       box.append(h('h4', {}, 'IPv6 routes'), tbl(['Destination', 'via', 'dev', ''], dev.l3.v6.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', { C: 'C', K: 'C (SLAAC)', S: r.dev ? 'S' : 'S inactive', RA: 'RA' }[r.proto]])));
       box.append(h('h4', {}, 'IPv6 neighbors (NDP)'), tbl(['IPv6', 'MAC', 'dev', 'State'], dev.l3.v6.neighborTable().map(e => [e.ip, e.mac || '–', e.ifname, e.state + (e.router ? ', router' : '')])));
@@ -9882,6 +10940,12 @@ export function tablesPanel(dev, sim) {
     if (dev.cfg.nat?.outside) box.append(h('h4', {}, 'NAT translations'), tbl(['Inside', 'Outside', 'Remote'], dev.l3.natTable.map(e => [`${e.inIp}:${e.inPort}`, `${e.outIp}:${e.outPort}`, `${e.remIp}:${e.remPort}`])));
     if (dev.vrrp?.groups.length) box.append(h('h4', {}, 'VRRP'), tbl(['Group', 'Port', 'Virtual IP', 'State', 'Prio'], dev.vrrp.table().map(g => [g.vrid, g.ifname, g.vip, g.state, g.prio])));
     if (dev.bfd?.table().length) box.append(h('h4', {}, 'BFD sessions'), tbl(['Peer', 'Port', 'State', 'For'], dev.bfd.table().map(x => [x.peer, x.ifname, x.state, x.clients.join(', ')])));
+    if (dev.bgp?.enabled) {
+      box.append(h('h4', {}, `BGP neighbors (AS ${dev.bgp.asn})`), tbl(['Neighbor', 'AS', 'Type', 'State', 'Prefixes'], dev.bgp.summary().map(x => [x.ip, x.as, x.type, x.state, x.state === 'Established' ? x.pfx : '–'])));
+      box.append(h('h4', {}, 'BGP table'), tbl(['', 'Network', 'Next hop', 'AS path', 'LocPrf'], dev.bgp.table().map(r => [`${r.valid ? '*' : ' '}${r.best ? '>' : ''}${r.ibgp ? 'i' : ''}`, r.prefix, r.valid ? r.nextHop : `${r.nextHop} (inaccessible)`, [...r.asPath, r.origin].join(' '), r.localPref ?? ''])));
+    }
+    if (dev.evpn?.on()) box.append(h('h4', {}, 'EVPN MAC table'), tbl(['VNI', 'MAC', 'IP', 'Where'], [...dev.evpn.localRoutes().filter(r => r.rt === 2).map(r => [r.vni, r.mac, r.ip, 'local']),
+      ...[...dev.evpn.macs.values()].map(r => [r.vni, r.mac, r.ip, `VTEP ${r.vtep}`])]));
     if (dev.ospf?.enabled) box.append(h('h4', {}, 'OSPF neighbors'), tbl(['Router ID', 'Address', 'Port', 'State'], dev.ospf.neighborTable().map(n => [n.rid, n.ip, n.ifname, n.state])));
     if (dev.wg?.on) box.append(h('h4', {}, 'WireGuard peers'), tbl(['Peer', 'Endpoint', 'Allowed IPs', 'Handshake'], dev.wg.table().map(x => [x.name || shortKey(x.publicKey), x.endpoint, x.allowed, x.handshake === null ? 'none' : `${x.handshake} s ago`])));
     if (dev.cfg.recursion?.enabled) box.append(h('h4', {}, 'DNS cache'), tbl(['Name', 'Type', 'Data', 'TTL left'], (dev.l3.resolverSvc?.dump() || []).map(e => [e.name || '.', e.type, e.data, `${e.ttl} s`])));
@@ -10258,6 +11322,18 @@ export const PRESETS = [
   { id: 'vpn', title: 'Site-to-site VPN with WireGuard', topics: ['VPN', 'WireGuard', 'Tunnel'],
     text: 'gwA and gwB join two private networks through a provider that only knows public addresses. Ping srvB from pcA and look at the outer and the inner packet. wg show on the gateways.',
     make: () => vpnTopo() },
+  { id: 'bgp', title: 'eBGP between two companies', topics: ['BGP', 'eBGP', 'AS'],
+    text: 'r1 (AS 65001) and r2 (AS 65002) exchange their networks over BGP. Try show ip bgp summary and show ip bgp.',
+    make: () => bgpPairTopo() },
+  { id: 'ibgp', title: 'iBGP and eBGP with a provider', topics: ['BGP', 'iBGP', 'OSPF', 'Next hop'],
+    text: 'An AS with three routers: OSPF carries the loopbacks, iBGP the external routes, eBGP talks to the provider. pc3 reaches the web server on the internet.',
+    make: () => ibgpTopo() },
+  { id: 'bgpmulti', title: 'Two providers (multihoming)', topics: ['BGP', 'Local preference', 'AS path prepending'],
+    text: 'AS 65001 is connected to two providers. Which way do the packets of pc2 take to the web server, and which way do the answers come back? Change it with local preference and AS path prepending.',
+    make: () => bgpMultiTopo() },
+  { id: 'evpn', title: 'EVPN with three VTEPs', topics: ['EVPN', 'BGP', 'VXLAN', 'Route reflector'],
+    text: 'The VTEPs find each other with BGP type 3 routes and learn every MAC with type 2 routes. No static flood lists, no flood and learn, ARP suppression on.',
+    make: () => evpnTopo() },
   { id: 'failover', title: 'Failover with gratuitous ARP', topics: ['ARP', 'GARP', 'Failover'],
     text: 'The service address 10.0.0.100 moves from srvA to srvB. Try it with and without gratuitous ARP.',
     make: () => failoverTopo() },
@@ -10452,6 +11528,79 @@ export function vpnTopo({ peerB = true, allowedB = '10.99.0.1/32, 10.1.0.0/24', 
   [link('pcA', 'eth1', 'swA', 'eth1'), link('pcA2', 'eth1', 'swA', 'eth2'), link('swA', 'eth8', 'gwA', 'eth1'), link('gwA', 'eth2', 'isp', 'eth1'), link('isp', 'eth2', 'gwB', 'eth1'), link('gwB', 'eth2', 'srvB', 'eth1')],
   [{ x: 20, y: 60, w: 380, h: 340, label: 'Site A 10.1.0.0/24', color: 'blue' }, { x: 450, y: 120, w: 160, h: 200, label: 'Internet', color: 'gray' },
     { x: 660, y: 60, w: 320, h: 340, label: 'Site B 10.2.0.0/24', color: 'green' }]);
+}
+// -------------------------------------------------------------- BGP
+const bgpCfg = (asn, neighbors, networks = [], extra = {}) => ({ enabled: true, asn, rid: '', timers: 'fast', networks, redistributeConnected: false, neighbors, ...extra });
+const nb = (ip, remoteAs, extra = {}) => ({ ip, remoteAs, updateSource: '', nextHopSelf: false, rrClient: false, localPref: '', med: '', multihop: 0, ...extra });
+/** Two companies, two autonomous systems, one eBGP session */
+export function bgpPairTopo({ r2 = true, r2As = 65001 } = {}) {
+  const r1 = router('r1', 330, 230, { eth1: '10.1.0.1/24', eth2: '10.0.12.1/30' }, [], { bgp: bgpCfg(65001, [nb('10.0.12.2', 65002)], ['10.1.0.0/24']) });
+  const r2d = router('r2', 590, 230, { eth1: '10.0.12.2/30', eth2: '10.2.0.1/24' }, [], { bgp: r2 ? bgpCfg(65002, [nb('10.0.12.1', r2As)], ['10.2.0.0/24']) : bgpCfg(65002, [], [], { enabled: false }) });
+  return topo('eBGP between two autonomous systems', [host('pc1', 100, 230, '10.1.0.10', 24, '10.1.0.1'), r1, r2d, server('srv2', 820, 230, '10.2.0.10', 24, '10.2.0.1')],
+    [link('pc1', 'eth1', 'r1', 'eth1'), link('r1', 'eth2', 'r2', 'eth1'), link('r2', 'eth2', 'srv2', 'eth1')],
+    [{ x: 30, y: 110, w: 380, h: 240, label: 'AS 65001', color: 'blue' }, { x: 510, y: 110, w: 380, h: 240, label: 'AS 65002', color: 'green' }]);
+}
+/** An AS with three routers: OSPF inside, iBGP between the loopbacks, eBGP to the provider */
+export function ibgpTopo({ nhs = true, fullMesh = true, rr = false, lo1 = true } = {}) {
+  const ospf = (ifs) => ospfOn(Object.fromEntries(ifs.map(([k, v]) => [k, v || {}])));
+  const ib = (ip, extra = {}) => nb(ip, 65001, { updateSource: lo1 ? 'lo' : '', ...extra });
+  const isp = router('isp', 120, 120, { eth1: '192.0.2.1/30', eth2: '198.51.100.1/24' }, [], { bgp: bgpCfg(65100, [nb('192.0.2.2', 65001)], ['198.51.100.0/24']) });
+  const r1 = router('r1', 330, 230, { eth1: '192.0.2.2/30', eth2: '10.0.12.1/30', lo: '10.255.0.1/32' }, [], {
+    bgp: bgpCfg(65001, [nb('192.0.2.1', 65100), ib('10.255.0.2', { nextHopSelf: nhs }), ...(fullMesh ? [ib('10.255.0.3', { nextHopSelf: nhs })] : [])]) });
+  r1.ospf = ospf([['eth2'], ['lo', { passive: true }]]);
+  const r2 = router('r2', 540, 230, { eth1: '10.0.12.2/30', eth2: '10.0.23.2/30', lo: '10.255.0.2/32' }, [], {
+    bgp: bgpCfg(65001, [ib('10.255.0.1', { rrClient: rr }), ib('10.255.0.3', { rrClient: rr })]) });
+  r2.ospf = ospf([['eth1'], ['eth2'], ['lo', { passive: true }]]);
+  const r3 = router('r3', 750, 230, { eth1: '10.0.23.3/30', eth2: '10.3.0.1/24', lo: '10.255.0.3/32' }, [], {
+    bgp: bgpCfg(65001, [...(fullMesh ? [ib('10.255.0.1')] : []), ib('10.255.0.2')], ['10.3.0.0/24']) });
+  r3.ospf = ospf([['eth1'], ['eth2', { passive: true }], ['lo', { passive: true }]]);
+  const web = server('web', 120, 360, '198.51.100.80', 24, '198.51.100.1');
+  web.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  return topo('iBGP inside an AS, eBGP to the provider', [isp, web, r1, r2, r3, host('pc3', 900, 360, '10.3.0.10', 24, '10.3.0.1')],
+    [link('isp', 'eth1', 'r1', 'eth1'), link('isp', 'eth2', 'web', 'eth1'), link('r1', 'eth2', 'r2', 'eth1'), link('r2', 'eth2', 'r3', 'eth1'), link('r3', 'eth2', 'pc3', 'eth1')],
+    [{ x: 30, y: 40, w: 200, h: 400, label: 'Provider AS 65100', color: 'gray' }, { x: 260, y: 120, w: 720, h: 330, label: 'AS 65001: OSPF inside, iBGP between the loopbacks', color: 'blue' }]);
+}
+/** One AS with two providers: which exit is used, and which entrance do the others use? */
+export function bgpMultiTopo({ lpR3 = '', lpR1 = '', lpR3Ibgp = '', prependR1 = 0 } = {}) {
+  const ospf = (ifs) => ospfOn(Object.fromEntries(ifs.map(([k, v]) => [k, v || {}])));
+  const ib = (ip, extra = {}) => nb(ip, 65001, { updateSource: 'lo', ...extra });
+  const isp1 = router('isp1', 330, 70, { eth1: '192.0.2.1/30', eth2: '198.51.100.1/24', eth3: '203.0.113.1/30' }, [], { bgp: bgpCfg(65100, [nb('192.0.2.2', 65001), nb('203.0.113.2', 65200)], ['198.51.100.0/24']) });
+  const isp2 = router('isp2', 750, 70, { eth1: '192.0.2.5/30', eth3: '203.0.113.2/30' }, [], { bgp: bgpCfg(65200, [nb('192.0.2.6', 65001), nb('203.0.113.1', 65100)]) });
+  const web = server('web', 120, 70, '198.51.100.80', 24, '198.51.100.1');
+  web.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  const r1 = router('r1', 330, 260, { eth1: '192.0.2.2/30', eth2: '10.0.12.1/30', lo: '10.255.0.1/32' }, [], {
+    bgp: bgpCfg(65001, [nb('192.0.2.1', 65100, { localPref: lpR1, prepend: prependR1 }), ib('10.255.0.2', { nextHopSelf: true }), ib('10.255.0.3', { nextHopSelf: true })]) });
+  r1.ospf = ospf([['eth2'], ['lo', { passive: true }]]);
+  const r2 = router('r2', 540, 380, { eth1: '10.0.12.2/30', eth2: '10.0.23.2/30', eth3: '10.2.0.1/24', lo: '10.255.0.2/32' }, [], {
+    bgp: bgpCfg(65001, [ib('10.255.0.1'), ib('10.255.0.3')], ['10.2.0.0/24']) });
+  r2.ospf = ospf([['eth1'], ['eth2'], ['eth3', { passive: true }], ['lo', { passive: true }]]);
+  const r3 = router('r3', 750, 260, { eth1: '192.0.2.6/30', eth2: '10.0.23.3/30', lo: '10.255.0.3/32' }, [], {
+    bgp: bgpCfg(65001, [nb('192.0.2.5', 65200, { localPref: lpR3 }), ib('10.255.0.1', { nextHopSelf: true }), ib('10.255.0.2', { nextHopSelf: true, localPref: lpR3Ibgp })]) });
+  r3.ospf = ospf([['eth2'], ['lo', { passive: true }]]);
+  return topo('Two providers: choosing the way out and in', [web, isp1, isp2, r1, r2, r3, host('pc2', 540, 520, '10.2.0.10', 24, '10.2.0.1')],
+    [link('web', 'eth1', 'isp1', 'eth2'), link('isp1', 'eth1', 'r1', 'eth1'), link('isp1', 'eth3', 'isp2', 'eth3'), link('isp2', 'eth1', 'r3', 'eth1'),
+      link('r1', 'eth2', 'r2', 'eth1'), link('r2', 'eth2', 'r3', 'eth2'), link('r2', 'eth3', 'pc2', 'eth1')],
+    [{ x: 30, y: 10, w: 400, h: 130, label: 'Provider 1, AS 65100 (with the web server)', color: 'gray' }, { x: 650, y: 10, w: 200, h: 130, label: 'Provider 2, AS 65200', color: 'gray' },
+      { x: 250, y: 200, w: 600, h: 380, label: 'Our AS 65001', color: 'blue' }]);
+}
+/** EVPN: three VTEPs learn about each other and about all MACs over BGP, the spine reflects the routes */
+export function evpnTopo({ rr = true, evpn = ['vtep1', 'vtep2', 'vtep3'], vni = {}, suppress = true, nbrEvpn = ['vtep1', 'vtep2', 'vtep3'] } = {}) {
+  const v = (n, x) => {
+    const id = 'vtep' + n;
+    const d = vtep(id, x, 240, { uplink: `10.0.${n}.2/24`, lo: `10.255.0.${n}`, routes: [['10.255.0.0/24', `10.0.${n}.1`]], ports: { eth2: acc(10) },
+      vxlans: [{ vni: vni[id] ?? 10010, vlan: 10, flood: [], dstport: 4789, learning: true, evpn: evpn.includes(id), arpSuppress: suppress }] });
+    d.bgp = bgpCfg(65000, [nb('10.255.0.254', 65000, { updateSource: 'lo', evpn: true })]);
+    return d;
+  };
+  const spine = router('spine', 450, 440, { eth1: '10.0.1.1/24', eth2: '10.0.2.1/24', eth3: '10.0.3.1/24', lo: '10.255.0.254/32' },
+    [['10.255.0.1/32', '10.0.1.2'], ['10.255.0.2/32', '10.0.2.2'], ['10.255.0.3/32', '10.0.3.2']],
+    { bgp: bgpCfg(65000, [1, 2, 3].map(n => nb(`10.255.0.${n}`, 65000, { updateSource: 'lo', rrClient: rr, evpn: nbrEvpn.includes('vtep' + n) }))) });
+  return topo('EVPN: BGP as the control plane of VXLAN', [v(1, 170), v(2, 450), v(3, 730), spine,
+    server('srv1', 170, 90, '192.168.10.11'), server('srv2', 450, 90, '192.168.10.12'), server('srv3', 730, 90, '192.168.10.13')],
+  [link('vtep1', 'eth1', 'spine', 'eth1'), link('vtep2', 'eth1', 'spine', 'eth2'), link('vtep3', 'eth1', 'spine', 'eth3'),
+    link('srv1', 'eth1', 'vtep1', 'eth2'), link('srv2', 'eth1', 'vtep2', 'eth2'), link('srv3', 'eth1', 'vtep3', 'eth2')],
+  [{ x: 40, y: 30, w: 820, h: 120, label: 'Overlay: VNI 10010, 192.168.10.0/24', kind: 'overlay' },
+    { x: 60, y: 360, w: 780, h: 160, label: 'Underlay: routed, the spine is the BGP route reflector', kind: 'underlay' }]);
 }
 export function failoverTopo() {
   const a = server('srvA', 600, 110, '10.0.0.100'), b = server('srvB', 600, 330, '10.0.0.12');
@@ -12047,6 +13196,7 @@ export const BUILD_BLOCKS = {
     ['135', '135 Neighbor Solicitation'], ['136', '136 Neighbor Advertisement'], ['1', '1 Destination Unreachable'], ['2', '2 Packet Too Big'], ['3', '3 Time Exceeded']]], ['target', 'Target address (NS/NA only)', 'ip6']] },
   udp: { name: 'UDP', kind: 'udp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num']] },
   tcp: { name: 'TCP', kind: 'tcp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num'], ['flags', 'Flags', [['SYN', 'SYN'], ['SYN,ACK', 'SYN, ACK'], ['ACK', 'ACK'], ['PSH,ACK', 'PSH, ACK'], ['FIN,ACK', 'FIN, ACK'], ['RST', 'RST'], ['RST,ACK', 'RST, ACK']]]] },
+  bgp: { name: 'BGP', kind: 'rt', fields: [['type', 'Message type', [['OPEN', 'OPEN'], ['UPDATE', 'UPDATE'], ['KEEPALIVE', 'KEEPALIVE'], ['NOTIFICATION', 'NOTIFICATION']]]] },
   wg: { name: 'WireGuard', kind: 'vpn', fields: [['type', 'Message type', [['1', '1 Handshake initiation'], ['2', '2 Handshake response'], ['4', '4 Transport data']]]] },
   dns: { name: 'DNS', kind: 'udp', fields: [['qr', 'Kind', [['0', 'Query (QR 0)'], ['1', 'Response (QR 1)']]], ['name', 'Queried name', 'name'],
     ['qtype', 'Type', [['A', 'A (IPv4 address)'], ['AAAA', 'AAAA (IPv6 address)'], ['NS', 'NS (name server)'], ['CNAME', 'CNAME (alias)']]],

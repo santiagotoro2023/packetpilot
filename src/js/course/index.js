@@ -11,11 +11,12 @@ import m10 from './m10.js';
 import m11 from './m11.js';
 import m12 from './m12.js';
 import m13 from './m13.js';
+import m14 from './m14.js';
+import m15 from './m15.js';
 
 // Display order: all of layer 2, then layer 3, VLAN/VXLAN, transport, then the network services
-export const MODULES = [m1, m4, m2, m12, m3, m5, m11, m6, m7, m8, m9, m10, m13];
+export const MODULES = [m1, m4, m2, m12, m3, m5, m11, m6, m7, m8, m9, m10, m14, m15, m13];
 export const UPCOMING = [
-  { title: 'BGP and EVPN', text: 'Routing between networks and a real control plane for VXLAN.' }
 ]
 export function findLesson(id) {
   for (const m of MODULES) {

@@ -22,6 +22,7 @@ const BLOCKS = {
   vrrp: { name: 'VRRP', size: 12, kind: 'rt', in: ['ip'], last: true, note: 'Advertisement: group, priority, virtual IP (protocol 112)' },
   ospf: { name: 'OSPF Hello', size: 48, kind: 'rt', in: ['ip'], last: true, note: 'Router ID, area, timers, neighbors (protocol 89)' },
   bfd: { name: 'BFD', size: 24, kind: 'rt', in: ['udp'], last: true, note: 'Control packet: state, discriminators, intervals (UDP 3784)' },
+  bgp: { name: 'BGP message', size: 19, kind: 'rt', in: ['tcp'], last: true, note: 'Header of every BGP message (KEEPALIVE: only this). OPEN, UPDATE and NOTIFICATION add their content. TCP port 179' },
   data: { name: 'Data', size: null, kind: 'data', note: 'Application payload' }
 };
 // Headings in the palette, so the growing list stays easy to scan
@@ -42,6 +43,7 @@ const PRESETS = {
   'OSPF Hello': ['eth', 'ip', 'ospf'],
   'VRRP': ['eth', 'ip', 'vrrp'],
   'BFD': ['eth', 'ip', 'udp', 'bfd'],
+  'BGP KEEPALIVE': ['eth', 'ip', 'tcp', 'bgp'],
   'Ping over VXLAN': ['eth', 'ip', 'udp', 'vxlan', 'eth', 'ip', 'icmp', 'data'],
   'Ping through WireGuard': ['eth', 'ip', 'udp', 'wg', 'ip', 'icmp', 'data'],
   'Ping through IPsec': ['eth', 'ip', 'esp', 'ip', 'icmp', 'data']

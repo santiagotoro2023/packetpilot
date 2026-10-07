@@ -6,6 +6,8 @@ import { ethFrame, arpPacket, ipPacket, icmp, icmp6, udp, tcp, ipChecksum, summa
 import { serveDns, rrText, fqdn, resolverOf } from './dns.js';
 import { Ip6, icmp6Name } from './ipv6.js';
 import { Wg, wgDataLen } from './vpn.js';
+import { Bgp } from './bgp.js';
+import { Evpn } from './evpn.js';
 import { dhcpOn67, natIn, natOut, Vrrp, Ospf, Bfd, BFD_PORT, DHCP_TIMING, vrrpMac } from './services.js';
 
 export const PORTS = {
@@ -186,6 +188,7 @@ export function flowHash(ip, policy = 'l3') {
 }
 export function isHello(f) {
   if (f?.type === 'ipv6') return !!f.payload.l4?.periodic;
+  if (f?.type === 'ipv4' && f.payload.l4?.bgp?.type === 'KEEPALIVE') return true;
   const l4 = f?.type === 'ipv4' ? f.payload.l4 : null;
   return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello') || (l4.kind === 'udp' && l4.payload?.kind === 'bfd')
     || (l4.kind === 'udp' && l4.payload?.kind === 'wg' && l4.payload.type === 'data' && !l4.payload.inner));
@@ -227,6 +230,7 @@ export function normalizeDevice(cfg) {
     cfg.ipv6 = { enabled: false, ra: [], rdnss: '', ...(cfg.ipv6 || {}) };
     cfg.ospf.ifaces ??= {};
   }
+  if (t === 'router' || t === 'vtep') cfg.bgp = { enabled: false, asn: '', rid: '', timers: 'fast', networks: [], redistributeConnected: false, neighbors: [], ...(cfg.bgp || {}) };
   if (t === 'router' || t === 'server') cfg.dhcpServer = { enabled: false, pools: [], ...(cfg.dhcpServer || {}) };
   if (t === 'switch') {
     cfg.ports ??= {};
@@ -317,7 +321,7 @@ class L3 {
   mtu(ifname) { return ifname === 'lo' ? 65536 : ifname === 'wg0' ? (this.dev.wg?.mtu() ?? 1420) : this.sim.mtuOf(this.dev.id, this.phys(ifname)); }
   linkUp(ifname) { if (ifname === 'lo' || ifname === 'wg0') return true; const l = this.sim.linkAt(this.dev.id, this.phys(ifname)); return !!l && l.up; }
 
-  routes() {
+  routes(skipBgp = false) {
     const out = [];
     for (const i of this.ifaces()) {
       if (i.name === 'lo') continue;
@@ -337,6 +341,7 @@ class L3 {
     }
     for (const r of this.dev.ospf?.routes || []) out.push({ net: r.net, len: r.len, via: r.via, dev: r.dev, proto: 'O', metric: r.cost });
     for (const r of this.dev.wg?.routes() || []) out.push(r);
+    if (!skipBgp) for (const r of this.dev.bgp?.routes() || []) out.push(r);
     return out;
   }
   /** All equally good routes to dst: longest prefix, then the administrative distance
@@ -344,7 +349,7 @@ class L3 {
   lookupAll(dst, skipDev = null) {
     // A static route can carry its own distance (a "floating" backup route, e.g. 200). Routes
     // into the WireGuard tunnel win like wg-quick's own routing table.
-    const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, W: 0, O: 110 }[r.proto] ?? 255;
+    const ad = r => r.proto === 'S' ? r.distance || 1 : r.proto === 'B' ? (r.ibgp ? 200 : 20) : { C: 0, W: 0, O: 110 }[r.proto] ?? 255;
     let best = [];
     const better = (a, b) => a.len !== b.len ? a.len > b.len : ad(a) !== ad(b) ? ad(a) < ad(b) : (a.metric || 0) < (b.metric || 0);
     for (const r of this.routes()) {
@@ -783,6 +788,7 @@ class L3 {
   }
   mssFor(dst) { const r = this.lookup(dst); return (r ? this.mtu(r.dev) : 1500) - (isIp6(dst) ? 60 : 40); }
   onTcp(ip, frame) {
+    if (this.dev.bgp?.onTcp(ip)) return;
     const s = ip.l4;
     const key = `${s.dport}|${ip.src}|${s.sport}`;
     const c = this.tcp.get(key);
@@ -1383,14 +1389,15 @@ class Router extends Host {
   // VRRP and OSPF only restart when their own settings change, not on every configuration change
   start() {
     super.start();
-    this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop();
+    this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop(); this.bgp?.stop();
     this.bfd = new Bfd(this);
+    this.bgp = new Bgp(this); this.bgp.start();
     this.vrrp = new Vrrp(this); this.vrrp.start(); this.vrrpSnap = JSON.stringify(this.cfg.vrrp);
     this.ospf = new Ospf(this); this.ospf.start(); this.ospfSnap = JSON.stringify(this.cfg.ospf);
     this.bfd.start(); this.bfdSnap = JSON.stringify(this.cfg.bfd);
     this.addrSnap = JSON.stringify(this.l3.ifaces());
   }
-  stop() { super.stop(); this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop(); }
+  stop() { super.stop(); this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop(); this.bgp?.stop(); }
   onConfig() {
     super.onConfig();
     const v = JSON.stringify(this.cfg.vrrp), o = JSON.stringify(this.cfg.ospf), a = JSON.stringify(this.l3.ifaces()), b = JSON.stringify(this.cfg.bfd);
@@ -1399,6 +1406,7 @@ class Router extends Host {
     if (o !== this.ospfSnap) { this.ospfSnap = o; this.ospf.start(); }
     else if (a !== this.addrSnap) this.ospf.originate();
     this.addrSnap = a;
+    this.bgp.onConfig();
   }
   onLink(ifname, up) { super.onLink(ifname, up); this.bfd?.onLink(ifname, up); this.vrrp?.onLink(ifname, up); this.ospf?.onLink(ifname, up); }
 }
@@ -1939,7 +1947,10 @@ class Switch extends Device {
 }
 
 class Vtep extends Device {
-  constructor(sim, cfg) { super(sim, cfg); this.l3 = new L3(this); this.bridge = new Bridge(this); }
+  constructor(sim, cfg) { super(sim, cfg); this.l3 = new L3(this); this.bridge = new Bridge(this); this.bgp = new Bgp(this); this.evpn = new Evpn(this); }
+  start() { this.bgp.start(); }
+  stop() { this.bgp.stop(); }
+  onConfig() { this.bgp.onConfig(); }
   maps() { return (this.cfg.vxlans || []).filter(m => m.vni && m.vlan); }
   portCfg(p) {
     if (p.startsWith('vxlan')) { const m = this.maps().find(x => 'vxlan' + x.vni === p); return m ? { mode: 'access', vlan: Number(m.vlan) } : null; }
@@ -1950,6 +1961,7 @@ class Vtep extends Device {
   vxlanMtu(m) { return m.mtu ? Number(m.mtu) : this.sim.mtuOf(this.id, 'eth1') - 50; }
   receive(ifname, frame) {
     if (ifname === 'eth1') return this.l3.receive(ifname, frame);
+    if (this.evpn.on()) { this.evpn.snoop(frame); if (this.evpn.suppress(ifname, frame)) return; }
     this.bridge.receive(ifname, frame);
   }
   vxlanOut(port, inner, remote) {
@@ -1961,8 +1973,8 @@ class Vtep extends Device {
       this.record('drop', `${port}: frame with ${plen} bytes of payload is larger than the MTU ${vm} of the VXLAN interface, silently dropped (no ICMP message on layer 2)`, { frame: inner, tag: 'vxlan-mtu-drop', data: { mtu: vm, len: plen } });
       return;
     }
-    const targets = remote ? [remote] : (m.flood || []).filter(isIp);
-    if (!targets.length) { this.record('drop', `${port}: flood list is empty, frame goes to no VTEP`, { frame: inner, tag: 'vxlan-no-flood' }); return; }
+    const targets = remote ? [remote] : this.evpn.floodList(m).filter(isIp);
+    if (!targets.length) { this.record('drop', `${port}: flood list is empty, frame goes to no VTEP${m.evpn ? ' (no type 3 route from another VTEP in this VNI)' : ''}`, { frame: inner, tag: 'vxlan-no-flood' }); return; }
     const src = this.localIp();
     for (const t of targets) {
       const pkt = ipPacket({ src, dst: t, proto: PROTO.UDP, df: false, trace: traceOf(inner) ?? undefined,
@@ -1980,7 +1992,8 @@ class Vtep extends Device {
     const m = onPort.find(x => Number(x.vni) === l4.payload.vni);
     if (!m) { this.record('drop', `Received VXLAN with VNI ${l4.payload.vni} from ${ip.src}, but no segment with this VNI: dropped`, { tag: 'vxlan-vni-unknown', data: { vni: l4.payload.vni } }); return true; }
     this.record('info', `decapsulates VXLAN from ${ip.src} (VNI ${m.vni} → VLAN ${m.vlan})`, { tag: 'vxlan-decap', data: { vni: Number(m.vni), from: ip.src } });
-    this.bridge.receive('vxlan' + m.vni, clone(l4.payload.frame), { vid: Number(m.vlan), remote: ip.src, learning: m.learning !== false });
+    // With EVPN the control plane knows the remote MACs: no learning from the data plane
+    this.bridge.receive('vxlan' + m.vni, clone(l4.payload.frame), { vid: Number(m.vlan), remote: ip.src, learning: m.learning !== false && !m.evpn });
     return true;
   }
   ping(dst, o) { return Host.prototype.ping.call(this, dst, o); }

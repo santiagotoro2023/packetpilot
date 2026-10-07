@@ -1,5 +1,5 @@
 import { Sim } from '../src/js/engine.js';
-import { ipv6Topo, dnsTopo, vpnTopo } from '../src/js/presets.js';
+import { ipv6Topo, dnsTopo, vpnTopo, bgpPairTopo, ibgpTopo, bgpMultiTopo, evpnTopo } from '../src/js/presets.js';
 import { runCommand } from '../src/js/cli.js';
 import { slaacFor } from '../src/js/net.js';
 import assert from 'node:assert/strict';
@@ -683,6 +683,45 @@ test('WireGuard: handshake, encryption, allowed IPs and roaming', () => {
   assert.ok(sim.hasTag('wg-notallowed'));
   sim.dev('gwA').cfg.wg.peers[0].publicKey = sim.dev('gwA').wg.pub; sim.configChanged('gwA');
   sim.dev('pcA').l3.arp.clear();
+});
+
+test('BGP: session states, eBGP and iBGP, next hop, loop protection, policy', () => {
+  const sim = new Sim(bgpPairTopo());
+  sim.runFor(5000);
+  const states = sim.log.filter(e => e.dev === 'r1' && e.tag === 'bgp-state').map(e => e.data.state);
+  assert.deepEqual(states, ['Connect', 'OpenSent', 'OpenConfirm', 'Established']);
+  assert.deepEqual(sim.dev('r1').l3.lookup('10.2.0.10').asPath, [65002]);
+  assert.ok(sim.log.some(e => e.frame?.payload?.l4?.bgp?.type === 'OPEN' && e.frame.payload.ttl === 1), 'eBGP with TTL 1');
+  sim.dev('r2').cfg.bgp.neighbors[0].remoteAs = 65009; sim.configChanged('r2'); sim.runFor(8000);
+  assert.ok(sim.hasTag('bgp-badas'), 'wrong remote AS: NOTIFICATION Bad Peer AS');
+  assert.ok(!sim.dev('r1').l3.lookup('10.2.0.10'), 'route withdrawn');
+  const i = new Sim(ibgpTopo({ nhs: false }));
+  i.runFor(15000);
+  const row = i.dev('r3').bgp.table().find(r => r.prefix === '198.51.100.0/24');
+  assert.equal(row.valid, false, 'without next-hop-self the provider next hop is inaccessible');
+  for (const n of i.dev('r1').cfg.bgp.neighbors) if (n.remoteAs === 65001) n.nextHopSelf = true;
+  i.configChanged('r1'); i.runFor(3000);
+  const r = i.dev('r3').l3.lookup('198.51.100.80');
+  assert.equal(r.proto, 'B'); assert.equal(r.bgpNh, '10.255.0.1'); assert.equal(r.via, '10.0.23.2', 'resolved recursively through OSPF');
+  const m = new Sim(bgpMultiTopo({ lpR3: 200 }));
+  m.runFor(15000);
+  const best = m.dev('r2').bgp.table().find(x => x.prefix === '198.51.100.0/24' && x.best);
+  assert.equal(best.localPref, 200); assert.deepEqual(best.asPath, [65200, 65100]);
+  assert.ok(m.dev('isp2').bgp.table().filter(x => x.prefix === '10.2.0.0/24').length >= 1);
+  assert.ok(!m.dev('isp1').bgp.table().some(x => x.asPath.includes(65100)), 'isp1 never installs a path through its own AS');
+});
+
+test('EVPN: flood lists from type 3, MACs from type 2, ARP suppression', () => {
+  const sim = new Sim(evpnTopo());
+  sim.runFor(6000);
+  assert.deepEqual(sim.dev('vtep1').evpn.floodList(sim.dev('vtep1').cfg.vxlans[0]).sort(), ['10.255.0.2', '10.255.0.3']);
+  sim.dev('srv1').ping('192.168.10.13', { count: 1 }); sim.runFor(3000);
+  sim.dev('srv2').ping('192.168.10.13', { count: 1 }); sim.runFor(3000);
+  assert.match(out(sim, 'srv2'), /1 received/);
+  assert.ok(sim.log.some(e => e.dev === 'vtep2' && e.tag === 'evpn-arp-suppress'));
+  const fdb = sim.dev('vtep1').bridge.table().find(e => e.mac === sim.dev('srv3').mac('eth1'));
+  assert.equal(fdb.remote, '10.255.0.3');
+  assert.ok(!sim.log.some(e => e.dev === 'vtep1' && e.tag === 'mac-learned' && e.data.remote), 'no data plane learning with EVPN');
 });
 
 console.log(`\n${passed} tests passed`);

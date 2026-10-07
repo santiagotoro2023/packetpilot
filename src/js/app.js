@@ -87,7 +87,7 @@ function viewHome() {
         h('p', { class: 'muted small' }, 'Broken networks with a symptom and a hidden cause. Find it and fix it.'), h('div', { class: 'small muted' }, `${solved} of ${CHALLENGES.length} solved`)),
       h('a', { class: 'netcard chcard', href: '#/subnetting' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('span', { class: 'pico', html: I.calc }), h('h3', { style: { margin: 0 } }, 'Subnetting trainer')),
         h('p', { class: 'muted small' }, 'Network, broadcast, masks and subnet sizes with random addresses and worked solutions.'), h('div', { class: 'small muted' }, sub.right ? `${sub.right} right so far, best streak ${sub.best}` : 'Endless questions'))));
-  page.append(h('h2', { style: { marginTop: '28px' } }, 'Coming soon'),
+  if (UPCOMING.length) page.append(h('h2', { style: { marginTop: '28px' } }, 'Coming soon'),
     h('div', { class: 'netgrid' }, UPCOMING.map(u => h('div', { class: 'netcard' }, h('h3', {}, u.title), h('p', { class: 'muted small' }, u.text)))));
   page.append(h('div', { class: 'row', style: { marginTop: '28px' } },
     h('button', { class: 'btn', html: I.download + 'Export progress and networks', onclick: () => download('packetpilot-export.json', store.exportAll()) }),

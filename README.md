@@ -63,7 +63,7 @@ The logo for presentations and marketing is in [`assets/logo`](assets/logo): the
 
 ## What's inside
 
-**Course with thirteen modules and 66 lessons**
+**Course with fifteen modules and 75 lessons**
 
 | Module | Contents |
 |---|---|
@@ -79,7 +79,9 @@ The logo for presentations and marketing is in [`assets/logo`](assets/logo): the
 | 10. Dynamic routing with OSPF | How link-state routing works (hellos, LSAs, SPF), turning OSPF on, failover and costs, neighbors that don't get along |
 | 11. VRRP | One gateway address shared by two routers, failover in the lab, configuring the second router (priority, preemption) |
 | 12. ECMP and BFD | Equal-cost multipath with per-flow hashing (layer 3 and layer 4 hash policy), maximum paths, failover of one path; BFD sessions (Down, Init, Up, discriminators, detection time), BFD for OSPF and static routes, measuring failover through a provider switch |
-| 13. VPN: WireGuard and IPsec | Tunnels and the packet inside the packet, site-to-site and remote access, what a VPN protects, overhead and the tunnel MTU, WireGuard keys, peers and cryptokey routing, handshake, roaming and keepalives behind NAT, a site-to-site tunnel and allowed IPs in the lab, IPsec with IKEv2, ESP, SAs and SPI, tunnel and transport mode, NAT traversal |
+| 13. BGP | Autonomous systems, path vector and AS_PATH loop protection, TCP 179 and the session states, OPEN/UPDATE/KEEPALIVE/NOTIFICATION, eBGP in the lab, iBGP with loopbacks and update-source, the next hop and next-hop-self, iBGP split horizon and route reflectors, best path selection, local preference for the way out, AS path prepending for the way in, multihoming with two providers |
+| 14. EVPN | Why VXLAN needs a control plane, route types 2 and 3, flood lists from BGP, MAC learning over BGP, ARP suppression, spines as route reflectors |
+| 15. VPN: WireGuard and IPsec | Tunnels and the packet inside the packet, site-to-site and remote access, what a VPN protects, overhead and the tunnel MTU, WireGuard keys, peers and cryptokey routing, handshake, roaming and keepalives behind NAT, a site-to-site tunnel and allowed IPs in the lab, IPsec with IKEv2, ESP, SAs and SPI, tunnel and transport mode, NAT traversal |
 
 Theory terms are underlined quietly: hovering, focusing or tapping one shows a short explanation from the glossary. Theory pages can be printed or saved as a PDF, one lesson or any selection of modules (print button on a lesson, or **Print theory** on the home page).
 
@@ -87,7 +89,7 @@ Exercise types: theory, quizzes with explanations, labeling headers by drag and 
 
 **Fix it: troubleshooting challenges**
 
-Twenty broken networks in three levels, each with a symptom, goals, hints and a timer: wrong gateway, missing return route, broadcast storm, slow RSTP failover, VLAN trunk, DHCP relay, NAT, DNS, a broken DNS delegation (six causes), a web server move that nobody sees, PCs without an IPv6 address, IPv6 that stops at the router, a broken dual-stack web site, a WireGuard tunnel that stays dark (six causes), OSPF, an idle ECMP path, BFD that does not speed anything up, VRRP failover, a slow lossy link and the MTU blackhole. Every challenge has several variants with different causes, so it can be played more than once. Your best time is saved.
+Twenty-four broken networks in three levels, each with a symptom, goals, hints and a timer: wrong gateway, missing return route, broadcast storm, slow RSTP failover, VLAN trunk, DHCP relay, NAT, DNS, a broken DNS delegation (six causes), a web server move that nobody sees, PCs without an IPv6 address, IPv6 that stops at the router, a broken dual-stack web site, a WireGuard tunnel that stays dark (six causes), an eBGP partner that stays invisible, a branch without internet over iBGP, traffic leaving through the expensive provider, a new EVPN rack that stays alone, OSPF, an idle ECMP path, BFD that does not speed anything up, VRRP failover, a slow lossy link and the MTU blackhole. Every challenge has several variants with different causes, so it can be played more than once. Your best time is saved.
 
 **Subnets: subnetting trainer**
 
@@ -101,6 +103,8 @@ Endless random questions in five kinds (network and broadcast, prefix and mask, 
 - **DHCP** server and relay, clients with static or DHCP addresses; **NAT** with masquerading and port forwards; **OSPF** (single area, cost, passive interfaces, fast or standard timers); **VRRP** with priority and preemption; **ECMP** (per-flow hash over layer 3 or layer 4, maximum paths) for OSPF and static routes with several next hops, floating static routes with their own distance; **BFD** for OSPF neighbors and static routes
 - **Line quality per cable**: latency in milliseconds and packet loss in percent, with TCP retransmissions (exponential backoff, duplicate ACKs) you can watch
 - Services per server (TCP and UDP, freely chosen ports) and DNS records, DNS server per host
+- **BGP** on routers and VTEPs (FRR style): sessions over TCP 179 with Idle, Connect, Active, OpenSent, OpenConfirm and Established, OPEN, UPDATE, KEEPALIVE and NOTIFICATION (Bad Peer AS, hold timer), eBGP with TTL 1 and ebgp-multihop, iBGP with update-source and next-hop-self, recursive next hops through OSPF, iBGP split horizon and route reflectors (originator ID, cluster list), network statements with exact match, local preference, MED, AS path prepending, the full best path selection with its reason; show ip bgp (summary, prefix, neighbors advertised/received routes), clear ip bgp
+- **EVPN** for VXLAN: type 3 routes build the flood lists, type 2 routes carry MAC and IP, no data plane learning, ARP suppression, the spine as route reflector; show evpn, show bgp l2vpn evpn
 - **WireGuard VPN** on PCs, servers and routers: key pairs, peers with endpoints and allowed IPs (cryptokey routing, routes like wg-quick), handshake over UDP, encrypted data packets with the inner packet visible in the inspector, keepalives, roaming endpoints, tunnel MTU, wg show / genkey / pubkey
 - **IPv6** next to IPv4: link-local, static and SLAAC addresses with duplicate address detection, Neighbor Discovery with solicited-node multicast and unreachability detection, router advertisements with prefixes and RDNSS, static IPv6 routes, forwarding with hop limit, Packet Too Big and fragmentation by the sender, ping -6 (also to ff02::1), traceroute -6, curl over IPv6, AAAA preferred like getaddrinfo, ip -6 addr/route/neigh, rdisc6
 - **DNS in depth**: authoritative zones with A, AAAA, NS and CNAME records and TTLs, delegation with glue, recursive resolvers with root hints and a cache (negative caching too), dig with +trace, +norec, +short and record types, unbound-control dump_cache and flush

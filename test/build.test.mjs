@@ -4,7 +4,7 @@ import { MODULES } from '../src/js/course/index.js';
 import { runCommand } from '../src/js/cli.js';
 import { checkBuild } from '../src/js/widgets.js';
 import { fmtBid } from '../src/js/packets.js';
-import { PRESETS, dnsTopo, ipv6Topo, vpnTopo, failoverTopo, stickTopo, stpTriangle, servicesTopo, dhcpLanTopo, natTopo } from '../src/js/presets.js';
+import { PRESETS, dnsTopo, ipv6Topo, vpnTopo, bgpPairTopo, failoverTopo, stickTopo, stpTriangle, servicesTopo, dhcpLanTopo, natTopo } from '../src/js/presets.js';
 import assert from 'node:assert/strict';
 
 const flags = f => ['SYN', 'FIN', 'RST', 'PSH', 'ACK'].filter(k => f[k]);
@@ -29,6 +29,7 @@ function toBuild(f) {
       if (l4.payload?.kind === 'dns') out.push({ block: 'dns', fields: { qr: String(l4.payload.qr), name: l4.payload.qname, qtype: l4.payload.qtype || 'A', rd: String(l4.payload.rd ?? 1) } });
       if (l4.payload?.kind === 'dhcp') out.push({ block: 'dhcp', fields: { op: l4.payload.op, chaddr: l4.payload.chaddr, yiaddr: l4.payload.yiaddr } }); }
     if (l4.kind === 'tcp') out.push({ block: 'tcp', fields: { sport: String(l4.sport), dport: String(l4.dport), flags: FLAGSTR[flags(l4.flags).sort().join(',')] } });
+    if (l4.kind === 'tcp' && l4.bgp) out.push({ block: 'bgp', fields: { type: l4.bgp.type } });
   }
   return out;
 }
@@ -43,6 +44,7 @@ const REAL = {
   'm12-l2': () => { const s = new Sim(ipv6Topo()); s.runFor(4000); const a2 = s.dev('pc2').l3.v6.allAddrs().find(a => a.origin === 'slaac').ip;
     go(s, 'pc1', 'ping -6 -c 1 ' + a2, 3000); return sent(s, 'pc1', f => f.type === 'ipv6' && f.payload.l4?.type === 135 && f.payload.l4.target === a2); },
   'm13-l2': () => { const s = new Sim(vpnTopo()); go(s, 'pcA', 'ping -c 2 10.2.0.10', 5000); return s.log.filter(e => e.dev === 'gwA' && e.kind === 'send' && e.frame?.payload?.l4?.payload?.inner?.l4?.type === 8).pop().frame; },
+  'm14-l1': () => { const s = new Sim(bgpPairTopo()); s.runFor(3000); return sent(s, 'r1', f => f.payload?.l4?.bgp?.type === 'OPEN'); },
   'm11-l2': () => { const s = new Sim(dnsTopo()); go(s, 'client', 'dig www.firma.lab'); return sent(s, 'resolver', f => f.payload?.dst === '198.41.0.4' && f.payload.l4?.payload?.kind === 'dns'); },
   'm5-l2': () => { const s = new Sim(servicesTopo()); go(s, 'client', 'dig @10.20.0.53 web.lab'); return sent(s, 'client', f => f.payload?.l4?.payload?.kind === 'dns'); },
   'm5-l3': () => { const s = new Sim(servicesTopo()); go(s, 'client', 'curl http://10.20.0.80/'); return sent(s, 'client', f => f.payload?.l4?.flags?.SYN); },

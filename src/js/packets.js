@@ -92,6 +92,7 @@ export function shortLabel(f) {
   if (l4.kind === 'vrrp') return 'VRRP';
   if (l4.kind === 'ospf') return l4.type === 'hello' ? 'Hello' : 'LSU';
   if (l4.kind === 'udp') return 'UDP';
+  if (l4.kind === 'tcp' && l4.bgp) return { OPEN: 'OPEN', KEEPALIVE: 'KEEP', UPDATE: 'UPDATE', NOTIFICATION: 'NOTIFY' }[l4.bgp.type] || 'BGP';
   if (l4.kind === 'tcp') {
     const fl = l4.flags;
     if (fl.RST) return 'RST';
@@ -122,7 +123,7 @@ export function layerKinds(f) {
       if (l4.payload?.kind === 'wg') { out.push('vpn'); if (l4.payload.inner) out.push('ip', l4.payload.inner.l4?.kind === 'tcp' ? 'tcp' : l4.payload.inner.l4?.kind === 'udp' ? 'udp' : 'icmp'); break; }
       out.push(l4.payload?.kind === 'bfd' ? 'rt' : 'data');
     }
-    if (l4.kind === 'tcp') { out.push('tcp'); if (l4.dataLen) out.push('data'); }
+    if (l4.kind === 'tcp') { out.push('tcp'); if (l4.bgp) out.push('rt'); else if (l4.dataLen) out.push('data'); }
     break;
   }
   return out;
@@ -191,6 +192,13 @@ export function summary(f) {
       : ns.length ? `DNS referral ${base}: ask ${ns[0].name || '.'} at ${ns.map(n => n.data).join(', ')}` : `DNS response ${base}: ${qn} has no ${qt} record`;
   } else if (l4.kind === 'udp') {
     s = `UDP ${ip.src}.${l4.sport} > ${ip.dst}.${l4.dport}, TTL ${ip.ttl}`;
+  } else if (l4.kind === 'tcp' && l4.bgp) {
+    const m = l4.bgp, ends = `${ip.src}.${l4.sport} > ${ip.dst}.${l4.dport}`;
+    s = m.type === 'OPEN' ? `BGP OPEN ${ends}: AS ${m.asn}, hold time ${m.hold} s, router ID ${m.rid}`
+      : m.type === 'KEEPALIVE' ? `BGP KEEPALIVE ${ends}`
+      : m.type === 'NOTIFICATION' ? `BGP NOTIFICATION ${ends}: ${bgpNotif(m.code, m.sub)}`
+      : `BGP UPDATE ${ends}: ${[...(m.nlri?.length ? [`${m.nlri.join(', ')} with AS path ${(m.attrs.asPath || []).join(' ') || '(empty)'}, next hop ${m.attrs.nextHop}`] : []), ...(m.withdrawn?.length ? [`withdraws ${m.withdrawn.join(', ')}`] : []),
+        ...(m.evpn?.length ? [`${m.evpn.length} EVPN route${m.evpn.length === 1 ? '' : 's'} (${m.evpn.map(e => 'type ' + e.rt).join(', ')})`] : []), ...(m.evpnWithdrawn?.length ? [`withdraws ${m.evpnWithdrawn.length} EVPN route${m.evpnWithdrawn.length === 1 ? '' : 's'}`] : [])].join('; ') || 'empty'}`;
   } else if (l4.kind === 'tcp') {
     s = `TCP ${ip.src}.${l4.sport} > ${ip.dst}.${l4.dport} [${tcpFlags(l4.flags)}] seq ${l4.seq}${l4.flags.ACK ? ' ack ' + l4.ack : ''}${l4.dataLen ? ', ' + l4.dataLen + ' bytes of data' : ''}${l4.app ? ' (' + l4.app + ')' : ''}`;
   } else s = `IP ${base}`;
@@ -323,13 +331,14 @@ function l4Layers(f, ip, layers, depth, pre) {
   } else if (l4.kind === 'tcp') {
     layers.push({ kind: 'tcp', depth, name: `${pre}TCP`, bytes: tcpHdrLen(l4), fields: [
       ['Source port', String(l4.sport), l4.sport >= 49152 ? 'Ephemeral port of the client' : ''],
-      ['Destination port', String(l4.dport), l4.dport === 80 ? 'HTTP' : l4.dport === 22 ? 'SSH' : l4.dport === 443 ? 'HTTPS' : ''],
+      ['Destination port', String(l4.dport), l4.dport === 80 ? 'HTTP' : l4.dport === 22 ? 'SSH' : l4.dport === 443 ? 'HTTPS' : l4.dport === 179 || l4.sport === 179 ? 'BGP' : ''],
       ['Sequence number', String(l4.seq), 'Number of the first byte in this segment'],
       ['Acknowledgment number', l4.flags.ACK ? String(l4.ack) : '0', l4.flags.ACK ? 'Next byte expected' : 'only valid with ACK'],
       ['Header length', `${tcpHdrLen(l4)} bytes`, l4.mss ? 'with MSS option' : ''],
       ['Flags', tcpFlags(l4.flags), ''], ['Window', String(l4.win), 'How many bytes the peer may send unacknowledged'],
       ...(l4.mss ? [['MSS option', String(l4.mss), 'Largest segment this host accepts']] : [])] });
-    if (l4.dataLen) layers.push({ kind: 'data', depth, name: 'Application data', bytes: l4.dataLen, fields: [['Content', `${l4.dataLen} bytes${l4.app ? ': ' + l4.app : ''}`, '']] });
+    if (l4.bgp) layers.push(bgpLayer(l4.bgp, l4.dataLen, depth));
+    else if (l4.dataLen) layers.push({ kind: 'data', depth, name: 'Application data', bytes: l4.dataLen, fields: [['Content', `${l4.dataLen} bytes${l4.app ? ': ' + l4.app : ''}`, '']] });
   } else if (l4.kind === 'vrrp') {
     layers.push({ kind: 'rt', depth, name: `${pre}VRRP advertisement`, bytes: 8 + 4 * (l4.vips?.length || 1), fields: [
       ['Version / Type', `${l4.version || 3} / 1 (Advertisement)`, ''], ['Virtual router ID', String(l4.vrid), 'Group number, also the last byte of the virtual MAC'],
@@ -458,4 +467,28 @@ export function flowOf(f) {
     return { key: `${l4.kind}:${pair(a, b)}`, kind: l4.kind, label };
   }
   return { key: `${l4.kind}:${ip.src}`, kind: l4.kind, label: `${l4.kind.toUpperCase()} from ${ip.src}` };
+}
+
+const BGP_NOTIF = { '2/2': 'OPEN Message Error: Bad Peer AS', '2/3': 'OPEN Message Error: Bad BGP Identifier', '4/0': 'Hold Timer Expired', '6/2': 'Cease: Administrative Shutdown', '6/4': 'Cease: Administrative Reset' };
+const bgpNotif = (c, s) => BGP_NOTIF[`${c}/${s}`] || `code ${c}, subcode ${s}`;
+function bgpLayer(m, bytes, depth) {
+  const fields = [['Marker / Length', `16 × 0xff / ${bytes} bytes`, 'Every BGP message starts like this'], ['Type', { OPEN: '1 (OPEN)', UPDATE: '2 (UPDATE)', NOTIFICATION: '3 (NOTIFICATION)', KEEPALIVE: '4 (KEEPALIVE)' }[m.type], '']];
+  if (m.type === 'OPEN') fields.push(['Version', '4', ''], ['My AS', String(m.asn), 'Must match the remote-as the neighbor configured'], ['Hold time', `${m.hold} s`, 'The lower value of both sides applies'],
+    ['BGP identifier', m.rid, 'Router ID'], ['Capabilities', (m.caps || []).join(', '), 'Address families and features this router supports']);
+  if (m.type === 'KEEPALIVE') fields.push(['Content', 'none', 'Only the header: "I am still here". Sent every hold time / 3']);
+  if (m.type === 'NOTIFICATION') fields.push(['Error', bgpNotif(m.code, m.sub), 'After a NOTIFICATION the session is closed'], ...(m.text ? [['Data', m.text, '']] : []));
+  if (m.type === 'UPDATE') {
+    if (m.withdrawn?.length) fields.push(['Withdrawn routes', m.withdrawn.join(', '), 'No longer reachable via this neighbor']);
+    if (m.nlri?.length || m.evpn?.length) {
+      const a = m.attrs || {};
+      fields.push(['ORIGIN', { i: 'IGP', e: 'EGP', '?': 'incomplete' }[a.origin] || 'IGP', ''], ['AS_PATH', (a.asPath || []).join(' ') || '(empty)', 'Every AS on the way, the newest first. Loop protection: an AS drops paths with its own number'],
+        ['NEXT_HOP', String(a.nextHop), 'Where to send packets for these networks']);
+      if (a.localPref != null) fields.push(['LOCAL_PREF', String(a.localPref), 'Only inside the AS (iBGP): the highest wins']);
+      if (a.med != null) fields.push(['MULTI_EXIT_DISC', String(a.med), 'A hint to the neighbor AS: the lowest is preferred']);
+      if (a.originatorId) fields.push(['ORIGINATOR_ID / CLUSTER_LIST', `${a.originatorId} / ${(a.clusterList || []).join(' ')}`, 'Added by a route reflector against loops']);
+      if (m.nlri?.length) fields.push(['NLRI (networks)', m.nlri.join(', '), '']);
+      for (const e of m.evpn || []) fields.push([`EVPN type ${e.rt}`, e.rt === 2 ? `MAC ${e.mac}${e.ip ? ', IP ' + e.ip : ''}, VNI ${e.vni}` : `VNI ${e.vni}, VTEP ${e.nextHop ?? a.nextHop}`, e.rt === 2 ? 'MAC/IP advertisement: this host is behind me' : 'Inclusive multicast: send flooded traffic for this VNI to me']);
+    }
+  }
+  return { kind: 'rt', depth, name: `BGP ${m.type}`, bytes, fields };
 }
