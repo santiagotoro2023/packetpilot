@@ -1,6 +1,7 @@
 // Building, describing and dissecting frames
-import { ETH_HDR, VLAN_TAG, IP_HDR, UDP_HDR, ICMP_HDR, VXLAN_HDR, ARP_LEN, FCS, PROTO, LLC_LEN, BPDU_LEN,
+import { ETH_HDR, VLAN_TAG, IP_HDR, UDP_HDR, ICMP_HDR, VXLAN_HDR, ARP_LEN, FCS, PROTO, LLC_LEN, bpduLen,
   ipTotalLen, frameLen, frameWireLen, isGroupMac, isLocalMac, BCAST, STP_MAC, tcpHdrLen, dnsLen, udpPayloadLen, PROTO_NAME, ospfLen, DHCP_LEN } from './net.js';
+const ROLE_NAME = { root: 'Root port', designated: 'Designated', alternate: 'Alternate', backup: 'Backup' };
 
 const DHCP_NAME = { DISCOVER: 'Discover', OFFER: 'Offer', REQUEST: 'Request', ACK: 'ACK', NAK: 'NAK', RELEASE: 'Release' };
 
@@ -116,6 +117,10 @@ export function summary(f) {
   const tag = f.vlan ? `vlan ${f.vlan.vid}, ` : '';
   if (f.type === 'stp') {
     const b = f.payload;
+    if (b.version === 2) {
+      const flags = [b.proposal && 'proposal', b.agreement && 'agreement', b.tc && 'topology change'].filter(Boolean);
+      return `RST BPDU (${ROLE_NAME[b.role] || b.role}): Root ${fmtBid(b.root)}, cost ${b.cost}, from bridge ${fmtBid(b.bridge)} port ${b.port}${flags.length ? ', ' + flags.join(', ') : ''}`;
+    }
     return `STP BPDU: Root ${fmtBid(b.root)}, cost ${b.cost}, from bridge ${fmtBid(b.bridge)} port ${b.port}${b.tc ? ', topology change' : ''}`;
   }
   if (f.type === 'arp') {
@@ -170,16 +175,30 @@ export function dissect(f, depth = 0) {
   const pre = depth ? 'Inner ' : '';
   if (f.type === 'stp') {
     const b = f.payload;
+    const len = bpduLen(b), rst = b.version === 2;
     layers.push({ kind: 'eth', depth, name: 'IEEE 802.3 (with length field)', bytes: ETH_HDR, fields: [
       ['Destination MAC', f.dst, 'Group address for bridges, never forwarded'], ['Source MAC', f.src, 'MAC of the sending switch port'],
-      ['Length', `${LLC_LEN + BPDU_LEN} bytes`, 'No EtherType: values up to 1500 are a length']] });
+      ['Length', `${LLC_LEN + len} bytes`, 'No EtherType: values up to 1500 are a length']] });
     layers.push({ kind: 'stp', depth, name: 'LLC', bytes: LLC_LEN, fields: [['DSAP / SSAP', '0x42 / 0x42', 'Spanning Tree'], ['Control', '0x03', 'Unnumbered Information']] });
-    layers.push({ kind: 'stp', depth, name: 'STP Configuration BPDU', bytes: BPDU_LEN, fields: [
-      ['Protocol / Version', '0 / 0 (802.1D)', ''], ['Flags', b.tc ? 'Topology Change' : 'none', b.tc ? 'Receivers shorten the aging of their MAC table' : ''],
-      ['Root Bridge ID', fmtBid(b.root), 'Priority.MAC of the bridge the sender believes is the root'],
+    const common = [['Root Bridge ID', fmtBid(b.root), 'Priority.MAC of the bridge the sender believes is the root'],
       ['Root Path Cost', String(b.cost), 'Sender\'s cost to the root'],
       ['Bridge ID', fmtBid(b.bridge), 'Who is sending'], ['Port ID', b.port, 'Priority.number of the sending port'],
-      ['Message Age', `${b.age} s`, ''], ['Max Age / Hello / Forward Delay', `${b.maxAge} / ${b.hello} / ${b.fwd} s`, 'Timers set by the root']] });
+      ['Message Age', `${b.age} s`, ''], ['Max Age / Hello / Forward Delay', `${b.maxAge} / ${b.hello} / ${b.fwd} s`, 'Timers set by the root']];
+    if (rst) {
+      const bit = (on, name, why) => [name, on ? '1' : '0', on ? why : ''];
+      layers.push({ kind: 'stp', depth, name: 'RST BPDU (802.1w)', bytes: len, fields: [
+        ['Protocol / Version / Type', '0 / 2 / 0x02', 'Version 2 and type 2: Rapid Spanning Tree. A classic 802.1D switch discards it'],
+        bit(b.tc, 'Flag: Topology Change', 'Receivers flush their MAC tables and pass the change on'),
+        bit(b.proposal, 'Flag: Proposal', 'The designated port asks: may I forward right away?'),
+        ['Flag: Port Role', `${ROLE_NAME[b.role] || b.role} (${{ alternate: '01', backup: '01', root: '10', designated: '11' }[b.role] || '00'})`, 'Role of the sending port: 2 bits'],
+        bit(b.learning, 'Flag: Learning', 'The sending port learns MAC addresses'),
+        bit(b.forwarding, 'Flag: Forwarding', 'The sending port forwards'),
+        bit(b.agreement, 'Flag: Agreement', 'Answer to a proposal: all my other ports are synced, go ahead'),
+        ...common, ['Version 1 Length', '0', 'The one extra byte of the RST BPDU']] });
+    } else {
+      layers.push({ kind: 'stp', depth, name: 'STP Configuration BPDU', bytes: len, fields: [
+        ['Protocol / Version', '0 / 0 (802.1D)', ''], ['Flags', b.tc ? 'Topology Change' : 'none', b.tc ? 'Receivers shorten the aging of their MAC table' : ''], ...common] });
+    }
     return layers;
   }
   layers.push({ kind: 'eth', depth, name: `${pre}Ethernet II`, bytes: ETH_HDR, fields: [

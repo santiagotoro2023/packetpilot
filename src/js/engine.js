@@ -205,7 +205,7 @@ export function normalizeDevice(cfg) {
     cfg.ports ??= {};
     for (const p of PORTS.switch) cfg.ports[p] = { mode: 'access', vlan: 1, allowed: '1-4094', native: 1, edge: false, cost: 4, ...(cfg.ports[p] || {}) };
     cfg.ageing ??= 300;
-    cfg.stp = { enabled: false, priority: 32768, timers: 'standard', ...(cfg.stp || {}) };
+    cfg.stp = { enabled: false, mode: 'stp', priority: 32768, timers: 'standard', ...(cfg.stp || {}) };
   }
   if (t === 'vtep') {
     cfg.ifaces.eth1 ??= { ip: '', prefix: 24 };
@@ -1254,8 +1254,9 @@ const cmpPort = (a, b) => { const [ap, an] = a.split('.').map(Number), [bp, bn] 
 function cmpVec(a, b) {
   return cmpBid(a.root, b.root) || (a.cost - b.cost) || cmpBid(a.bridge, b.bridge) || cmpPort(a.port, b.port) || (a.rx && b.rx ? cmpPort(a.rx, b.rx) : 0);
 }
-const ROLE_TEXT = { root: 'Root port', designated: 'Designated', alternate: 'Alternate (blocked)', disabled: 'disabled' };
-const STATE_TEXT = { blocking: 'Blocking', listening: 'Listening', learning: 'Learning', forwarding: 'Forwarding', disabled: 'Disabled' };
+const ROLE_TEXT = { root: 'Root port', designated: 'Designated', alternate: 'Alternate (blocked)', backup: 'Backup (blocked)', disabled: 'disabled' };
+const STATE_TEXT = { blocking: 'Blocking', listening: 'Listening', learning: 'Learning', forwarding: 'Forwarding', discarding: 'Discarding', disabled: 'Disabled' };
+const sameBid = (a, b) => !!a && !!b && cmpBid(a, b) === 0;
 
 class Bridge {
   constructor(dev) { this.dev = dev; this.sim = dev.sim; this.resetState(); }
@@ -1300,8 +1301,8 @@ class Bridge {
   receive(p, frame, from = {}) {
     if (frame.type === 'stp') { if (this.stp) this.stpReceive(p, frame); return; }
     const ps = this.stp && !p.startsWith('vxlan') ? this.stp.ports.get(p) : null;
-    if (ps && (ps.state === 'blocking' || ps.state === 'listening' || ps.state === 'disabled')) {
-      this.dev.record('drop', `${p} is in state ${STATE_TEXT[ps.state]} (STP): frame dropped`, { frame, tag: 'stp-drop', data: { port: p, state: ps.state } });
+    if (ps && (ps.state === 'blocking' || ps.state === 'listening' || ps.state === 'discarding' || ps.state === 'disabled')) {
+      this.dev.record('drop', `${p} is in state ${STATE_TEXT[ps.state]} (${this.stp.rstp ? 'RSTP' : 'STP'}): frame dropped`, { frame, tag: 'stp-drop', data: { port: p, state: ps.state } });
       return;
     }
     const vid = from.vid ?? this.vidIn(p, frame);
@@ -1356,9 +1357,10 @@ class Bridge {
   physUp(p) { const l = this.sim.linkAt(this.dev.id, p); return !!l && l.up; }
   stpStart() {
     if (this.stp) return;
-    this.stp = { ports: new Map(), rootPort: null, rootId: this.myId(), rootCost: 0, tcUntil: 0, lastFlush: -1e9, timer: null };
-    this.dev.record('info', `starts spanning tree (bridge ID ${fmtBid(this.myId())}) and initially considers itself the root`, { tag: 'stp-start' });
-    for (const p of PORTS.switch) this.stp.ports.set(p, { role: 'disabled', state: 'disabled', info: null, timer: null, edge: false });
+    const rstp = this.cfg.stp.mode === 'rstp';
+    this.stp = { rstp, ports: new Map(), rootPort: null, rootId: this.myId(), rootCost: 0, tcUntil: 0, lastFlush: -1e9, lastTcRx: -1e9, timer: null };
+    this.dev.record('info', `starts ${rstp ? 'rapid spanning tree (RSTP, 802.1w)' : 'spanning tree'} (bridge ID ${fmtBid(this.myId())}) and initially considers itself the root`, { tag: 'stp-start', data: { rstp } });
+    for (const p of PORTS.switch) this.stp.ports.set(p, { role: 'disabled', state: 'disabled', info: null, timer: null, edge: false, proposing: false, legacy: false });
     this.stpRecompute(true);
     const tick = () => { if (!this.stp) return; this.stpHello(); this.stp.timer = this.sim.schedule(this.timers().hello * 1000, tick); };
     this.stp.timer = this.sim.schedule(5 + this.sim.random() * 20, tick);
@@ -1371,6 +1373,7 @@ class Bridge {
     this.dev.record('info', 'Spanning tree turned off: all ports forward immediately', { tag: 'stp-stop' });
   }
   stpHello() {
+    if (this.stp.rstp) return this.rstpHello();
     const now = this.sim.time, { maxAge } = this.timers();
     let changed = false;
     for (const [p, ps] of this.stp.ports) {
@@ -1395,6 +1398,13 @@ class Bridge {
     if (!ps || !this.physUp(p)) return;
     const b = frame.payload;
     if (ps.edge) { ps.edge = false; ps.edgeLost = true; this.dev.record('err', `${p} is configured as an edge port but receives a BPDU: loses edge status`, { frame, tag: 'stp-edge-lost', data: { port: p } }); }
+    if (this.stp.rstp) return this.rstpReceive(p, ps, b, frame);
+    // A classic 802.1D bridge does not understand BPDU type 2 and discards it. The RSTP
+    // neighbor notices this because it keeps hearing 802.1D BPDUs and falls back.
+    if (b.version === 2) {
+      if (!ps.ignoredRst) { ps.ignoredRst = true; this.dev.record('drop', `${p} receives an RST BPDU (802.1w) and discards it: this switch only speaks classic STP`, { frame, tag: 'stp-rst-ignored', data: { port: p } }); }
+      return;
+    }
     const isNew = !ps.info || cmpBid(ps.info.root, b.root) || ps.info.cost !== b.cost || cmpBid(ps.info.bridge, b.bridge);
     ps.info = { root: b.root, cost: b.cost, bridge: b.bridge, port: b.port, age: b.age, t: this.sim.time };
     if (isNew) this.dev.record('learn', `${p} receives BPDU: root ${fmtBid(b.root)}, cost ${b.cost}, from ${fmtBid(b.bridge)}`, { frame, tag: 'stp-bpdu', data: { port: p } });
@@ -1416,23 +1426,27 @@ class Bridge {
       if (cmpBid(cand.root, me) >= 0) continue;
       if (!best || cmpVec(cand, best) < 0) { best = cand; rootPort = p; }
     }
-    const oldRoot = st.rootId;
+    const oldRoot = st.rootId, oldCost = st.rootCost;
     st.rootPort = rootPort;
     st.rootId = best ? best.root : me;
     st.rootCost = best ? best.cost : 0;
     if (cmpBid(oldRoot, st.rootId) !== 0 && !initial) {
       this.dev.record('info', rootPort ? `new root bridge: ${fmtBid(st.rootId)}, root port ${rootPort}, cost ${st.rootCost}` : 'is now the root bridge itself', { tag: 'stp-root', data: { root: fmtBid(st.rootId), rootPort } });
     }
+    const newInfo = st.rstp && !initial && (cmpBid(oldRoot, st.rootId) !== 0 || oldCost !== st.rootCost);
     for (const [p, ps] of st.ports) {
       let role;
       if (!this.physUp(p)) role = 'disabled';
       else if (p === rootPort) role = 'root';
       else {
         const offer = { root: st.rootId, cost: st.rootCost, bridge: me, port: this.portId(p) };
-        role = !ps.info || cmpVec(offer, ps.info) < 0 ? 'designated' : 'alternate';
+        role = !ps.info || cmpVec(offer, ps.info) < 0 ? 'designated' : st.rstp && sameBid(ps.info.bridge, me) ? 'backup' : 'alternate';
       }
-      this.setRole(p, ps, role, initial);
+      if (st.rstp) this.rstpSetRole(p, ps, role, initial);
+      else this.setRole(p, ps, role, initial);
     }
+    // RSTP tells the neighbors about a new root or cost at once instead of at the next hello
+    if (newInfo) for (const [p, ps] of st.ports) if (ps.role === 'designated' && !ps.edge && this.physUp(p)) this.sendBpdu(p, { proposal: ps.proposing && ps.state !== 'forwarding' });
   }
   setRole(p, ps, role, initial) {
     const prev = ps.role;
@@ -1480,15 +1494,203 @@ class Bridge {
       this.dev.record('info', 'Topology change: MAC table flushed and change reported via BPDU', { tag: 'stp-tc', data: {} });
     }
   }
+
+  // ---------- Rapid spanning tree (IEEE 802.1w, simplified)
+  // Same election and roles as 802.1D, but ports are negotiated with a proposal and an
+  // agreement instead of waiting for timers. All links between switches count as
+  // point-to-point (full duplex), which is the normal case today.
+  sendBpdu(p, extra = {}) {
+    const st = this.stp, ps = st.ports.get(p);
+    const { maxAge, hello, fwd } = this.timers();
+    const rootInfo = st.rootPort ? st.ports.get(st.rootPort).info : null;
+    // RSTP keeps the topology change per port, so it never travels back where it came from
+    const tc = st.rstp ? this.sim.time < (ps.tcUntil || 0) : this.sim.time < st.tcUntil;
+    const base = { root: st.rootId, cost: st.rootCost, bridge: this.myId(), port: this.portId(p), age: st.rootPort ? (rootInfo?.age ?? 0) + 1 : 0, maxAge, hello, fwd, tc };
+    // rstpCapable is not on the wire: it only keeps two RSTP bridges from locking each other in
+    // the fallback when both are switched over at the same time (a real switch needs "mcheck")
+    const bpdu = ps.legacy ? { ...base, version: 0, rstpCapable: true }
+      : { ...base, version: 2, role: ps.role, proposal: false, agreement: false, learning: ps.state === 'learning' || ps.state === 'forwarding', forwarding: ps.state === 'forwarding', ...extra };
+    this.dev.transmit(p, ethFrame(this.dev.mac(p), STP_MAC, 'stp', bpdu));
+  }
+  rstpHello() {
+    const st = this.stp, now = this.sim.time, { hello, maxAge } = this.timers();
+    let changed = false;
+    for (const [p, ps] of st.ports) {
+      // RSTP: three missed hellos are enough, the old protocol waits for max age
+      const limit = ps.info?.v2 ? 3 * hello : maxAge;
+      if (ps.info && now - ps.info.t > limit * 1000) {
+        const why = ps.info.v2 ? '3 × hello' : 'max age';
+        ps.info = null; changed = true;
+        this.dev.record('err', `${p}: no BPDU for ${limit} s (${why}), the stored information expires`, { tag: 'stp-maxage', data: { port: p } });
+      }
+    }
+    if (changed) this.stpRecompute();
+    for (const [p, ps] of st.ports) {
+      if (!this.physUp(p)) continue;
+      if (ps.role === 'designated' && !ps.edge) this.sendBpdu(p, { proposal: ps.proposing && ps.state !== 'forwarding' });
+      else if (ps.role === 'designated' && ps.edge) this.sendBpdu(p);
+      else if (ps.role === 'root' && now < (ps.tcUntil || 0) && !ps.legacy) this.sendBpdu(p);
+    }
+  }
+  rstpReceive(p, ps, b, frame) {
+    const st = this.stp;
+    // Protocol migration, with a hold time so that two neighbors do not switch back and forth
+    const settled = this.sim.time - (ps.migrated ?? -1e9) > 3000;
+    if (b.version !== 2 && !b.rstpCapable && !ps.legacy && settled) {
+      ps.legacy = true; ps.proposing = false; ps.migrated = this.sim.time;
+      this.dev.record('err', `${p} receives a classic 802.1D BPDU: the neighbor does not speak RSTP. The port falls back to STP, no handshake, the timers apply`, { frame, tag: 'stp-migrate', data: { port: p, legacy: true } });
+    } else if (b.version === 2 && ps.legacy && settled) {
+      ps.legacy = false; ps.migrated = this.sim.time;
+      this.dev.record('info', `${p} receives an RST BPDU again: the neighbor speaks RSTP now, the port switches back to RSTP`, { frame, tag: 'stp-migrate', data: { port: p, legacy: false } });
+    }
+    if (b.version === 2 && b.agreement && ps.role === 'designated' && ps.state !== 'forwarding' && sameBid(b.root, st.rootId)) {
+      this.sim.cancel(ps.timer);
+      ps.proposing = false;
+      this.dev.record('ok', `${p} receives the agreement: Forwarding immediately, no waiting for timers`, { frame, tag: 'stp-agreement', data: { port: p } });
+      this.rstpForward(p, ps);
+    }
+    if (b.tc && (ps.role === 'root' || ps.role === 'designated')) this.rstpTcReceived(p);
+    // Root and alternate ports only send agreements and topology changes. The
+    // information about the segment comes from its designated port.
+    if (b.version === 2 && b.role !== 'designated') return;
+    const isNew = !ps.info || cmpBid(ps.info.root, b.root) || ps.info.cost !== b.cost || cmpBid(ps.info.bridge, b.bridge);
+    ps.info = { root: b.root, cost: b.cost, bridge: b.bridge, port: b.port, age: b.age, t: this.sim.time, v2: b.version === 2 };
+    if (isNew) this.dev.record('learn', `${p} receives BPDU: root ${fmtBid(b.root)}, cost ${b.cost}, from ${fmtBid(b.bridge)}`, { frame, tag: 'stp-bpdu', data: { port: p } });
+    this.stpRecompute();
+    if (b.version !== 2 || !b.proposal) return;
+    // Repeated proposals (one per hello) are answered again, but only reported once
+    const report = ps.agreedFor !== ps.role + fmtBid(b.bridge) + b.port;
+    ps.agreedFor = ps.role + fmtBid(b.bridge) + b.port;
+    if (ps.role === 'root') {
+      const blocked = this.rstpSync(p);
+      if (report || blocked.length) this.dev.record('info', `${p} receives a proposal on its root port. Sync: ${blocked.length ? `blocks ${blocked.join(', ')} first, then ` : 'no other port forwards, so it '}answers with an agreement`,
+        { frame, tag: 'stp-sync', data: { port: p, blocked } });
+      this.sendBpdu(p, { agreement: true });
+    } else if (ps.role === 'alternate' || ps.role === 'backup') {
+      // A blocked port cannot create a loop: it agrees right away
+      if (report) this.dev.record('info', `${p} receives a proposal on a blocked port (${ps.role}) and agrees, it stays blocked itself`, { frame, tag: 'stp-sync', data: { port: p, blocked: [] } });
+      this.sendBpdu(p, { agreement: true });
+    }
+  }
+  /** Before agreeing, all other non-edge designated ports must stop forwarding */
+  rstpSync(rootPort) {
+    const blocked = [];
+    for (const [q, qs] of this.stp.ports) {
+      if (q === rootPort || qs.role !== 'designated' || qs.edge || !this.physUp(q)) continue;
+      if (qs.state === 'forwarding' || qs.state === 'learning') { blocked.push(q); this.sim.cancel(qs.timer); qs.timer = null; qs.state = 'discarding'; qs.proposing = false; }
+      this.rstpPropose(q, qs);
+    }
+    return blocked;
+  }
+  /** A designated port that does not forward yet asks its neighbor for permission */
+  rstpPropose(p, ps) {
+    if (ps.state === 'forwarding') return;
+    if (ps.state !== 'learning') ps.state = 'discarding';
+    // The proposal goes out once now and then with every hello until the agreement arrives
+    if (!ps.legacy && !ps.proposing) {
+      this.dev.record('info', `${p}: Discarding, sends a proposal and waits for the agreement of the neighbor`, { tag: 'stp-proposal', data: { port: p } });
+      ps.proposing = true;
+      this.sendBpdu(p, { proposal: true });
+    }
+    if (ps.timer) return;
+    // Without an agreement (an end device without edge setting, or a classic STP neighbor) only the timers help
+    const fwd = this.timers().fwd * 1000;
+    ps.timer = this.sim.schedule(fwd, () => {
+      if (!this.stp || (ps.role !== 'designated' && ps.role !== 'root') || ps.state !== 'discarding') { ps.timer = null; return; }
+      ps.state = 'learning';
+      this.dev.record('info', `${p}: no agreement within ${this.timers().fwd} s, state Learning (forward delay)`, { tag: 'stp-state', data: { port: p, state: 'learning' } });
+      ps.timer = this.sim.schedule(fwd, () => {
+        ps.timer = null;
+        if (!this.stp || (ps.role !== 'designated' && ps.role !== 'root') || ps.state !== 'learning') return;
+        ps.proposing = false;
+        this.dev.record('ok', `${p}: state Forwarding after 2 × forward delay`, { tag: 'stp-state', data: { port: p, state: 'forwarding', slow: true } });
+        ps.state = 'forwarding';
+        this.rstpTopologyChange(p);
+      });
+    });
+  }
+  rstpForward(p, ps, why = '') {
+    this.sim.cancel(ps.timer); ps.timer = null;
+    ps.state = 'forwarding';
+    this.dev.record('ok', `${p}: state Forwarding${why}`, { tag: 'stp-state', data: { port: p, state: 'forwarding', rapid: true } });
+    if (!ps.edge) this.rstpTopologyChange(p);
+  }
+  rstpSetRole(p, ps, role, initial) {
+    const prev = ps.role;
+    ps.role = role;
+    const cfgEdge = !!this.portCfg(p).edge;
+    if (role === 'disabled') {
+      if (prev !== 'disabled') this.flushPort(p);
+      this.sim.cancel(ps.timer); ps.timer = null; ps.state = 'disabled'; ps.edge = false; ps.edgeLost = false; ps.proposing = false; ps.legacy = false; ps.migrated = null; return;
+    }
+    ps.edge = cfgEdge && !ps.edgeLost;
+    if (role !== prev && !initial) this.dev.record('info', `${p} becomes ${ROLE_TEXT[role]}`, { tag: 'stp-role', data: { port: p, role } });
+    if (role === 'alternate' || role === 'backup') {
+      ps.proposing = false;
+      if (ps.state !== 'discarding') {
+        this.sim.cancel(ps.timer); ps.timer = null; ps.state = 'discarding';
+        this.dev.record('info', `${p}: state Discarding (${role}, prevents a loop)`, { tag: 'stp-state', data: { port: p, state: 'discarding' } });
+      }
+      return;
+    }
+    if (role === 'root') {
+      ps.proposing = false;
+      if (ps.state === 'forwarding') return;
+      // The old root port is already discarding, so the new one may forward at once.
+      // Behind a classic STP neighbor the timers apply instead.
+      if (ps.legacy) return this.rstpPropose(p, ps);
+      return this.rstpForward(p, ps, prev === 'alternate' ? ': the alternate port takes over as root port immediately' : ' immediately (new root port)');
+    }
+    // designated: the port now holds its own information, whatever the neighbor said before
+    ps.info = null;
+    if (ps.edge) {
+      if (ps.state !== 'forwarding') { this.sim.cancel(ps.timer); ps.timer = null; ps.state = 'forwarding'; this.dev.record('info', `${p} is an edge port: Forwarding immediately`, { tag: 'stp-state', data: { port: p, state: 'forwarding', edge: true } }); }
+      return;
+    }
+    if (ps.state !== 'forwarding') this.rstpPropose(p, ps);
+  }
+  /** In RSTP only a non-edge port that starts forwarding is a topology change */
+  rstpTopologyChange(p) {
+    this.flushExcept(p);
+    this.dev.record('info', `Topology change: ${p} now forwards. Flushes the MAC addresses on its other ports and sends the change on all ports right away (not via the root)`, { tag: 'stp-tc', data: { port: p, rstp: true } });
+    this.rstpSendTc(p, true);
+  }
+  rstpTcReceived(p) {
+    const st = this.stp, now = this.sim.time;
+    // The same change arrives again with every hello while the sender's timer runs
+    const ps = st.ports.get(p), seen = now < (ps.tcRxUntil || 0);
+    ps.tcRxUntil = now + 2 * this.timers().hello * 1000 + 100;
+    if (seen) return;
+    this.flushExcept(p);
+    this.dev.record('info', `${p} receives a topology change: flushes the MAC addresses on all other ports and passes the change on`, { tag: 'stp-tc-flush', data: { port: p } });
+    this.rstpSendTc(p, false);
+  }
+  /** Mark the TC on every other root and designated port (tcWhile) and send it there now */
+  rstpSendTc(from, includeFrom) {
+    const until = this.sim.time + 2 * this.timers().hello * 1000;
+    for (const [q, qs] of this.stp.ports) {
+      if ((q === from && !includeFrom) || qs.edge || !this.physUp(q) || (qs.role !== 'designated' && qs.role !== 'root')) continue;
+      qs.tcUntil = until;
+      this.sendBpdu(q);
+    }
+  }
+  flushPort(p) { for (const [k, e] of this.fdb) if (e.port === p) this.fdb.delete(k); }
+  flushExcept(p) {
+    for (const [k, e] of this.fdb) {
+      if (e.port === p || e.port.startsWith('vxlan')) continue;
+      if (this.stp.ports.get(e.port)?.edge) continue;
+      this.fdb.delete(k);
+    }
+  }
   stpTable() {
     if (!this.stp) return null;
     const ports = [];
     for (const [p, ps] of this.stp.ports) {
       if (!this.sim.linkAt(this.dev.id, p)) continue;
-      ports.push({ port: p, id: this.portId(p), role: ps.role, state: ps.state, cost: Number(this.portCfg(p).cost || 4), edge: ps.edge,
+      ports.push({ port: p, id: this.portId(p), role: ps.role, state: ps.state, cost: Number(this.portCfg(p).cost || 4), edge: ps.edge, legacy: !!(this.stp.rstp && ps.legacy),
         designated: ps.role === 'designated' ? fmtBid(this.myId()) : ps.info ? fmtBid(ps.info.bridge) : '' });
     }
-    return { bridge: fmtBid(this.myId()), root: fmtBid(this.stp.rootId), isRoot: !this.stp.rootPort, rootPort: this.stp.rootPort, rootCost: this.stp.rootCost, ports };
+    return { mode: this.stp.rstp ? 'rstp' : 'stp', bridge: fmtBid(this.myId()), root: fmtBid(this.stp.rootId), isRoot: !this.stp.rootPort, rootPort: this.stp.rootPort, rootCost: this.stp.rootCost, ports };
   }
   roleOf(p) { return this.stp?.ports.get(p)?.role || null; }
   stateOf(p) { return this.stp?.ports.get(p)?.state || null; }
@@ -1503,6 +1705,7 @@ class Switch extends Device {
   start() { if (this.cfg.stp?.enabled) this.bridge.stpStart(); }
   stop() { this.bridge.stpStop(); }
   onConfig() {
+    if (this.bridge.stp && this.cfg.stp?.enabled && this.bridge.stp.rstp !== (this.cfg.stp.mode === 'rstp')) this.bridge.stpStop();
     if (this.cfg.stp?.enabled && !this.bridge.stp) this.bridge.stpStart();
     else if (!this.cfg.stp?.enabled && this.bridge.stp) this.bridge.stpStop();
     else if (this.bridge.stp) this.bridge.stpRecompute();

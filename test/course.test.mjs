@@ -65,6 +65,29 @@ const SOLUTIONS = {
     stpRun(sim); runT(sim, 'pc1', 'ping -c 1 10.0.0.2');
     SQ.blocker = blocked(sim).split(' ')[0];
     run(sim, 'sw2', 'ip link set eth1 down'); stpRun(sim); runT(sim, 'pc1', 'ping -c 2 10.0.0.2'); } },
+  'm4-l7': { answers: [null, null, null, null, null, 'alternate'], act: (sim, ctx) => {
+    stpRun(sim, 35000);
+    runCommand(sim.dev('pc1'), 'ping -c 50 10.0.0.2'); sim.runFor(5000);
+    run(sim, 'sw2', 'ip link set eth1 down'); sim.runFor(60000);
+    const d = sim.log.find(e => e.tag === 'ping-done' && e.dev === 'pc1');
+    assert.ok(d.data.sent - d.data.received >= 25, `classic STP loses about 30 pings, here ${d.data.sent - d.data.received}`);
+    ctx.ask(1, String(d.data.sent - d.data.received));
+    run(sim, 'sw2', 'ip link set eth1 up');
+    for (const id of ['sw1', 'sw2', 'sw3']) run(sim, id, 'spanning-tree mode rstp');
+    sim.runFor(3000); ctx.snap();
+    runCommand(sim.dev('pc1'), 'ping -c 20 10.0.0.2'); sim.runFor(5000);
+    run(sim, 'sw2', 'ip link set eth1 down'); sim.runFor(20000);
+    const r = sim.log.filter(e => e.tag === 'ping-done' && e.dev === 'pc1').pop();
+    assert.equal(r.data.sent - r.data.received, 0, 'RSTP loses no ping'); } },
+  'm4-l8': { answers: [], act: (sim, ctx) => {
+    sim.runFor(3000);
+    const legacy = ['sw1', 'sw3'].flatMap(id => sim.dev(id).bridge.stpTable().ports.filter(p => p.legacy).map(p => `${id} ${p.port}`));
+    assert.deepEqual(legacy.sort(), ['sw1 eth2', 'sw3 eth2']);
+    ctx.ask(0, 'sw4'); ctx.ask(1, legacy[0]); ctx.ask(5, '30');
+    run(sim, 'sw4', 'spanning-tree mode rstp'); sim.runFor(5000);
+    run(sim, 'sw1', 'spanning-tree portfast eth5 on'); run(sim, 'sw3', 'spanning-tree portfast eth5 on');
+    const l = sim.linkAt('sw3', 'eth5'); sim.setLinkUp(l, false); sim.runFor(100); sim.setLinkUp(l, true); sim.runFor(10);
+    runT(sim, 'pc1', 'ping -c 1 10.0.0.3', 3000); } },
   'm5-l2': { answers: sim => [null, null, String(sim.log.find(e => e.dev === 'client' && e.kind === 'send' && e.frame?.payload?.l4?.payload?.kind === 'dns').frame.payload.l4.sport), 'NXDOMAIN', null],
     act: (sim, ctx) => { run(sim, 'client', 'dig @10.20.0.53 web.lab'); ctx.inspected.push(sim.log.find(e => e.frame?.payload?.l4?.payload?.kind === 'dns'));
       run(sim, 'client', 'dig @10.20.0.53 doesnotexist.lab'); assert.match(sim.dev('client').consoleLines.join('\n'), /NXDOMAIN/); run(sim, 'client', 'nc -u 10.20.0.53 5353'); } },

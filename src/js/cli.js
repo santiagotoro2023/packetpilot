@@ -35,6 +35,7 @@ export function helpFor(dev) {
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
   if (dev.type === 'switch') l.push('show spanning-tree    STP status: root, roles, states',
     'spanning-tree on|off  turn STP on or off',
+    'spanning-tree mode stp|rstp        classic (802.1D) or rapid (802.1w)',
     'spanning-tree priority <0-61440>   bridge priority (multiples of 4096)',
     'spanning-tree portfast <port> on|off   port as edge port',
     'spanning-tree cost <port> <cost>       port cost');
@@ -259,6 +260,11 @@ export function runCommand(dev, line) {
       if (p[0] === 'spanning-tree') {
         const change = (text, data) => { sim.record(dev, 'info', text, { tag: 'stp-config', data }); sim.configChanged(dev.id); say('OK'); };
         if (p[1] === 'on' || p[1] === 'off') { st.enabled = p[1] === 'on'; return change(`Spanning tree ${st.enabled ? 'turned on' : 'turned off'}`, { enabled: st.enabled }); }
+        if (p[1] === 'mode') {
+          const m = { stp: 'stp', rstp: 'rstp', 'rapid-pvst': 'rstp', ieee: 'stp', pvst: 'stp' }[p[2]];
+          if (!m) return say('Syntax: spanning-tree mode stp|rstp');
+          st.mode = m; return change(`Spanning tree protocol: ${m === 'rstp' ? 'RSTP (802.1w)' : 'STP (802.1D)'}`, { mode: m });
+        }
         if (p[1] === 'priority') {
           const v = Number(p[2]);
           if (!(v >= 0 && v <= 61440 && v % 4096 === 0)) return say('The priority must be a multiple of 4096 between 0 and 61440.');
@@ -272,10 +278,11 @@ export function runCommand(dev, line) {
           if (!(c >= 1 && c <= 200000000)) return say('Syntax: spanning-tree cost eth1 19');
           dev.cfg.ports[port].cost = c; return change(`${port}: port cost ${c}`, { port, cost: c });
         }
-        return say('Syntax: spanning-tree on|off | priority <n> | portfast <port> on|off | cost <port> <n>');
+        return say('Syntax: spanning-tree on|off | mode stp|rstp | priority <n> | portfast <port> on|off | cost <port> <n>');
       }
       const t = b.stpTable();
       if (!t) return say('Spanning tree is turned off. Turn it on with: spanning-tree on');
+      say(`Spanning tree enabled protocol ${t.mode === 'rstp' ? 'rstp (802.1w)' : 'ieee (802.1D)'}`);
       say(`Root ID     ${t.root}${t.isRoot ? '   (this bridge is the root)' : ''}`);
       if (!t.isRoot) say(`            Cost ${t.rootCost}, root port ${t.rootPort}`);
       say(`Bridge ID   ${t.bridge}`);
@@ -283,8 +290,8 @@ export function runCommand(dev, line) {
       say(`Timers      Hello ${tm.hello} s, Max Age ${tm.maxAge} s`);
       say(`            Forward Delay ${tm.fwd} s`);
       say('');
-      say(`${pad('Port', 6)}${pad('Role', 6)}${pad('State', 12)}${pad('Cost', 7)}Port ID`);
-      for (const r of t.ports) say(`${pad(r.port, 6)}${pad({ root: 'Root', designated: 'Desg', alternate: 'Altn', disabled: 'Disa' }[r.role], 6)}${pad(r.state, 12)}${pad(r.cost, 7)}${r.id}${r.edge ? ' Edge' : ''}`);
+      say(`${pad('Port', 5)}${pad('Role', 5)}${pad('State', 11)}${pad('Cost', 5)}${pad('ID', 6)}Type`);
+      for (const r of t.ports) say(`${pad(r.port, 5)}${pad({ root: 'Root', designated: 'Desg', alternate: 'Altn', backup: 'Back', disabled: 'Disa' }[r.role], 5)}${pad(r.state, 11)}${pad(r.cost, 5)}${pad(r.id, 6)}${[t.mode === 'rstp' ? 'P2p' : '', r.edge ? 'Edge' : '', r.legacy ? 'Peer(STP)' : ''].filter(Boolean).join(' ')}`);
       return;
     }
     if (p[0] === 'arp' && dev.l3) return runCommand(dev, 'ip neigh');

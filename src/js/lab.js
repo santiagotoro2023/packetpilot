@@ -240,9 +240,9 @@ export class Lab {
         const ps = br.stp.ports.get(end.if);
         if (!ps) continue;
         const dx = Q.x - P.x, dy = Q.y - P.y, len = Math.hypot(dx, dy) || 1, off = Math.min(42, len * 0.22);
-        const dot = svgEl('g', { class: `stp-dot st-${ps.state}`, transform: `translate(${(P.x + dx / len * off).toFixed(1)},${(P.y + dy / len * off).toFixed(1)})` });
-        const tt = svgEl('title'); tt.textContent = `${P.name} ${end.if}: ${STP_TEXT.ROLE[ps.role]}, ${STP_TEXT.STATE[ps.state]}${ps.edge ? ', edge port' : ''}`;
-        const letter = svgEl('text', { 'text-anchor': 'middle', y: 2.7 }); letter.textContent = { root: 'R', designated: 'D', alternate: 'A', disabled: '' }[ps.role];
+        const dot = svgEl('g', { class: `stp-dot st-${ps.state} role-${ps.role}`, transform: `translate(${(P.x + dx / len * off).toFixed(1)},${(P.y + dy / len * off).toFixed(1)})` });
+        const tt = svgEl('title'); tt.textContent = `${P.name} ${end.if}: ${STP_TEXT.ROLE[ps.role]}, ${STP_TEXT.STATE[ps.state]}${ps.edge ? ', edge port' : ''}${br.stp.rstp && ps.legacy ? ', neighbor speaks only classic STP' : ''}`;
+        const letter = svgEl('text', { 'text-anchor': 'middle', y: 2.7 }); letter.textContent = { root: 'R', designated: 'D', alternate: 'A', backup: 'B', disabled: '' }[ps.role];
         dot.append(tt, svgEl('circle', { r: 6 }), letter);
         g.append(dot);
       }
@@ -268,7 +268,7 @@ export class Lab {
       const badge = this.badge(d);
       if (badge) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 + lines.length * 12 }); t.textContent = badge; g.append(t); }
       const st = d.type === 'switch' ? this.sim.dev(d.id)?.bridge?.stpTable() : null;
-      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = st.isRoot ? `Root bridge, prio ${d.stp.priority}` : `STP, prio ${d.stp.priority}`; g.append(t); }
+      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); const proto = st.mode === 'rstp' ? 'RSTP' : 'STP'; t.textContent = st.isRoot ? `Root bridge (${proto}), prio ${d.stp.priority}` : `${proto}, prio ${d.stp.priority}`; g.append(t); }
       g.addEventListener('pointerdown', e => this.devPointerDown(e, d));
       g.addEventListener('dblclick', () => { this.select({ kind: 'dev', id: d.id }); this.setTab('console'); });
       g.addEventListener('keydown', e => { if (e.key === 'Enter') this.select({ kind: 'dev', id: d.id }); });

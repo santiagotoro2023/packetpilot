@@ -59,12 +59,12 @@ Each browser stores progress, partial answers (including the network you edited 
 
 ## What's inside
 
-**Course with nine modules and 45 lessons**
+**Course with nine modules and 48 lessons**
 
 | Module | Contents |
 |---|---|
 | 1. Ethernet, MAC and ARP | Encapsulation, the Ethernet frame byte by byte, MAC addresses (OUI, I/G, U/L), MAC learning and flooding, ARP with neighbor states, gratuitous ARP, ARP probe and failover, a packet across a router |
-| 2. Spanning tree | Broadcast storm and MAC flapping, root bridge election, BPDUs, port roles and path costs, port states and PortFast, failure, topology change and convergence |
+| 2. Spanning tree | Broadcast storm and MAC flapping, root bridge election, BPDUs, port roles and path costs, port states and PortFast, failure, topology change and convergence, **rapid spanning tree (RSTP)**: proposal and agreement, alternate ports, measuring failover with STP and RSTP, edge ports and classic STP neighbors |
 | 3. IP and routing | IPv4 header, longest prefix match, TTL and traceroute, the return path, MTU and Path MTU Discovery, rules and the PMTUD blackhole, control plane and data plane |
 | 4. VLAN and VXLAN | 802.1Q tag, access and trunk, router on a stick with subinterfaces, VXLAN encapsulation, VXLAN in the underlay, troubleshooting the overlay, the MTU trap |
 | 5. Transport: UDP, TCP and services | Ports and sockets, DNS over UDP, three-way handshake, refused and filtered connections, MSS, path MTU and MSS clamping |
@@ -79,7 +79,7 @@ Exercise types: theory, quizzes with explanations, labeling headers by drag and 
 
 **Fix it: troubleshooting challenges**
 
-Eleven broken networks in three levels, each with a symptom, goals, hints and a timer: wrong gateway, missing return route, broadcast storm, VLAN trunk, DHCP relay, NAT, DNS, OSPF, VRRP failover, a slow lossy link and the MTU blackhole. Every challenge has several variants with different causes, so it can be played more than once. Your best time is saved.
+Twelve broken networks in three levels, each with a symptom, goals, hints and a timer: wrong gateway, missing return route, broadcast storm, slow RSTP failover, VLAN trunk, DHCP relay, NAT, DNS, OSPF, VRRP failover, a slow lossy link and the MTU blackhole. Every challenge has several variants with different causes, so it can be played more than once. Your best time is saved.
 
 **Subnets: subnetting trainer**
 
@@ -89,7 +89,7 @@ Endless random questions in five kinds (network and broadcast, prefix and mask, 
 
 - Network diagram editor: PCs, servers, switches, routers and VTEPs by drag and drop, cables with the K key
 - **Areas** for organizing: colored, labeled rectangles that can be moved (devices inside move along) and resized
-- Simulation of Ethernet, 802.1Q, ARP (including gratuitous ARP, ARP probe and Neighbor Unreachability Detection), MAC learning, **spanning tree (802.1D)** with root election, roles, states, timers, PortFast and topology change, detection of loops and broadcast storms, IPv4 forwarding, static routing, **router subinterfaces**, ICMP, fragmentation and Path MTU Discovery, **UDP, DNS and TCP** (handshake, segmentation by MSS, RST, timeouts, retransmission after PMTUD), rules on routers (allow, drop, reject, with protocol and port), MSS clamping and VXLAN with head-end replication and flood and learn
+- Simulation of Ethernet, 802.1Q, ARP (including gratuitous ARP, ARP probe and Neighbor Unreachability Detection), MAC learning, **spanning tree (802.1D)** with root election, roles, states, timers, PortFast and topology change, **rapid spanning tree (802.1w)** with proposal/agreement, alternate and backup ports, topology change flooding and fallback to classic STP neighbors, detection of loops and broadcast storms, IPv4 forwarding, static routing, **router subinterfaces**, ICMP, fragmentation and Path MTU Discovery, **UDP, DNS and TCP** (handshake, segmentation by MSS, RST, timeouts, retransmission after PMTUD), rules on routers (allow, drop, reject, with protocol and port), MSS clamping and VXLAN with head-end replication and flood and learn
 - **DHCP** server and relay, clients with static or DHCP addresses; **NAT** with masquerading and port forwards; **OSPF** (single area, cost, passive interfaces, fast or standard timers); **VRRP** with priority and preemption
 - **Line quality per cable**: latency in milliseconds and packet loss in percent, with TCP retransmissions (exponential backoff, duplicate ACKs) you can watch
 - Services per server (TCP and UDP, freely chosen ports) and DNS records, DNS server per host
@@ -98,7 +98,7 @@ Endless random questions in five kinds (network and broadcast, prefix and mask, 
 - Packets as envelopes with colored stripes per layer, a click takes them apart in the packet inspector
 - STP state right in the diagram: dots on every switch port show role and state
 - Event log with plain-language explanations, filter per device, spanning tree only, tracing a single packet across all hops
-- Console per device (Ctrl+C or the Stop button ends a running command): `ping`, `traceroute`, `arping [-U|-A|-D]`, `curl`, `nc -zv`, `nc -u`, `dig`, `ss`, `ip addr`, `ip route`, `ip neigh`, `ip link` (create subinterfaces, disconnect ports), `bridge fdb`, `show spanning-tree`, `spanning-tree …`, `show ip route`, `show vxlan`, `dhclient`, `show ip dhcp binding`, `conntrack -L`, `show vrrp`, `show ip ospf neighbor|database|interface`
+- Console per device (Ctrl+C or the Stop button ends a running command): `ping`, `traceroute`, `arping [-U|-A|-D]`, `curl`, `nc -zv`, `nc -u`, `dig`, `ss`, `ip addr`, `ip route`, `ip neigh`, `ip link` (create subinterfaces, disconnect ports), `bridge fdb`, `show spanning-tree`, `spanning-tree …` (including `spanning-tree mode stp|rstp`), `show ip route`, `show vxlan`, `dhclient`, `show ip dhcp binding`, `conntrack -L`, `show vrrp`, `show ip ospf neighbor|database|interface`
 - Example networks, saving your own networks, export and import as JSON
 - **Share links**: the whole network compressed into a link. Whoever opens it gets a copy in their lab; nothing is uploaded
 

@@ -541,4 +541,78 @@ test('Line quality: latency, loss and TCP retransmission', () => {
   assert.ok(sim.hasTag('tcp-rto') || sim.hasTag('tcp-dupack'));
 });
 
+// ---------------------------------------------------------------- RSTP
+function rtriangle(modes = {}, timers = 'standard') {
+  const mk = (id, prio) => ({ id, type: 'switch', name: id, stp: { enabled: true, mode: modes[id] || 'rstp', priority: prio, timers } });
+  return new Sim({ devices: [mk('s1', 4096), mk('s2', 32768), mk('s3', 32768), pc('pc1', '10.0.0.1'), pc('pc2', '10.0.0.2')],
+    links: [L('s1', 'eth1', 's2', 'eth1'), L('s2', 'eth2', 's3', 'eth2'), L('s3', 'eth1', 's1', 'eth2'),
+      L('pc1', 'eth1', 's2', 'eth5'), L('pc2', 'eth1', 's3', 'eth5')] });
+}
+const lost = (sim, from) => { const d = sim.log.filter(e => e.tag === 'ping-done' && e.dev === from).pop().data; return d.sent - d.received; };
+
+test('RSTP: proposal and agreement converge in milliseconds, same tree as STP', () => {
+  const sim = rtriangle();
+  sim.runFor(50);
+  const t2 = sim.dev('s2').bridge.stpTable(), t3 = sim.dev('s3').bridge.stpTable();
+  assert.equal(t2.mode, 'rstp');
+  assert.equal(t2.rootPort, 'eth1'); assert.equal(t3.rootPort, 'eth1');
+  const links = [['s1', 'eth1'], ['s1', 'eth2'], ['s2', 'eth1'], ['s3', 'eth1']];
+  for (const [d, p] of links) assert.equal(sim.dev(d).bridge.stateOf(p), 'forwarding', `${d} ${p} forwards after 50 ms`);
+  const alt = [...t2.ports, ...t3.ports].filter(p => p.role === 'alternate');
+  assert.equal(alt.length, 1); assert.equal(alt[0].state, 'discarding');
+  assert.ok(sim.hasTag('stp-agreement')); assert.ok(sim.hasTag('stp-sync'));
+  // RST BPDUs: version 2, 36 bytes, with role and flags
+  const b = sim.log.find(e => e.tag === 'bpdu-sent' && e.frame.payload.proposal);
+  assert.equal(b.frame.payload.version, 2); assert.equal(b.frame.payload.role, 'designated');
+  // Ports to the PCs are not edge ports: without an agreement only the timers help (2 x 15 s)
+  assert.equal(sim.dev('s2').bridge.stateOf('eth5'), 'discarding');
+  sim.runFor(15000); assert.equal(sim.dev('s2').bridge.stateOf('eth5'), 'learning');
+  sim.runFor(15100); assert.equal(sim.dev('s2').bridge.stateOf('eth5'), 'forwarding');
+});
+
+test('RSTP: the alternate port takes over without losing a ping', () => {
+  const sim = rtriangle();
+  sim.runFor(31000);
+  const loser = sim.dev('s2').bridge.roleOf('eth2') === 'alternate' ? 's2' : 's3';
+  const cut = loser === 's2' ? sim.topo.links[0] : sim.topo.links[2];
+  sim.dev('pc1').ping('10.0.0.2', { count: 10 }); sim.runFor(3500);
+  sim.setLinkUp(cut, false); sim.runFor(10000);
+  assert.equal(sim.dev(loser).bridge.stpTable().rootPort, 'eth2');
+  assert.equal(lost(sim, 'pc1'), 0);
+  assert.ok(sim.log.some(e => e.tag === 'stp-tc' && e.data.rstp), 'topology change flooded by the switch itself');
+  // The same with classic STP: about 30 seconds of outage
+  const old = rtriangle({ s1: 'stp', s2: 'stp', s3: 'stp' });
+  old.runFor(31000);
+  const l2 = old.dev('s2').bridge.roleOf('eth2') === 'alternate' ? old.topo.links[0] : old.topo.links[2];
+  old.dev('pc1').ping('10.0.0.2', { count: 40 }); old.runFor(3000);
+  old.setLinkUp(l2, false); old.runFor(45000);
+  assert.ok(lost(old, 'pc1') >= 25, `classic STP loses about 30 pings (${lost(old, 'pc1')})`);
+});
+
+test('RSTP: indirect failure, a classic STP neighbor and switching back', () => {
+  // Indirect: the switch that loses its root port has no alternate, its neighbor reacts at once
+  const sim = rtriangle();
+  sim.runFor(31000);
+  const loser = sim.dev('s2').bridge.roleOf('eth2') === 'alternate' ? 's2' : 's3';
+  const other = loser === 's2' ? 's3' : 's2';
+  const cut = other === 's2' ? sim.topo.links[0] : sim.topo.links[2];
+  sim.setLinkUp(cut, false); sim.runFor(100);
+  assert.equal(sim.dev(other).bridge.stpTable().rootPort, 'eth2', `${other} reaches the root via ${loser} within 100 ms`);
+  assert.equal(sim.dev(loser).bridge.stateOf('eth2'), 'forwarding');
+  // Classic neighbor: s3 speaks 802.1D, the ports towards it fall back and use the timers
+  const mix = rtriangle({ s3: 'stp' });
+  mix.runFor(1000);
+  assert.ok(mix.dev('s1').bridge.stpTable().ports.find(p => p.port === 'eth2').legacy);
+  assert.ok(mix.hasTag('stp-rst-ignored') && mix.hasTag('stp-migrate'));
+  assert.notEqual(mix.dev('s1').bridge.stateOf('eth2'), 'forwarding');
+  mix.runFor(31000);
+  assert.equal(mix.dev('s1').bridge.stateOf('eth2'), 'forwarding');
+  mix.dev('s3').cfg.stp.mode = 'rstp'; mix.configChanged('s3'); mix.runFor(5000);
+  assert.ok(!mix.dev('s1').bridge.stpTable().ports.find(p => p.port === 'eth2').legacy, 's1 switches back to RSTP');
+  assert.equal(mix.dev('s3').bridge.stpTable().mode, 'rstp');
+  // Edge port forwards at once
+  const e = rtriangle(); e.dev('s2').cfg.ports.eth5.edge = true; e.reset(); e.runFor(10);
+  assert.equal(e.dev('s2').bridge.stateOf('eth5'), 'forwarding');
+});
+
 console.log(`\n${passed} tests passed`);

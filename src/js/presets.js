@@ -64,6 +64,9 @@ export const PRESETS = [
   { id: 'loop', title: 'Loop without spanning tree', topics: ['Broadcast storm', 'Loop'],
     text: 'The same triangle, but STP is off. A single ping is enough for a broadcast storm.',
     make: () => stpTriangle({ enabled: false }) },
+  { id: 'rstp', title: 'Rapid spanning tree', topics: ['RSTP', 'Proposal/agreement', 'Fast failover'],
+    text: 'The triangle with RSTP and the standard timers. Ports between switches are negotiated in milliseconds, a cable cut costs no ping.',
+    make: () => stpTriangle({ enabled: true, rootPrio: 4096, timers: 'standard', edge: true, mode: 'rstp' }) },
   { id: 'stpsquare', title: 'Four switches in a ring', topics: ['STP', 'Port costs', 'Port roles'],
     text: 'Which port blocks, and how do you move it with port costs?',
     make: () => stpSquare() },
@@ -135,19 +138,24 @@ export function vxlanTopo({ two = false, vni2 = 10010, port2 = 4789, mtu = 1500,
 }
 
 // -------------------------------------------------------------- Spanning tree, subinterfaces, services
-const stpCfg = (enabled, prio = 32768, timers = 'fast') => ({ stp: { enabled, priority: prio, timers } });
-export function stpTriangle({ enabled = true, rootPrio = 32768, timers = 'fast', edge = false } = {}) {
+const stpCfg = (enabled, prio = 32768, timers = 'fast', mode = 'stp') => ({ stp: { enabled, mode, priority: prio, timers } });
+/** modes: one protocol for all switches, or one per switch: { sw1: 'rstp', sw3: 'stp' } */
+const modeOf = (mode, id) => (typeof mode === 'string' ? mode : mode[id] || 'stp');
+export function stpTriangle({ enabled = true, rootPrio = 32768, timers = 'fast', edge = false, mode = 'stp' } = {}) {
   const pcPort = edge ? { mode: 'access', vlan: 1, edge: true } : acc(1);
-  return topo(enabled ? 'Redundancy with spanning tree' : 'Loop without spanning tree', [
-    sw('sw1', 400, 110, {}, stpCfg(enabled, rootPrio, timers)), sw('sw2', 230, 300, { eth5: pcPort }, stpCfg(enabled, 32768, timers)), sw('sw3', 570, 300, { eth5: pcPort }, stpCfg(enabled, 32768, timers)),
+  const rapid = modeOf(mode, 'sw1') === 'rstp' || modeOf(mode, 'sw2') === 'rstp';
+  return topo(!enabled ? 'Loop without spanning tree' : rapid ? 'Redundancy with rapid spanning tree' : 'Redundancy with spanning tree', [
+    sw('sw1', 400, 110, {}, stpCfg(enabled, rootPrio, timers, modeOf(mode, 'sw1'))), sw('sw2', 230, 300, { eth5: pcPort }, stpCfg(enabled, 32768, timers, modeOf(mode, 'sw2'))), sw('sw3', 570, 300, { eth5: pcPort }, stpCfg(enabled, 32768, timers, modeOf(mode, 'sw3'))),
     host('pc1', 80, 300, '10.0.0.1'), host('pc2', 720, 300, '10.0.0.2')],
   [link('sw1', 'eth1', 'sw2', 'eth1'), link('sw1', 'eth2', 'sw3', 'eth1'), link('sw2', 'eth2', 'sw3', 'eth2'),
     link('pc1', 'eth1', 'sw2', 'eth5'), link('pc2', 'eth1', 'sw3', 'eth5')],
   [{ x: 160, y: 40, w: 480, h: 330, label: 'Redundant cabling: three paths, one loop', color: 'yellow' }]);
 }
-export function stpSquare() {
+export function stpSquare({ mode = 'stp', timers = 'fast', edge = false } = {}) {
+  const pc = edge ? { mode: 'access', vlan: 1, edge: true } : acc(1);
   return topo('Four switches in a ring', [
-    sw('sw1', 240, 110, {}, stpCfg(true, 4096)), sw('sw2', 560, 110, {}, stpCfg(true)), sw('sw3', 560, 340, { eth5: acc(1) }, stpCfg(true)), sw('sw4', 240, 340, {}, stpCfg(true)),
+    sw('sw1', 240, 110, { eth5: pc }, stpCfg(true, 4096, timers, modeOf(mode, 'sw1'))), sw('sw2', 560, 110, {}, stpCfg(true, 32768, timers, modeOf(mode, 'sw2'))),
+    sw('sw3', 560, 340, { eth5: pc }, stpCfg(true, 32768, timers, modeOf(mode, 'sw3'))), sw('sw4', 240, 340, {}, stpCfg(true, 32768, timers, modeOf(mode, 'sw4'))),
     host('pc1', 80, 110, '10.0.0.1'), host('pc3', 720, 340, '10.0.0.3')],
   [link('sw1', 'eth1', 'sw2', 'eth1'), link('sw2', 'eth2', 'sw3', 'eth1'), link('sw3', 'eth2', 'sw4', 'eth2'), link('sw4', 'eth1', 'sw1', 'eth2'),
     link('pc1', 'eth1', 'sw1', 'eth5'), link('pc3', 'eth1', 'sw3', 'eth5')],

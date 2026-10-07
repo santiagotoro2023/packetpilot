@@ -21,7 +21,8 @@ const TRY = {
   ospf: sim => { sim.runFor(8000); run(sim, 'pc1', 'ping -c 1 10.3.0.10'); run(sim, 'pc2', 'ping -c 1 10.3.0.10'); },
   vrrp: sim => { sim.runFor(8000); runCommand(sim.dev('pc1'), 'ping -c 40 10.50.0.5'); sim.runFor(3000); runCommand(sim.dev('ra'), 'ip link set eth1 down'); sim.runFor(40000); },
   slow: sim => run(sim, 'client', 'curl http://web.lab/', 60000),
-  mtu: sim => run(sim, 'client', 'curl http://10.0.2.80/', 30000)
+  mtu: sim => run(sim, 'client', 'curl http://10.0.2.80/', 30000),
+  rstp: sim => { sim.runFor(35000); runCommand(sim.dev('pc1'), 'ping -c 40 10.0.0.3'); sim.runFor(3000); runCommand(sim.dev('sw3'), `ip link set ${sim.dev('sw3').bridge.stpTable().rootPort} down`); sim.runFor(45000); }
 };
 const FIX = {
   gateway: [sim => { cfg(sim, 'pc1').gw = '192.168.10.1'; }, sim => { cfg(sim, 'pc1').gw = '192.168.10.1'; }, sim => { cfg(sim, 'pc1').ifaces.eth1.prefix = 24; sim.dev('pc1').l3.arp.clear(); }],
@@ -36,7 +37,9 @@ const FIX = {
   vrrp: [sim => { cfg(sim, 'rb').vrrp[0].ifname = 'eth1'; changed(sim, 'rb'); }, sim => { cfg(sim, 'rb').ospf.ifaces.eth1.enabled = true; changed(sim, 'rb'); },
     sim => { cfg(sim, 'rb').vrrp = [{ ifname: 'eth1', vrid: 1, vip: '10.0.0.1', priority: 100, preempt: true }]; changed(sim, 'rb'); }],
   slow: [sim => { delete linkOf(sim, 'r1', 'sw1').loss; }, sim => { const l = linkOf(sim, 'client', 'r1'); delete l.loss; delete l.delay; }],
-  mtu: [sim => { cfg(sim, 'r1').mssClamp = 1360; }, sim => { cfg(sim, 'fw').acl.unshift({ action: 'allow', proto: 'icmp', icmpType: 3, src: 'any', dst: 'any' }); }]
+  mtu: [sim => { cfg(sim, 'r1').mssClamp = 1360; }, sim => { cfg(sim, 'fw').acl.unshift({ action: 'allow', proto: 'icmp', icmpType: 3, src: 'any', dst: 'any' }); }],
+  rstp: [sim => { cfg(sim, 'sw3').stp.mode = 'rstp'; changed(sim, 'sw3'); },
+    sim => { for (const id of ['sw2', 'sw4']) if (cfg(sim, id).stp.mode !== 'rstp') { cfg(sim, id).stp.mode = 'rstp'; changed(sim, id); } }]
 };
 const met = (c, sim) => c.goals.every(g => g.check(sim, { inspected: [] }));
 

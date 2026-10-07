@@ -335,7 +335,8 @@ svg.net .stp-dot circle { stroke: var(--panel); stroke-width: 1.5; }
 svg.net .stp-dot text { font-size: 7.5px; font-weight: 700; fill: #fff; pointer-events: none; }
 svg.net .stp-dot.st-forwarding circle { fill: var(--ok); }
 svg.net .stp-dot.st-blocking circle { fill: var(--err); }
-svg.net .stp-dot.st-listening circle, svg.net .stp-dot.st-learning circle { fill: var(--warn); }
+svg.net .stp-dot.st-listening circle, svg.net .stp-dot.st-learning circle, svg.net .stp-dot.st-discarding circle { fill: var(--warn); }
+svg.net .stp-dot.st-discarding.role-alternate circle, svg.net .stp-dot.st-discarding.role-backup circle { fill: var(--err); }
 svg.net .stp-dot.st-disabled circle { fill: var(--ink-3); }
 svg.net .dev .stpbadge { font-size: 10px; fill: var(--l-stp); font-weight: 650; }
 .swatches { display: flex; gap: 6px; flex-wrap: wrap; }

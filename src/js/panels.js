@@ -181,12 +181,13 @@ function stpEditor(dev, upd, sim, shown, rerender) {
   const wrap = h('div');
   const on = h('input', { type: 'checkbox', checked: st.enabled ? true : null });
   on.addEventListener('change', () => { upd(() => st.enabled = on.checked, `${dev.name}: spanning tree ${on.checked ? 'on' : 'off'}`); rerender?.(); });
-  wrap.append(h('h4', {}, 'Spanning tree (802.1D)'),
+  wrap.append(h('h4', {}, st.mode === 'rstp' ? 'Rapid spanning tree (802.1w)' : 'Spanning tree (802.1D)'),
     h('label', { class: 'row', style: { fontSize: '.88rem' } }, on, 'Spanning tree enabled'));
   if (!st.enabled) { wrap.append(h('p', { class: 'small muted' }, 'Off: all ports forward immediately. If the network has a loop, broadcasts circle endlessly.')); return wrap; }
   const prios = []; for (let p = 0; p <= 61440; p += 4096) prios.push([p, String(p) + (p === 32768 ? ' (default)' : '')]);
   const timers = st.timers === 'schnell' ? 'fast' : st.timers;
   wrap.append(h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '110px 1fr', marginTop: '6px' } },
+    h('span', { class: 'small' }, 'Protocol'), select([['stp', 'STP, classic (802.1D)'], ['rstp', 'RSTP, rapid (802.1w)']], st.mode || 'stp', v => { upd(() => st.mode = v, `${dev.name}: ${v.toUpperCase()}`); rerender?.(); }),
     h('span', { class: 'small' }, 'Bridge priority'), select(prios, st.priority, v => upd(() => st.priority = Number(v), `${dev.name}: priority ${v}`)),
     h('span', { class: 'small' }, 'Timers'), select([['standard', 'Standard (hello 2, forward delay 15, max age 20)'], ['fast', 'Fast for the lab (1 / 4 / 6)']], timers, v => upd(() => st.timers = v, `${dev.name}: timers ${v}`))));
   const b = dev.bridge.stpTable();
@@ -198,11 +199,14 @@ function stpEditor(dev, upd, sim, shown, rerender) {
       const edge = h('input', { type: 'checkbox', checked: pc.edge ? true : null });
       edge.addEventListener('change', () => upd(() => pc.edge = edge.checked, `${dev.name} ${p}: PortFast ${edge.checked ? 'on' : 'off'}`));
       const cost = numInput(pc.cost ?? 4, 1, 200000000, v => upd(() => pc.cost = v ?? 4, `${dev.name} ${p}: cost ${v}`));
-      g.append(h('span', { class: 'if' }, p), cost, h('label', { class: 'row small' }, edge, dev.bridge.stp?.ports.get(p)?.edgeLost ? 'BPDU received, edge lost' : ''));
+      const ps = dev.bridge.stp?.ports.get(p);
+      g.append(h('span', { class: 'if' }, p), cost, h('label', { class: 'row small' }, edge, ps?.edgeLost ? 'BPDU received, edge lost' : dev.bridge.stp?.rstp && ps?.legacy ? 'neighbor speaks only STP' : ''));
     }
     wrap.append(g);
   }
-  wrap.append(h('p', { class: 'small muted' }, `Cost 4 corresponds to 1 Gbit/s, 19 to 100 Mbit/s. Edge ports for end devices go to Forwarding immediately.`));
+  wrap.append(h('p', { class: 'small muted' }, st.mode === 'rstp'
+    ? 'Cost 4 corresponds to 1 Gbit/s, 19 to 100 Mbit/s. RSTP negotiates ports between switches in milliseconds. Ports to end devices still need the edge setting, otherwise they wait 2 × forward delay.'
+    : 'Cost 4 corresponds to 1 Gbit/s, 19 to 100 Mbit/s. Edge ports for end devices go to Forwarding immediately.'));
   return wrap;
 }
 
@@ -522,11 +526,11 @@ export function tablesPanel(dev, sim) {
   if (dev.type === 'switch') {
     const t = dev.bridge.stpTable();
     if (t) {
-      box.append(h('h4', {}, 'Spanning tree'),
+      box.append(h('h4', {}, t.mode === 'rstp' ? 'Rapid spanning tree (RSTP)' : 'Spanning tree (STP)'),
         h('dl', { class: 'kv' }, h('dt', {}, 'Root'), h('dd', { class: 'mono' }, t.root + (t.isRoot ? ' (this bridge)' : '')),
           h('dt', {}, 'Bridge'), h('dd', { class: 'mono' }, t.bridge),
           ...(t.isRoot ? [] : [h('dt', {}, 'Root port'), h('dd', {}, `${t.rootPort}, cost ${t.rootCost}`)])),
-        tbl(['Port', 'Role', 'State', 'Cost'], t.ports.map(p => [p.port + (p.edge ? ' (edge)' : ''), STP_TEXT.ROLE[p.role], STP_TEXT.STATE[p.state], p.cost])));
+        tbl(['Port', 'Role', 'State', 'Cost'], t.ports.map(p => [p.port + (p.edge ? ' (edge)' : p.legacy ? ' (STP neighbor)' : ''), STP_TEXT.ROLE[p.role], STP_TEXT.STATE[p.state], p.cost])));
     }
   }
   if (dev.bridge) {

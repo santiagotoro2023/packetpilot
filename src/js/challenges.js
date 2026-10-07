@@ -1,6 +1,7 @@
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, servicesTopo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo } from './presets.js';
+import { macFor } from './net.js';
 
 const preset = id => PRESETS.find(p => p.id === id).make();
 const dev = (t, id) => t.devices.find(d => d.id === id);
@@ -10,6 +11,16 @@ const link = (t, a, b) => t.links.find(l => (l.a.dev === a && l.b.dev === b) || 
 const pingAfterStart = (from, to) => sim => sim.log.some(e => e.tag === 'ping-done' && e.dev === from && e.data.dst === to && e.data.received > 0);
 const curlOk = (from, port = 80) => sim => sim.log.some(e => e.dev === from && e.tag === 'tcp-done' && e.data.ok && e.data.mode === 'http' && (!port || e.data.port === port));
 const leased = d => sim => !!sim.dev(d)?.l3?.lease;
+
+// In the ring, sw3 reaches the root via sw2 or sw4 at equal cost: the lower bridge MAC wins
+const ringBackup = () => [['sw2', macFor('sw2/bridge')], ['sw4', macFor('sw4/bridge')]].sort((a, b) => b[1].localeCompare(a[1]))[0][0];
+// sw3 lost its root port while pc1 pinged pc3, and the ping lost at most one reply
+const fastFailover = sim => sim.log.some(cut => {
+  if (cut.tag !== 'link-down' || !/ sw3 /.test(cut.text) || /pc3/.test(cut.text)) return false;
+  const moved = sim.log.some(e => e.seq > cut.seq && e.dev === 'sw3' && e.tag === 'stp-role' && e.data?.role === 'root');
+  const d = sim.log.find(e => e.tag === 'ping-done' && e.dev === 'pc1' && e.data.dst === '10.0.0.3' && e.seq > cut.seq && e.t - e.data.sent * 1000 - 1500 < cut.t);
+  return moved && !!d && d.data.sent - d.data.received <= 1;
+});
 
 export const LEVELS = { 1: 'Easy', 2: 'Medium', 3: 'Hard' };
 
@@ -45,6 +56,16 @@ export const CHALLENGES = [
     goals: [{ text: 'pc1 pings pc2 (10.0.0.2) without a broadcast storm.', check: sim => !sim.halted && pingAfterStart('pc1', '10.0.0.2')(sim) }],
     hints: ['After a storm, reset the state with the circular arrow button.', 'Which protocol prevents loops on layer 2, and is it running on every switch?'],
     presets: { pc1: ['ping -c 2 10.0.0.2'], sw1: ['show spanning-tree'], sw2: ['show spanning-tree'], sw3: ['show spanning-tree'] } },
+
+  { id: 'rstp', level: 2, title: 'Rapid spanning tree, but not rapid', topics: ['RSTP', 'Failover'],
+    symptom: '<p>The ring was switched to rapid spanning tree last month. Still, when a cable to <b>sw3</b> fails, phone calls drop for half a minute. RSTP should fail over without losing a single packet.</p>',
+    topo: () => stpSquare({ mode: 'rstp', timers: 'standard', edge: true }),
+    variants: [
+      { fault: t => { dev(t, 'sw3').stp.mode = 'stp'; }, cause: 'sw3 itself still ran classic STP (802.1D). Its alternate port could only become the root port after listening and learning, 30 seconds. Its RSTP neighbors had fallen back to STP on their ports towards it, too.' },
+      { fault: t => { dev(t, ringBackup()).stp.mode = 'stp'; }, cause: 'The switch on the backup path of sw3 still ran classic STP. sw3 spoke STP on that port ("Peer(STP)"), so its alternate port had to go through the timers before it could forward.' }],
+    goals: [{ text: 'Cut the cable on the root port of sw3 while pc1 pings pc3 (10.0.0.3). The ping loses at most one reply.', check: fastFailover }],
+    hints: ['Find the root port of sw3 with show spanning-tree, then cut that cable during a long ping.', 'Look for "Peer(STP)" in show spanning-tree and for "falls back to STP" in the log.'],
+    presets: { pc1: ['ping -c 40 10.0.0.3'], sw3: ['show spanning-tree', 'ip link set eth1 down', 'ip link set eth2 down'], sw2: ['show spanning-tree'], sw4: ['show spanning-tree'] } },
 
   { id: 'vlan', level: 2, title: 'VLAN 20 is cut in half', topics: ['VLAN', 'Trunk'],
     symptom: '<p>a10 and b10 in VLAN 10 work. a20 and b20 in VLAN 20 cannot reach each other, even though they are in the same VLAN.</p>',

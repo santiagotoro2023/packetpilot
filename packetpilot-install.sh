@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.0.0
+#  PacketPilot 2.1.0
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -31,7 +31,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.0.0"
+PP_VERSION="2.1.0"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -444,7 +444,8 @@ svg.net .stp-dot circle { stroke: var(--panel); stroke-width: 1.5; }
 svg.net .stp-dot text { font-size: 7.5px; font-weight: 700; fill: #fff; pointer-events: none; }
 svg.net .stp-dot.st-forwarding circle { fill: var(--ok); }
 svg.net .stp-dot.st-blocking circle { fill: var(--err); }
-svg.net .stp-dot.st-listening circle, svg.net .stp-dot.st-learning circle { fill: var(--warn); }
+svg.net .stp-dot.st-listening circle, svg.net .stp-dot.st-learning circle, svg.net .stp-dot.st-discarding circle { fill: var(--warn); }
+svg.net .stp-dot.st-discarding.role-alternate circle, svg.net .stp-dot.st-discarding.role-backup circle { fill: var(--err); }
 svg.net .stp-dot.st-disabled circle { fill: var(--ink-3); }
 svg.net .dev .stpbadge { font-size: 10px; fill: var(--l-stp); font-weight: 650; }
 .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -1082,7 +1083,8 @@ __PACKETPILOT_FILE_END__
   cat > "$W/js/challenges.js" <<'__PACKETPILOT_FILE_END__'
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, servicesTopo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo } from './presets.js';
+import { macFor } from './net.js';
 
 const preset = id => PRESETS.find(p => p.id === id).make();
 const dev = (t, id) => t.devices.find(d => d.id === id);
@@ -1092,6 +1094,16 @@ const link = (t, a, b) => t.links.find(l => (l.a.dev === a && l.b.dev === b) || 
 const pingAfterStart = (from, to) => sim => sim.log.some(e => e.tag === 'ping-done' && e.dev === from && e.data.dst === to && e.data.received > 0);
 const curlOk = (from, port = 80) => sim => sim.log.some(e => e.dev === from && e.tag === 'tcp-done' && e.data.ok && e.data.mode === 'http' && (!port || e.data.port === port));
 const leased = d => sim => !!sim.dev(d)?.l3?.lease;
+
+// In the ring, sw3 reaches the root via sw2 or sw4 at equal cost: the lower bridge MAC wins
+const ringBackup = () => [['sw2', macFor('sw2/bridge')], ['sw4', macFor('sw4/bridge')]].sort((a, b) => b[1].localeCompare(a[1]))[0][0];
+// sw3 lost its root port while pc1 pinged pc3, and the ping lost at most one reply
+const fastFailover = sim => sim.log.some(cut => {
+  if (cut.tag !== 'link-down' || !/ sw3 /.test(cut.text) || /pc3/.test(cut.text)) return false;
+  const moved = sim.log.some(e => e.seq > cut.seq && e.dev === 'sw3' && e.tag === 'stp-role' && e.data?.role === 'root');
+  const d = sim.log.find(e => e.tag === 'ping-done' && e.dev === 'pc1' && e.data.dst === '10.0.0.3' && e.seq > cut.seq && e.t - e.data.sent * 1000 - 1500 < cut.t);
+  return moved && !!d && d.data.sent - d.data.received <= 1;
+});
 
 export const LEVELS = { 1: 'Easy', 2: 'Medium', 3: 'Hard' };
 
@@ -1127,6 +1139,16 @@ export const CHALLENGES = [
     goals: [{ text: 'pc1 pings pc2 (10.0.0.2) without a broadcast storm.', check: sim => !sim.halted && pingAfterStart('pc1', '10.0.0.2')(sim) }],
     hints: ['After a storm, reset the state with the circular arrow button.', 'Which protocol prevents loops on layer 2, and is it running on every switch?'],
     presets: { pc1: ['ping -c 2 10.0.0.2'], sw1: ['show spanning-tree'], sw2: ['show spanning-tree'], sw3: ['show spanning-tree'] } },
+
+  { id: 'rstp', level: 2, title: 'Rapid spanning tree, but not rapid', topics: ['RSTP', 'Failover'],
+    symptom: '<p>The ring was switched to rapid spanning tree last month. Still, when a cable to <b>sw3</b> fails, phone calls drop for half a minute. RSTP should fail over without losing a single packet.</p>',
+    topo: () => stpSquare({ mode: 'rstp', timers: 'standard', edge: true }),
+    variants: [
+      { fault: t => { dev(t, 'sw3').stp.mode = 'stp'; }, cause: 'sw3 itself still ran classic STP (802.1D). Its alternate port could only become the root port after listening and learning, 30 seconds. Its RSTP neighbors had fallen back to STP on their ports towards it, too.' },
+      { fault: t => { dev(t, ringBackup()).stp.mode = 'stp'; }, cause: 'The switch on the backup path of sw3 still ran classic STP. sw3 spoke STP on that port ("Peer(STP)"), so its alternate port had to go through the timers before it could forward.' }],
+    goals: [{ text: 'Cut the cable on the root port of sw3 while pc1 pings pc3 (10.0.0.3). The ping loses at most one reply.', check: fastFailover }],
+    hints: ['Find the root port of sw3 with show spanning-tree, then cut that cable during a long ping.', 'Look for "Peer(STP)" in show spanning-tree and for "falls back to STP" in the log.'],
+    presets: { pc1: ['ping -c 40 10.0.0.3'], sw3: ['show spanning-tree', 'ip link set eth1 down', 'ip link set eth2 down'], sw2: ['show spanning-tree'], sw4: ['show spanning-tree'] } },
 
   { id: 'vlan', level: 2, title: 'VLAN 20 is cut in half', topics: ['VLAN', 'Trunk'],
     symptom: '<p>a10 and b10 in VLAN 10 work. a20 and b20 in VLAN 20 cannot reach each other, even though they are in the same VLAN.</p>',
@@ -1264,6 +1286,7 @@ export function helpFor(dev) {
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
   if (dev.type === 'switch') l.push('show spanning-tree    STP status: root, roles, states',
     'spanning-tree on|off  turn STP on or off',
+    'spanning-tree mode stp|rstp        classic (802.1D) or rapid (802.1w)',
     'spanning-tree priority <0-61440>   bridge priority (multiples of 4096)',
     'spanning-tree portfast <port> on|off   port as edge port',
     'spanning-tree cost <port> <cost>       port cost');
@@ -1488,6 +1511,11 @@ export function runCommand(dev, line) {
       if (p[0] === 'spanning-tree') {
         const change = (text, data) => { sim.record(dev, 'info', text, { tag: 'stp-config', data }); sim.configChanged(dev.id); say('OK'); };
         if (p[1] === 'on' || p[1] === 'off') { st.enabled = p[1] === 'on'; return change(`Spanning tree ${st.enabled ? 'turned on' : 'turned off'}`, { enabled: st.enabled }); }
+        if (p[1] === 'mode') {
+          const m = { stp: 'stp', rstp: 'rstp', 'rapid-pvst': 'rstp', ieee: 'stp', pvst: 'stp' }[p[2]];
+          if (!m) return say('Syntax: spanning-tree mode stp|rstp');
+          st.mode = m; return change(`Spanning tree protocol: ${m === 'rstp' ? 'RSTP (802.1w)' : 'STP (802.1D)'}`, { mode: m });
+        }
         if (p[1] === 'priority') {
           const v = Number(p[2]);
           if (!(v >= 0 && v <= 61440 && v % 4096 === 0)) return say('The priority must be a multiple of 4096 between 0 and 61440.');
@@ -1501,10 +1529,11 @@ export function runCommand(dev, line) {
           if (!(c >= 1 && c <= 200000000)) return say('Syntax: spanning-tree cost eth1 19');
           dev.cfg.ports[port].cost = c; return change(`${port}: port cost ${c}`, { port, cost: c });
         }
-        return say('Syntax: spanning-tree on|off | priority <n> | portfast <port> on|off | cost <port> <n>');
+        return say('Syntax: spanning-tree on|off | mode stp|rstp | priority <n> | portfast <port> on|off | cost <port> <n>');
       }
       const t = b.stpTable();
       if (!t) return say('Spanning tree is turned off. Turn it on with: spanning-tree on');
+      say(`Spanning tree enabled protocol ${t.mode === 'rstp' ? 'rstp (802.1w)' : 'ieee (802.1D)'}`);
       say(`Root ID     ${t.root}${t.isRoot ? '   (this bridge is the root)' : ''}`);
       if (!t.isRoot) say(`            Cost ${t.rootCost}, root port ${t.rootPort}`);
       say(`Bridge ID   ${t.bridge}`);
@@ -1512,8 +1541,8 @@ export function runCommand(dev, line) {
       say(`Timers      Hello ${tm.hello} s, Max Age ${tm.maxAge} s`);
       say(`            Forward Delay ${tm.fwd} s`);
       say('');
-      say(`${pad('Port', 6)}${pad('Role', 6)}${pad('State', 12)}${pad('Cost', 7)}Port ID`);
-      for (const r of t.ports) say(`${pad(r.port, 6)}${pad({ root: 'Root', designated: 'Desg', alternate: 'Altn', disabled: 'Disa' }[r.role], 6)}${pad(r.state, 12)}${pad(r.cost, 7)}${r.id}${r.edge ? ' Edge' : ''}`);
+      say(`${pad('Port', 5)}${pad('Role', 5)}${pad('State', 11)}${pad('Cost', 5)}${pad('ID', 6)}Type`);
+      for (const r of t.ports) say(`${pad(r.port, 5)}${pad({ root: 'Root', designated: 'Desg', alternate: 'Altn', backup: 'Back', disabled: 'Disa' }[r.role], 5)}${pad(r.state, 11)}${pad(r.cost, 5)}${pad(r.id, 6)}${[t.mode === 'rstp' ? 'P2p' : '', r.edge ? 'Edge' : '', r.legacy ? 'Peer(STP)' : ''].filter(Boolean).join(' ')}`);
       return;
     }
     if (p[0] === 'arp' && dev.l3) return runCommand(dev, 'ip neigh');
@@ -2247,10 +2276,20 @@ const NOT_ROOT = [...TRI].sort((a, b) => bmac(b).localeCompare(bmac(a)))[0];
 const blockedPorts = (sim, ids) => ids.flatMap(id => (sim.dev(id).bridge.stpTable()?.ports || []).filter(p => p.role === 'alternate').map(p => [id, p.port]));
 const portAnswers = list => list.flatMap(([d, p]) => [`${d} ${p}`, `${d}:${p}`, `${d}/${p}`, `${d}-${p}`]);
 const stpOn = ids => sim => ids.every(id => sim.dev(id)?.bridge?.stp);
+const rstpOn = ids => sim => ids.every(id => sim.dev(id)?.bridge?.stp?.rstp);
+// Did all switches run RSTP at the moment of a log event? (the last start of each one counts)
+const rstpAt = (sim, ids, ev) => ids.every(id => { const s = sim.log.filter(e => e.dev === id && e.tag === 'stp-start' && e.seq < ev.seq).pop(); return !!s?.data?.rstp; });
+const isCut = (a, b) => e => e.tag === 'link-down' && e.text.includes(` ${a} `) && e.text.includes(` ${b} `);
+// The ping of `from` that was running when the event happened
+const pingAcross = (sim, from, ev) => sim.log.find(e => e.tag === 'ping-done' && e.dev === from && e.seq > ev.seq && e.t - e.data.sent * 1000 - 1500 < ev.t);
+const lossAt = (sim, from, ev) => { const d = ev && pingAcross(sim, from, ev); return d ? d.data.sent - d.data.received : null; };
+const firstStpCut = sim => sim.log.find(e => isCut('sw1', 'sw2')(e) && !rstpAt(sim, TRI, e));
+const rstpCuts = sim => sim.log.filter(e => isCut('sw1', 'sw2')(e) && rstpAt(sim, TRI, e));
+const SQR = ['sw1', 'sw2', 'sw3', 'sw4'];
 
 export default {
   id: 'm4', title: 'Spanning tree', bands: ['eth', 'stp'],
-  text: 'Redundant cabling without a broadcast storm: how switches elect a root bridge, block ports and fail over after an outage.',
+  text: 'Redundant cabling without a broadcast storm: how switches elect a root bridge, block ports and fail over after an outage. Then rapid spanning tree, which does the same in milliseconds.',
   lessons: [
     { id: 'm4-l1', title: 'Why loops bring a network down', minutes: 12, steps: [
       { type: 'theory', title: 'Redundancy without protection', html: `
@@ -2374,7 +2413,7 @@ ${note('The roles tell you where traffic flows. A frame from one end of the ring
 <p>Learning exists so that the switch fills its MAC table before it forwards. Otherwise it would have to flood every frame at first.</p>
 ${note('The problem in practice: a PC is plugged in, and nothing works for 30 seconds. DHCP times out, a PXE boot fails. The solution is called <b>PortFast</b> (Cisco) or <b>edge port</b> (standard): ports to end devices go to Forwarding immediately.')}
 <p>If a BPDU still arrives on an edge port, there is obviously a switch connected there. The port then loses its edge status and takes part in STP normally. With <b>BPDU Guard</b>, such a port is even shut down, a good protection against switches people bring along.</p>
-${note('<b>RSTP</b> (802.1w, the standard today) negotiates new ports in fractions of a second instead of waiting for timers. The roles and the root election work the same as here. A Linux bridge only speaks classic STP; for RSTP you need the <code>mstpd</code> service.')}` },
+${note('<b>RSTP</b> (802.1w, the standard today) negotiates new ports in fractions of a second instead of waiting for timers. The roles and the root election work the same as here. You will try it at the end of this module.')}` },
       { type: 'lab', title: 'Watch the states and turn on PortFast', topo: () => stpTriangle({ enabled: true, rootPrio: 4096, timers: 'standard' }), edit: 'config',
         intro: '<p>This time the standard timers are running. Watch the dots on the ports: yellow means Listening or Learning. The log can be filtered to "Spanning tree only". The fast-forward button skips waiting time.</p>',
         presets: { sw2: ['show spanning-tree'], sw3: ['show spanning-tree', 'spanning-tree portfast eth5 on'], pc1: ['ping -c 1 10.0.0.2'] },
@@ -2411,11 +2450,97 @@ ${note('A TC also occurs when an ordinary port of an end device goes to Forwardi
           { text: 'Which port of sw2 is now the root port?', ask: true, expect: sim => [sim.dev('sw2').bridge.stpTable()?.rootPort || ''] },
           { text: 'Ping again until replies come back.', check: pingOkAfter('pc1', '10.0.0.2', e => e.tag === 'link-down') }],
         hints: ['A running ping -c 12 nicely shows how long the interruption lasts.', 'In the log under "Spanning tree only" you can see the topology change and the flushing of the MAC tables.'],
-        outro: '<p>With the fast lab timers, failing over takes 8 seconds, with the standard timers 30. Rapid spanning tree usually manages it in under a second. Where failover has to be even faster, you rely on layer 3 with routing instead of large layer 2 domains.</p>' },
+        outro: '<p>With the fast lab timers, failing over takes 8 seconds, with the standard timers 30. Rapid spanning tree usually manages it in under a second: that is what the next lessons are about.</p>' },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'Why do switches flush their MAC tables after a topology change?', options: ['To save memory', 'Because the entries still point to the old path', 'So that STP restarts', 'They do not'], correct: 1 },
         { q: 'A switch no longer hears BPDUs on its root port, but the link is still up. How long does it wait (802.1D) before discarding the information?', input: ['20'], unit: 'seconds', explain: 'That is max age. After that come listening and learning with 15 seconds each.' },
         { q: 'Which measure shortens failover the most?', options: ['Hello timer at 1 second', 'Rapid spanning tree (802.1w)', 'Higher root priority', 'More redundant cables'], correct: 1 }] }
+    ] },
+    { id: 'm4-l6', title: 'Rapid spanning tree (RSTP)', minutes: 15, steps: [
+      { type: 'theory', title: 'Asking instead of waiting', html: `
+<p>Classic spanning tree is slow on purpose. A port that may forward again cannot know whether this closes a loop somewhere, so it simply waits until the news has spread through the whole network: 15 seconds of listening, 15 seconds of learning. <b>Rapid spanning tree</b> (RSTP, IEEE 802.1w, today part of 802.1D-2004) replaces most of this waiting with a short conversation between neighbors.</p>
+<p>The good news first: the root election, the bridge ID, the costs and the port roles work exactly as you learned. RSTP changes <i>how fast</i> the tree is built, not <i>which</i> tree.</p>
+<table><tr><th></th><th>STP (802.1D)</th><th>RSTP (802.1w)</th></tr>
+<tr><td>Port states</td><td>Blocking, Listening, Learning, Forwarding</td><td><b>Discarding</b>, Learning, Forwarding</td></tr>
+<tr><td>Roles</td><td>Root, Designated, Alternate</td><td>the same, plus <b>Backup</b></td></tr>
+<tr><td>BPDUs</td><td>come from the root, the others relay them</td><td>every switch sends its own every hello, like a keepalive</td></tr>
+<tr><td>Neighbor gone</td><td>after max age, 20 s</td><td>after 3 missed hellos, 6 s. A dead link at once</td></tr>
+<tr><td>New forwarding port</td><td>30 s of timers</td><td><b>proposal and agreement</b>, milliseconds</td></tr>
+<tr><td>Root port fails, alternate exists</td><td>30 to 50 s</td><td>the alternate takes over <b>immediately</b></td></tr>
+<tr><td>Topology change</td><td>reported to the root, which tells everyone</td><td>flooded directly by the switch that notices it</td></tr></table>
+<h2>Alternate and backup</h2>
+<p>An <b>alternate</b> port is a blocked port that leads to the root via <i>another</i> switch. RSTP keeps it ready: if the root port fails, the alternate becomes the root port and forwards at once, it already knows that this path is loop-free. A <b>backup</b> port is a second port of the same switch into the same segment, which only happens with hubs or shared media. You will hardly see it today.</p>
+${note('Only three states remain because Blocking and Listening looked the same from the outside: neither forwards nor learns. RSTP calls this <b>Discarding</b>. In the lab, a red dot is a discarding alternate or backup port, a yellow one a port that is still negotiating.')}` },
+      { type: 'theory', title: 'Proposal and agreement', html: `
+<p>When a designated port wants to forward, it does not wait. It sends a BPDU with the <b>proposal</b> flag: "May I forward right away?" The neighbor may only say yes if this cannot create a loop on its side.</p>
+<pre>sw1 (root)                           sw2
+eth1: Designated, Discarding
+   ── RST BPDU, Proposal ──────────▶  eth1 becomes the root port
+                                     <b>Sync:</b> all other non-edge designated
+                                     ports go to Discarding (eth2)
+   ◀────────── RST BPDU, Agreement ──  "go ahead"
+eth1: Forwarding (milliseconds)      eth1 forwards as the root port
+                                     eth2 now sends its own proposal
+                                     to the next switch …</pre>
+<p>The <b>sync</b> is the trick: before sw2 agrees, it blocks its own ports towards the rest of the network. So there is never an open loop, and the handshake travels down the tree like a wave, one link at a time. A blocked alternate port agrees right away because it does not forward anyway.</p>
+<h2>When the handshake does not work</h2>
+<table><tr><th>Situation</th><th>What happens</th></tr>
+<tr><td>Port to an end device without <b>edge</b> setting</td><td>A PC does not answer proposals: the port waits 2 × forward delay, 30 s, as in STP</td></tr>
+<tr><td>Neighbor only speaks 802.1D</td><td>It ignores RST BPDUs and sends old ones. The RSTP switch falls back to STP on that port, with timers</td></tr>
+<tr><td>Shared link (half duplex, hub)</td><td>The handshake needs a point-to-point link, otherwise timers</td></tr></table>
+${note('So the edge setting is more important with RSTP, not less: it is the only way a port to an end device forwards without delay. On Cisco: <code>spanning-tree portfast</code>, on Linux with mstpd: <code>mstpctl setportadminedge</code>.')}
+<h2>Topology change</h2>
+<p>In RSTP only a port that <b>starts forwarding</b> counts as a topology change, and edge ports never do. The switch that notices it flushes the MAC addresses on its other ports and sends BPDUs with the TC flag on all its root and designated ports at once. Every switch that receives one does the same, so the news spreads in milliseconds without a detour via the root.</p>` },
+      { type: 'label', title: 'The flags byte of an RST BPDU', distractors: ['Root ID', 'Max Age', 'Priority'],
+        slots: [{ label: 'TC Ack', size: 'bit 7', kind: 'stp', w: 72 }, { label: 'Agreement', size: 'bit 6', kind: 'stp', w: 92 }, { label: 'Forwarding', size: 'bit 5', kind: 'stp', w: 92 },
+          { label: 'Learning', size: 'bit 4', kind: 'stp', w: 86 }, { label: 'Port role', size: 'bits 3-2', kind: 'stp', w: 110 }, { label: 'Proposal', size: 'bit 1', kind: 'stp', w: 86 },
+          { label: 'TC', size: 'bit 0', kind: 'stp', w: 60 }],
+        explain: 'Classic STP only used the two outer bits: TC and TC Ack. RSTP fills the six bits in between. The port role is 01 alternate or backup, 10 root, 11 designated. TC Ack is only used towards a neighbor that speaks classic STP.' },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'Which port states does RSTP know?', options: ['Blocking, Listening, Forwarding', 'Discarding, Learning, Forwarding', 'Disabled, Learning, Forwarding', 'Listening, Learning, Forwarding'], correct: 1,
+          explain: 'Blocking and Listening became Discarding. Learning and Forwarding stay.' },
+        { q: 'A switch loses the link on its root port and has an alternate port. How long until it forwards again?', options: ['About 50 seconds', 'About 30 seconds', 'About 6 seconds', 'Practically immediately'], correct: 3,
+          explain: 'The alternate port already is a loop-free path to the root. It becomes the root port and forwards at once.' },
+        { q: 'What does a switch do before it answers a proposal on its root port with an agreement?', options: ['It waits 15 seconds', 'It blocks all its other non-edge designated ports (sync)', 'It asks the root', 'It flushes its MAC table only'], correct: 1 },
+        { q: 'After how many missed hellos does RSTP discard the information of a neighbor?', input: ['3', 'three'], explain: 'With hello 2 s that is 6 s instead of max age 20 s.' },
+        { q: 'In an RSTP network, a PC is plugged into a port without edge setting. How many seconds until the port forwards (standard timers)?', input: ['30'], unit: 'seconds',
+          explain: 'The PC never answers the proposal, so only the fallback with 2 × forward delay remains.' }] }
+    ] },
+
+    { id: 'm4-l7', title: 'RSTP in the lab: from 30 seconds to zero', minutes: 20, steps: [
+      { type: 'lab', title: 'Measure, switch over, measure again', topo: () => stpTriangle({ enabled: true, rootPrio: 4096, timers: 'standard', edge: true }), edit: 'config',
+        intro: '<p>The triangle runs classic STP with the standard timers, the ports to the PCs are edge ports. First measure how long a failover takes, then switch to RSTP and measure again. Waiting is faster with the fast-forward button, the ping keeps counting.</p>',
+        presets: { pc1: ['ping -c 50 10.0.0.2'], sw2: ['ip link set eth1 down', 'ip link set eth1 up', 'spanning-tree mode rstp', 'show spanning-tree'], sw1: ['spanning-tree mode rstp'], sw3: ['spanning-tree mode rstp'] },
+        goals: [
+          { text: 'Start a long ping on pc1 (ping -c 50 10.0.0.2) and cut the cable sw1–sw2 while it runs (on sw2: ip link set eth1 down).', check: sim => { const c = firstStpCut(sim); return !!c && lossAt(sim, 'pc1', c) !== null; } },
+          { text: 'How many replies did that ping lose? The statistics at the end of the ping show it.', ask: true,
+            expect: sim => { const n = lossAt(sim, 'pc1', firstStpCut(sim)); return n === null ? ['30'] : [n, n - 1, n + 1].map(String); } },
+          { text: 'Reconnect the cable and switch all three switches to RSTP (Configuration, Protocol, or <code>spanning-tree mode rstp</code>).', check: sim => rstpOn(TRI)(sim) && linkBetween(sim, 'sw1', 'sw2')?.up },
+          { text: 'Find the handshake in the log (filter: Spanning tree only): a proposal and the agreement that answers it.', check: tag(null, 'stp-agreement') },
+          { text: 'Ping again and cut the same cable. This time the ping may lose at most one reply.',
+            check: sim => rstpCuts(sim).some(c => { const n = lossAt(sim, 'pc1', c); return n !== null && n <= 1; }) },
+          { text: 'Which role did the port of sw2 that took over have before the cut?', ask: true, expect: () => ['alternate', 'alternate port', 'altn', 'alt'] }],
+        hints: ['Before the first ping, let STP converge: with the standard timers that takes 30 seconds, the fast-forward button skips them.',
+          'Switching a switch to RSTP restarts its spanning tree. As long as one neighbor still speaks STP, the ports towards it use the timers.',
+          'In the log, sw2 reports: "the alternate port takes over as root port immediately".'],
+        outro: '<p>Same network, same cable, from about 30 lost pings to none. The alternate port had been waiting with the information that it leads to the root without a loop, so it could take over in the same moment the link died.</p>' }
+    ] },
+
+    { id: 'm4-l8', title: 'Edge ports and an old neighbor', minutes: 15, steps: [
+      { type: 'lab', title: 'Find what slows RSTP down', topo: () => stpSquare({ mode: { sw1: 'rstp', sw2: 'rstp', sw3: 'rstp', sw4: 'stp' }, timers: 'standard' }), edit: 'config',
+        intro: '<p>A ring of four switches, three of them run RSTP. Somewhere there is a switch that only knows classic STP, and the ports to the PCs are plain ports. Find both problems with <code>show spanning-tree</code> and the log, and fix them.</p>',
+        presets: { sw1: ['show spanning-tree'], sw3: ['show spanning-tree', 'spanning-tree portfast eth5 on', 'ip link set eth5 down', 'ip link set eth5 up'], sw4: ['show spanning-tree', 'spanning-tree mode rstp'], pc1: ['ping -c 1 10.0.0.3'] },
+        goals: [
+          { text: 'Which switch only speaks classic STP?', ask: true, expect: () => ['sw4'], placeholder: 'e.g. sw2' },
+          { text: 'On which port of a neighbor do you see it (Peer(STP) in show spanning-tree)? Name one, e.g. sw2 eth1.', ask: true, expect: () => portAnswers([['sw1', 'eth2'], ['sw3', 'eth2']]), placeholder: 'sw? eth?' },
+          { text: 'Switch sw4 to RSTP. Its neighbors notice by themselves and switch their ports back.', check: sim => rstpOn(['sw4'])(sim) && sim.log.some(e => e.tag === 'stp-migrate' && e.data?.legacy === false) },
+          { text: 'Make the ports to pc1 (sw1 eth5) and pc3 (sw3 eth5) edge ports.', check: sim => !!sim.dev('sw1').cfg.ports.eth5.edge && !!sim.dev('sw3').cfg.ports.eth5.edge },
+          { text: 'Disconnect the cable of pc3, reconnect it and ping pc3 from pc1 right away. The port forwards immediately and the reply comes.',
+            check: sim => { const up = sim.log.filter(e => e.tag === 'link-up' && e.text.includes('pc3')).pop();
+              return !!up && sim.log.some(e => e.seq > up.seq && e.dev === 'sw3' && e.tag === 'stp-state' && e.data?.port === 'eth5' && e.data.edge) && pingOkAfter('pc1', '10.0.0.3', e => e === up)(sim); } },
+          { text: 'Without the edge setting: how many seconds would the port of pc3 wait with the standard timers?', ask: true, expect: () => ['30'], placeholder: 'seconds' }],
+        hints: ['The neighbors of an STP-only switch log: "receives a classic 802.1D BPDU … falls back to STP".', 'The edge setting is in the spanning tree section of the configuration, or: spanning-tree portfast eth5 on'],
+        outro: '<p>Two classics from practice. A single old switch makes RSTP slow on all its links, and a missing edge setting makes every PC wait half a minute, even in a modern network. Real switches report the old neighbor as "Peer(STP)", and they also need a nudge to try RSTP again later: on Cisco <code>clear spanning-tree detected-protocols</code>.</p>' }
     ] }
   ]
 };
@@ -3150,7 +3275,7 @@ export function normalizeDevice(cfg) {
     cfg.ports ??= {};
     for (const p of PORTS.switch) cfg.ports[p] = { mode: 'access', vlan: 1, allowed: '1-4094', native: 1, edge: false, cost: 4, ...(cfg.ports[p] || {}) };
     cfg.ageing ??= 300;
-    cfg.stp = { enabled: false, priority: 32768, timers: 'standard', ...(cfg.stp || {}) };
+    cfg.stp = { enabled: false, mode: 'stp', priority: 32768, timers: 'standard', ...(cfg.stp || {}) };
   }
   if (t === 'vtep') {
     cfg.ifaces.eth1 ??= { ip: '', prefix: 24 };
@@ -4199,8 +4324,9 @@ const cmpPort = (a, b) => { const [ap, an] = a.split('.').map(Number), [bp, bn] 
 function cmpVec(a, b) {
   return cmpBid(a.root, b.root) || (a.cost - b.cost) || cmpBid(a.bridge, b.bridge) || cmpPort(a.port, b.port) || (a.rx && b.rx ? cmpPort(a.rx, b.rx) : 0);
 }
-const ROLE_TEXT = { root: 'Root port', designated: 'Designated', alternate: 'Alternate (blocked)', disabled: 'disabled' };
-const STATE_TEXT = { blocking: 'Blocking', listening: 'Listening', learning: 'Learning', forwarding: 'Forwarding', disabled: 'Disabled' };
+const ROLE_TEXT = { root: 'Root port', designated: 'Designated', alternate: 'Alternate (blocked)', backup: 'Backup (blocked)', disabled: 'disabled' };
+const STATE_TEXT = { blocking: 'Blocking', listening: 'Listening', learning: 'Learning', forwarding: 'Forwarding', discarding: 'Discarding', disabled: 'Disabled' };
+const sameBid = (a, b) => !!a && !!b && cmpBid(a, b) === 0;
 
 class Bridge {
   constructor(dev) { this.dev = dev; this.sim = dev.sim; this.resetState(); }
@@ -4245,8 +4371,8 @@ class Bridge {
   receive(p, frame, from = {}) {
     if (frame.type === 'stp') { if (this.stp) this.stpReceive(p, frame); return; }
     const ps = this.stp && !p.startsWith('vxlan') ? this.stp.ports.get(p) : null;
-    if (ps && (ps.state === 'blocking' || ps.state === 'listening' || ps.state === 'disabled')) {
-      this.dev.record('drop', `${p} is in state ${STATE_TEXT[ps.state]} (STP): frame dropped`, { frame, tag: 'stp-drop', data: { port: p, state: ps.state } });
+    if (ps && (ps.state === 'blocking' || ps.state === 'listening' || ps.state === 'discarding' || ps.state === 'disabled')) {
+      this.dev.record('drop', `${p} is in state ${STATE_TEXT[ps.state]} (${this.stp.rstp ? 'RSTP' : 'STP'}): frame dropped`, { frame, tag: 'stp-drop', data: { port: p, state: ps.state } });
       return;
     }
     const vid = from.vid ?? this.vidIn(p, frame);
@@ -4301,9 +4427,10 @@ class Bridge {
   physUp(p) { const l = this.sim.linkAt(this.dev.id, p); return !!l && l.up; }
   stpStart() {
     if (this.stp) return;
-    this.stp = { ports: new Map(), rootPort: null, rootId: this.myId(), rootCost: 0, tcUntil: 0, lastFlush: -1e9, timer: null };
-    this.dev.record('info', `starts spanning tree (bridge ID ${fmtBid(this.myId())}) and initially considers itself the root`, { tag: 'stp-start' });
-    for (const p of PORTS.switch) this.stp.ports.set(p, { role: 'disabled', state: 'disabled', info: null, timer: null, edge: false });
+    const rstp = this.cfg.stp.mode === 'rstp';
+    this.stp = { rstp, ports: new Map(), rootPort: null, rootId: this.myId(), rootCost: 0, tcUntil: 0, lastFlush: -1e9, lastTcRx: -1e9, timer: null };
+    this.dev.record('info', `starts ${rstp ? 'rapid spanning tree (RSTP, 802.1w)' : 'spanning tree'} (bridge ID ${fmtBid(this.myId())}) and initially considers itself the root`, { tag: 'stp-start', data: { rstp } });
+    for (const p of PORTS.switch) this.stp.ports.set(p, { role: 'disabled', state: 'disabled', info: null, timer: null, edge: false, proposing: false, legacy: false });
     this.stpRecompute(true);
     const tick = () => { if (!this.stp) return; this.stpHello(); this.stp.timer = this.sim.schedule(this.timers().hello * 1000, tick); };
     this.stp.timer = this.sim.schedule(5 + this.sim.random() * 20, tick);
@@ -4316,6 +4443,7 @@ class Bridge {
     this.dev.record('info', 'Spanning tree turned off: all ports forward immediately', { tag: 'stp-stop' });
   }
   stpHello() {
+    if (this.stp.rstp) return this.rstpHello();
     const now = this.sim.time, { maxAge } = this.timers();
     let changed = false;
     for (const [p, ps] of this.stp.ports) {
@@ -4340,6 +4468,13 @@ class Bridge {
     if (!ps || !this.physUp(p)) return;
     const b = frame.payload;
     if (ps.edge) { ps.edge = false; ps.edgeLost = true; this.dev.record('err', `${p} is configured as an edge port but receives a BPDU: loses edge status`, { frame, tag: 'stp-edge-lost', data: { port: p } }); }
+    if (this.stp.rstp) return this.rstpReceive(p, ps, b, frame);
+    // A classic 802.1D bridge does not understand BPDU type 2 and discards it. The RSTP
+    // neighbor notices this because it keeps hearing 802.1D BPDUs and falls back.
+    if (b.version === 2) {
+      if (!ps.ignoredRst) { ps.ignoredRst = true; this.dev.record('drop', `${p} receives an RST BPDU (802.1w) and discards it: this switch only speaks classic STP`, { frame, tag: 'stp-rst-ignored', data: { port: p } }); }
+      return;
+    }
     const isNew = !ps.info || cmpBid(ps.info.root, b.root) || ps.info.cost !== b.cost || cmpBid(ps.info.bridge, b.bridge);
     ps.info = { root: b.root, cost: b.cost, bridge: b.bridge, port: b.port, age: b.age, t: this.sim.time };
     if (isNew) this.dev.record('learn', `${p} receives BPDU: root ${fmtBid(b.root)}, cost ${b.cost}, from ${fmtBid(b.bridge)}`, { frame, tag: 'stp-bpdu', data: { port: p } });
@@ -4361,23 +4496,27 @@ class Bridge {
       if (cmpBid(cand.root, me) >= 0) continue;
       if (!best || cmpVec(cand, best) < 0) { best = cand; rootPort = p; }
     }
-    const oldRoot = st.rootId;
+    const oldRoot = st.rootId, oldCost = st.rootCost;
     st.rootPort = rootPort;
     st.rootId = best ? best.root : me;
     st.rootCost = best ? best.cost : 0;
     if (cmpBid(oldRoot, st.rootId) !== 0 && !initial) {
       this.dev.record('info', rootPort ? `new root bridge: ${fmtBid(st.rootId)}, root port ${rootPort}, cost ${st.rootCost}` : 'is now the root bridge itself', { tag: 'stp-root', data: { root: fmtBid(st.rootId), rootPort } });
     }
+    const newInfo = st.rstp && !initial && (cmpBid(oldRoot, st.rootId) !== 0 || oldCost !== st.rootCost);
     for (const [p, ps] of st.ports) {
       let role;
       if (!this.physUp(p)) role = 'disabled';
       else if (p === rootPort) role = 'root';
       else {
         const offer = { root: st.rootId, cost: st.rootCost, bridge: me, port: this.portId(p) };
-        role = !ps.info || cmpVec(offer, ps.info) < 0 ? 'designated' : 'alternate';
+        role = !ps.info || cmpVec(offer, ps.info) < 0 ? 'designated' : st.rstp && sameBid(ps.info.bridge, me) ? 'backup' : 'alternate';
       }
-      this.setRole(p, ps, role, initial);
+      if (st.rstp) this.rstpSetRole(p, ps, role, initial);
+      else this.setRole(p, ps, role, initial);
     }
+    // RSTP tells the neighbors about a new root or cost at once instead of at the next hello
+    if (newInfo) for (const [p, ps] of st.ports) if (ps.role === 'designated' && !ps.edge && this.physUp(p)) this.sendBpdu(p, { proposal: ps.proposing && ps.state !== 'forwarding' });
   }
   setRole(p, ps, role, initial) {
     const prev = ps.role;
@@ -4425,15 +4564,203 @@ class Bridge {
       this.dev.record('info', 'Topology change: MAC table flushed and change reported via BPDU', { tag: 'stp-tc', data: {} });
     }
   }
+
+  // ---------- Rapid spanning tree (IEEE 802.1w, simplified)
+  // Same election and roles as 802.1D, but ports are negotiated with a proposal and an
+  // agreement instead of waiting for timers. All links between switches count as
+  // point-to-point (full duplex), which is the normal case today.
+  sendBpdu(p, extra = {}) {
+    const st = this.stp, ps = st.ports.get(p);
+    const { maxAge, hello, fwd } = this.timers();
+    const rootInfo = st.rootPort ? st.ports.get(st.rootPort).info : null;
+    // RSTP keeps the topology change per port, so it never travels back where it came from
+    const tc = st.rstp ? this.sim.time < (ps.tcUntil || 0) : this.sim.time < st.tcUntil;
+    const base = { root: st.rootId, cost: st.rootCost, bridge: this.myId(), port: this.portId(p), age: st.rootPort ? (rootInfo?.age ?? 0) + 1 : 0, maxAge, hello, fwd, tc };
+    // rstpCapable is not on the wire: it only keeps two RSTP bridges from locking each other in
+    // the fallback when both are switched over at the same time (a real switch needs "mcheck")
+    const bpdu = ps.legacy ? { ...base, version: 0, rstpCapable: true }
+      : { ...base, version: 2, role: ps.role, proposal: false, agreement: false, learning: ps.state === 'learning' || ps.state === 'forwarding', forwarding: ps.state === 'forwarding', ...extra };
+    this.dev.transmit(p, ethFrame(this.dev.mac(p), STP_MAC, 'stp', bpdu));
+  }
+  rstpHello() {
+    const st = this.stp, now = this.sim.time, { hello, maxAge } = this.timers();
+    let changed = false;
+    for (const [p, ps] of st.ports) {
+      // RSTP: three missed hellos are enough, the old protocol waits for max age
+      const limit = ps.info?.v2 ? 3 * hello : maxAge;
+      if (ps.info && now - ps.info.t > limit * 1000) {
+        const why = ps.info.v2 ? '3 × hello' : 'max age';
+        ps.info = null; changed = true;
+        this.dev.record('err', `${p}: no BPDU for ${limit} s (${why}), the stored information expires`, { tag: 'stp-maxage', data: { port: p } });
+      }
+    }
+    if (changed) this.stpRecompute();
+    for (const [p, ps] of st.ports) {
+      if (!this.physUp(p)) continue;
+      if (ps.role === 'designated' && !ps.edge) this.sendBpdu(p, { proposal: ps.proposing && ps.state !== 'forwarding' });
+      else if (ps.role === 'designated' && ps.edge) this.sendBpdu(p);
+      else if (ps.role === 'root' && now < (ps.tcUntil || 0) && !ps.legacy) this.sendBpdu(p);
+    }
+  }
+  rstpReceive(p, ps, b, frame) {
+    const st = this.stp;
+    // Protocol migration, with a hold time so that two neighbors do not switch back and forth
+    const settled = this.sim.time - (ps.migrated ?? -1e9) > 3000;
+    if (b.version !== 2 && !b.rstpCapable && !ps.legacy && settled) {
+      ps.legacy = true; ps.proposing = false; ps.migrated = this.sim.time;
+      this.dev.record('err', `${p} receives a classic 802.1D BPDU: the neighbor does not speak RSTP. The port falls back to STP, no handshake, the timers apply`, { frame, tag: 'stp-migrate', data: { port: p, legacy: true } });
+    } else if (b.version === 2 && ps.legacy && settled) {
+      ps.legacy = false; ps.migrated = this.sim.time;
+      this.dev.record('info', `${p} receives an RST BPDU again: the neighbor speaks RSTP now, the port switches back to RSTP`, { frame, tag: 'stp-migrate', data: { port: p, legacy: false } });
+    }
+    if (b.version === 2 && b.agreement && ps.role === 'designated' && ps.state !== 'forwarding' && sameBid(b.root, st.rootId)) {
+      this.sim.cancel(ps.timer);
+      ps.proposing = false;
+      this.dev.record('ok', `${p} receives the agreement: Forwarding immediately, no waiting for timers`, { frame, tag: 'stp-agreement', data: { port: p } });
+      this.rstpForward(p, ps);
+    }
+    if (b.tc && (ps.role === 'root' || ps.role === 'designated')) this.rstpTcReceived(p);
+    // Root and alternate ports only send agreements and topology changes. The
+    // information about the segment comes from its designated port.
+    if (b.version === 2 && b.role !== 'designated') return;
+    const isNew = !ps.info || cmpBid(ps.info.root, b.root) || ps.info.cost !== b.cost || cmpBid(ps.info.bridge, b.bridge);
+    ps.info = { root: b.root, cost: b.cost, bridge: b.bridge, port: b.port, age: b.age, t: this.sim.time, v2: b.version === 2 };
+    if (isNew) this.dev.record('learn', `${p} receives BPDU: root ${fmtBid(b.root)}, cost ${b.cost}, from ${fmtBid(b.bridge)}`, { frame, tag: 'stp-bpdu', data: { port: p } });
+    this.stpRecompute();
+    if (b.version !== 2 || !b.proposal) return;
+    // Repeated proposals (one per hello) are answered again, but only reported once
+    const report = ps.agreedFor !== ps.role + fmtBid(b.bridge) + b.port;
+    ps.agreedFor = ps.role + fmtBid(b.bridge) + b.port;
+    if (ps.role === 'root') {
+      const blocked = this.rstpSync(p);
+      if (report || blocked.length) this.dev.record('info', `${p} receives a proposal on its root port. Sync: ${blocked.length ? `blocks ${blocked.join(', ')} first, then ` : 'no other port forwards, so it '}answers with an agreement`,
+        { frame, tag: 'stp-sync', data: { port: p, blocked } });
+      this.sendBpdu(p, { agreement: true });
+    } else if (ps.role === 'alternate' || ps.role === 'backup') {
+      // A blocked port cannot create a loop: it agrees right away
+      if (report) this.dev.record('info', `${p} receives a proposal on a blocked port (${ps.role}) and agrees, it stays blocked itself`, { frame, tag: 'stp-sync', data: { port: p, blocked: [] } });
+      this.sendBpdu(p, { agreement: true });
+    }
+  }
+  /** Before agreeing, all other non-edge designated ports must stop forwarding */
+  rstpSync(rootPort) {
+    const blocked = [];
+    for (const [q, qs] of this.stp.ports) {
+      if (q === rootPort || qs.role !== 'designated' || qs.edge || !this.physUp(q)) continue;
+      if (qs.state === 'forwarding' || qs.state === 'learning') { blocked.push(q); this.sim.cancel(qs.timer); qs.timer = null; qs.state = 'discarding'; qs.proposing = false; }
+      this.rstpPropose(q, qs);
+    }
+    return blocked;
+  }
+  /** A designated port that does not forward yet asks its neighbor for permission */
+  rstpPropose(p, ps) {
+    if (ps.state === 'forwarding') return;
+    if (ps.state !== 'learning') ps.state = 'discarding';
+    // The proposal goes out once now and then with every hello until the agreement arrives
+    if (!ps.legacy && !ps.proposing) {
+      this.dev.record('info', `${p}: Discarding, sends a proposal and waits for the agreement of the neighbor`, { tag: 'stp-proposal', data: { port: p } });
+      ps.proposing = true;
+      this.sendBpdu(p, { proposal: true });
+    }
+    if (ps.timer) return;
+    // Without an agreement (an end device without edge setting, or a classic STP neighbor) only the timers help
+    const fwd = this.timers().fwd * 1000;
+    ps.timer = this.sim.schedule(fwd, () => {
+      if (!this.stp || (ps.role !== 'designated' && ps.role !== 'root') || ps.state !== 'discarding') { ps.timer = null; return; }
+      ps.state = 'learning';
+      this.dev.record('info', `${p}: no agreement within ${this.timers().fwd} s, state Learning (forward delay)`, { tag: 'stp-state', data: { port: p, state: 'learning' } });
+      ps.timer = this.sim.schedule(fwd, () => {
+        ps.timer = null;
+        if (!this.stp || (ps.role !== 'designated' && ps.role !== 'root') || ps.state !== 'learning') return;
+        ps.proposing = false;
+        this.dev.record('ok', `${p}: state Forwarding after 2 × forward delay`, { tag: 'stp-state', data: { port: p, state: 'forwarding', slow: true } });
+        ps.state = 'forwarding';
+        this.rstpTopologyChange(p);
+      });
+    });
+  }
+  rstpForward(p, ps, why = '') {
+    this.sim.cancel(ps.timer); ps.timer = null;
+    ps.state = 'forwarding';
+    this.dev.record('ok', `${p}: state Forwarding${why}`, { tag: 'stp-state', data: { port: p, state: 'forwarding', rapid: true } });
+    if (!ps.edge) this.rstpTopologyChange(p);
+  }
+  rstpSetRole(p, ps, role, initial) {
+    const prev = ps.role;
+    ps.role = role;
+    const cfgEdge = !!this.portCfg(p).edge;
+    if (role === 'disabled') {
+      if (prev !== 'disabled') this.flushPort(p);
+      this.sim.cancel(ps.timer); ps.timer = null; ps.state = 'disabled'; ps.edge = false; ps.edgeLost = false; ps.proposing = false; ps.legacy = false; ps.migrated = null; return;
+    }
+    ps.edge = cfgEdge && !ps.edgeLost;
+    if (role !== prev && !initial) this.dev.record('info', `${p} becomes ${ROLE_TEXT[role]}`, { tag: 'stp-role', data: { port: p, role } });
+    if (role === 'alternate' || role === 'backup') {
+      ps.proposing = false;
+      if (ps.state !== 'discarding') {
+        this.sim.cancel(ps.timer); ps.timer = null; ps.state = 'discarding';
+        this.dev.record('info', `${p}: state Discarding (${role}, prevents a loop)`, { tag: 'stp-state', data: { port: p, state: 'discarding' } });
+      }
+      return;
+    }
+    if (role === 'root') {
+      ps.proposing = false;
+      if (ps.state === 'forwarding') return;
+      // The old root port is already discarding, so the new one may forward at once.
+      // Behind a classic STP neighbor the timers apply instead.
+      if (ps.legacy) return this.rstpPropose(p, ps);
+      return this.rstpForward(p, ps, prev === 'alternate' ? ': the alternate port takes over as root port immediately' : ' immediately (new root port)');
+    }
+    // designated: the port now holds its own information, whatever the neighbor said before
+    ps.info = null;
+    if (ps.edge) {
+      if (ps.state !== 'forwarding') { this.sim.cancel(ps.timer); ps.timer = null; ps.state = 'forwarding'; this.dev.record('info', `${p} is an edge port: Forwarding immediately`, { tag: 'stp-state', data: { port: p, state: 'forwarding', edge: true } }); }
+      return;
+    }
+    if (ps.state !== 'forwarding') this.rstpPropose(p, ps);
+  }
+  /** In RSTP only a non-edge port that starts forwarding is a topology change */
+  rstpTopologyChange(p) {
+    this.flushExcept(p);
+    this.dev.record('info', `Topology change: ${p} now forwards. Flushes the MAC addresses on its other ports and sends the change on all ports right away (not via the root)`, { tag: 'stp-tc', data: { port: p, rstp: true } });
+    this.rstpSendTc(p, true);
+  }
+  rstpTcReceived(p) {
+    const st = this.stp, now = this.sim.time;
+    // The same change arrives again with every hello while the sender's timer runs
+    const ps = st.ports.get(p), seen = now < (ps.tcRxUntil || 0);
+    ps.tcRxUntil = now + 2 * this.timers().hello * 1000 + 100;
+    if (seen) return;
+    this.flushExcept(p);
+    this.dev.record('info', `${p} receives a topology change: flushes the MAC addresses on all other ports and passes the change on`, { tag: 'stp-tc-flush', data: { port: p } });
+    this.rstpSendTc(p, false);
+  }
+  /** Mark the TC on every other root and designated port (tcWhile) and send it there now */
+  rstpSendTc(from, includeFrom) {
+    const until = this.sim.time + 2 * this.timers().hello * 1000;
+    for (const [q, qs] of this.stp.ports) {
+      if ((q === from && !includeFrom) || qs.edge || !this.physUp(q) || (qs.role !== 'designated' && qs.role !== 'root')) continue;
+      qs.tcUntil = until;
+      this.sendBpdu(q);
+    }
+  }
+  flushPort(p) { for (const [k, e] of this.fdb) if (e.port === p) this.fdb.delete(k); }
+  flushExcept(p) {
+    for (const [k, e] of this.fdb) {
+      if (e.port === p || e.port.startsWith('vxlan')) continue;
+      if (this.stp.ports.get(e.port)?.edge) continue;
+      this.fdb.delete(k);
+    }
+  }
   stpTable() {
     if (!this.stp) return null;
     const ports = [];
     for (const [p, ps] of this.stp.ports) {
       if (!this.sim.linkAt(this.dev.id, p)) continue;
-      ports.push({ port: p, id: this.portId(p), role: ps.role, state: ps.state, cost: Number(this.portCfg(p).cost || 4), edge: ps.edge,
+      ports.push({ port: p, id: this.portId(p), role: ps.role, state: ps.state, cost: Number(this.portCfg(p).cost || 4), edge: ps.edge, legacy: !!(this.stp.rstp && ps.legacy),
         designated: ps.role === 'designated' ? fmtBid(this.myId()) : ps.info ? fmtBid(ps.info.bridge) : '' });
     }
-    return { bridge: fmtBid(this.myId()), root: fmtBid(this.stp.rootId), isRoot: !this.stp.rootPort, rootPort: this.stp.rootPort, rootCost: this.stp.rootCost, ports };
+    return { mode: this.stp.rstp ? 'rstp' : 'stp', bridge: fmtBid(this.myId()), root: fmtBid(this.stp.rootId), isRoot: !this.stp.rootPort, rootPort: this.stp.rootPort, rootCost: this.stp.rootCost, ports };
   }
   roleOf(p) { return this.stp?.ports.get(p)?.role || null; }
   stateOf(p) { return this.stp?.ports.get(p)?.state || null; }
@@ -4448,6 +4775,7 @@ class Switch extends Device {
   start() { if (this.cfg.stp?.enabled) this.bridge.stpStart(); }
   stop() { this.bridge.stpStop(); }
   onConfig() {
+    if (this.bridge.stp && this.cfg.stp?.enabled && this.bridge.stp.rstp !== (this.cfg.stp.mode === 'rstp')) this.bridge.stpStop();
     if (this.cfg.stp?.enabled && !this.bridge.stp) this.bridge.stpStart();
     else if (!this.cfg.stp?.enabled && this.bridge.stp) this.bridge.stpStop();
     else if (this.bridge.stp) this.bridge.stpRecompute();
@@ -4682,6 +5010,11 @@ export const GLOSSARY = [
   ['BPDU', 'Bridge Protocol Data Unit: the messages spanning tree switches exchange.', ['BPDUs']],
   ['root bridge', 'The switch at the center of the spanning tree, the one with the lowest bridge ID.'],
   ['PortFast', 'Lets a switch port to an end device forward immediately instead of waiting 30 seconds.'],
+  ['RSTP', 'Rapid Spanning Tree Protocol (802.1w): the same tree as STP, but ports are negotiated with proposal and agreement in milliseconds instead of timers.', ['Rapid spanning tree', 'rapid spanning tree']],
+  ['edge port', 'A switch port to an end device. It forwards immediately and never causes a topology change.', ['edge ports']],
+  ['proposal', 'RSTP: a designated port asks its neighbor whether it may forward right away.'],
+  ['agreement', 'RSTP: the answer to a proposal. The neighbor sends it after blocking its own other ports (sync).'],
+  ['alternate port', 'A blocked port with a second path to the root. With RSTP it takes over at once when the root port fails.', ['Alternate port', 'alternate ports']],
   ['broadcast storm', 'Broadcasts circling endlessly in a loop until the network stands still.'],
   ['subnet', 'A range of addresses that share the same network part, e.g. 192.168.10.0/24.', ['subnets', 'subnetting']],
   ['prefix', 'The number after the slash: how many bits belong to the network, e.g. /24.'],
@@ -5148,9 +5481,9 @@ export class Lab {
         const ps = br.stp.ports.get(end.if);
         if (!ps) continue;
         const dx = Q.x - P.x, dy = Q.y - P.y, len = Math.hypot(dx, dy) || 1, off = Math.min(42, len * 0.22);
-        const dot = svgEl('g', { class: `stp-dot st-${ps.state}`, transform: `translate(${(P.x + dx / len * off).toFixed(1)},${(P.y + dy / len * off).toFixed(1)})` });
-        const tt = svgEl('title'); tt.textContent = `${P.name} ${end.if}: ${STP_TEXT.ROLE[ps.role]}, ${STP_TEXT.STATE[ps.state]}${ps.edge ? ', edge port' : ''}`;
-        const letter = svgEl('text', { 'text-anchor': 'middle', y: 2.7 }); letter.textContent = { root: 'R', designated: 'D', alternate: 'A', disabled: '' }[ps.role];
+        const dot = svgEl('g', { class: `stp-dot st-${ps.state} role-${ps.role}`, transform: `translate(${(P.x + dx / len * off).toFixed(1)},${(P.y + dy / len * off).toFixed(1)})` });
+        const tt = svgEl('title'); tt.textContent = `${P.name} ${end.if}: ${STP_TEXT.ROLE[ps.role]}, ${STP_TEXT.STATE[ps.state]}${ps.edge ? ', edge port' : ''}${br.stp.rstp && ps.legacy ? ', neighbor speaks only classic STP' : ''}`;
+        const letter = svgEl('text', { 'text-anchor': 'middle', y: 2.7 }); letter.textContent = { root: 'R', designated: 'D', alternate: 'A', backup: 'B', disabled: '' }[ps.role];
         dot.append(tt, svgEl('circle', { r: 6 }), letter);
         g.append(dot);
       }
@@ -5176,7 +5509,7 @@ export class Lab {
       const badge = this.badge(d);
       if (badge) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 + lines.length * 12 }); t.textContent = badge; g.append(t); }
       const st = d.type === 'switch' ? this.sim.dev(d.id)?.bridge?.stpTable() : null;
-      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); t.textContent = st.isRoot ? `Root bridge, prio ${d.stp.priority}` : `STP, prio ${d.stp.priority}`; g.append(t); }
+      if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); const proto = st.mode === 'rstp' ? 'RSTP' : 'STP'; t.textContent = st.isRoot ? `Root bridge (${proto}), prio ${d.stp.priority}` : `${proto}, prio ${d.stp.priority}`; g.append(t); }
       g.addEventListener('pointerdown', e => this.devPointerDown(e, d));
       g.addEventListener('dblclick', () => { this.select({ kind: 'dev', id: d.id }); this.setTab('console'); });
       g.addEventListener('keydown', e => { if (e.key === 'Enter') this.select({ kind: 'dev', id: d.id }); });
@@ -5795,7 +6128,8 @@ __PACKETPILOT_FILE_END__
 // Helper functions for addresses and packet sizes. No DOM, also usable in Node.
 
 export const ETH_HDR = 14, VLAN_TAG = 4, FCS = 4, PREAMBLE = 8, IFG = 12;
-export const IP_HDR = 20, UDP_HDR = 8, ICMP_HDR = 8, VXLAN_HDR = 8, ARP_LEN = 28, TCP_HDR = 20, LLC_LEN = 3, BPDU_LEN = 35;
+export const IP_HDR = 20, UDP_HDR = 8, ICMP_HDR = 8, VXLAN_HDR = 8, ARP_LEN = 28, TCP_HDR = 20, LLC_LEN = 3, BPDU_LEN = 35, RST_BPDU_LEN = 36;
+export const bpduLen = b => (b?.version === 2 ? RST_BPDU_LEN : BPDU_LEN);
 export const STP_MAC = '01:80:c2:00:00:00';
 export const BCAST = 'ff:ff:ff:ff:ff:ff';
 export const VXLAN_PORT = 4789;
@@ -5893,7 +6227,7 @@ export function frameLen(f) {
 export function framePayloadLen(f) {
   if (f.type === 'arp') return ARP_LEN;
   if (f.type === 'ipv4') return f.payload.totalLength;
-  if (f.type === 'stp') return LLC_LEN + BPDU_LEN;
+  if (f.type === 'stp') return LLC_LEN + bpduLen(f.payload);
   return f.payload?.len || 0;
 }
 /** On the wire: with FCS and padding to 64 bytes */
@@ -5904,8 +6238,9 @@ __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/packets.js" <<'__PACKETPILOT_FILE_END__'
 // Building, describing and dissecting frames
-import { ETH_HDR, VLAN_TAG, IP_HDR, UDP_HDR, ICMP_HDR, VXLAN_HDR, ARP_LEN, FCS, PROTO, LLC_LEN, BPDU_LEN,
+import { ETH_HDR, VLAN_TAG, IP_HDR, UDP_HDR, ICMP_HDR, VXLAN_HDR, ARP_LEN, FCS, PROTO, LLC_LEN, bpduLen,
   ipTotalLen, frameLen, frameWireLen, isGroupMac, isLocalMac, BCAST, STP_MAC, tcpHdrLen, dnsLen, udpPayloadLen, PROTO_NAME, ospfLen, DHCP_LEN } from './net.js';
+const ROLE_NAME = { root: 'Root port', designated: 'Designated', alternate: 'Alternate', backup: 'Backup' };
 
 const DHCP_NAME = { DISCOVER: 'Discover', OFFER: 'Offer', REQUEST: 'Request', ACK: 'ACK', NAK: 'NAK', RELEASE: 'Release' };
 
@@ -6021,6 +6356,10 @@ export function summary(f) {
   const tag = f.vlan ? `vlan ${f.vlan.vid}, ` : '';
   if (f.type === 'stp') {
     const b = f.payload;
+    if (b.version === 2) {
+      const flags = [b.proposal && 'proposal', b.agreement && 'agreement', b.tc && 'topology change'].filter(Boolean);
+      return `RST BPDU (${ROLE_NAME[b.role] || b.role}): Root ${fmtBid(b.root)}, cost ${b.cost}, from bridge ${fmtBid(b.bridge)} port ${b.port}${flags.length ? ', ' + flags.join(', ') : ''}`;
+    }
     return `STP BPDU: Root ${fmtBid(b.root)}, cost ${b.cost}, from bridge ${fmtBid(b.bridge)} port ${b.port}${b.tc ? ', topology change' : ''}`;
   }
   if (f.type === 'arp') {
@@ -6075,16 +6414,30 @@ export function dissect(f, depth = 0) {
   const pre = depth ? 'Inner ' : '';
   if (f.type === 'stp') {
     const b = f.payload;
+    const len = bpduLen(b), rst = b.version === 2;
     layers.push({ kind: 'eth', depth, name: 'IEEE 802.3 (with length field)', bytes: ETH_HDR, fields: [
       ['Destination MAC', f.dst, 'Group address for bridges, never forwarded'], ['Source MAC', f.src, 'MAC of the sending switch port'],
-      ['Length', `${LLC_LEN + BPDU_LEN} bytes`, 'No EtherType: values up to 1500 are a length']] });
+      ['Length', `${LLC_LEN + len} bytes`, 'No EtherType: values up to 1500 are a length']] });
     layers.push({ kind: 'stp', depth, name: 'LLC', bytes: LLC_LEN, fields: [['DSAP / SSAP', '0x42 / 0x42', 'Spanning Tree'], ['Control', '0x03', 'Unnumbered Information']] });
-    layers.push({ kind: 'stp', depth, name: 'STP Configuration BPDU', bytes: BPDU_LEN, fields: [
-      ['Protocol / Version', '0 / 0 (802.1D)', ''], ['Flags', b.tc ? 'Topology Change' : 'none', b.tc ? 'Receivers shorten the aging of their MAC table' : ''],
-      ['Root Bridge ID', fmtBid(b.root), 'Priority.MAC of the bridge the sender believes is the root'],
+    const common = [['Root Bridge ID', fmtBid(b.root), 'Priority.MAC of the bridge the sender believes is the root'],
       ['Root Path Cost', String(b.cost), 'Sender\'s cost to the root'],
       ['Bridge ID', fmtBid(b.bridge), 'Who is sending'], ['Port ID', b.port, 'Priority.number of the sending port'],
-      ['Message Age', `${b.age} s`, ''], ['Max Age / Hello / Forward Delay', `${b.maxAge} / ${b.hello} / ${b.fwd} s`, 'Timers set by the root']] });
+      ['Message Age', `${b.age} s`, ''], ['Max Age / Hello / Forward Delay', `${b.maxAge} / ${b.hello} / ${b.fwd} s`, 'Timers set by the root']];
+    if (rst) {
+      const bit = (on, name, why) => [name, on ? '1' : '0', on ? why : ''];
+      layers.push({ kind: 'stp', depth, name: 'RST BPDU (802.1w)', bytes: len, fields: [
+        ['Protocol / Version / Type', '0 / 2 / 0x02', 'Version 2 and type 2: Rapid Spanning Tree. A classic 802.1D switch discards it'],
+        bit(b.tc, 'Flag: Topology Change', 'Receivers flush their MAC tables and pass the change on'),
+        bit(b.proposal, 'Flag: Proposal', 'The designated port asks: may I forward right away?'),
+        ['Flag: Port Role', `${ROLE_NAME[b.role] || b.role} (${{ alternate: '01', backup: '01', root: '10', designated: '11' }[b.role] || '00'})`, 'Role of the sending port: 2 bits'],
+        bit(b.learning, 'Flag: Learning', 'The sending port learns MAC addresses'),
+        bit(b.forwarding, 'Flag: Forwarding', 'The sending port forwards'),
+        bit(b.agreement, 'Flag: Agreement', 'Answer to a proposal: all my other ports are synced, go ahead'),
+        ...common, ['Version 1 Length', '0', 'The one extra byte of the RST BPDU']] });
+    } else {
+      layers.push({ kind: 'stp', depth, name: 'STP Configuration BPDU', bytes: len, fields: [
+        ['Protocol / Version', '0 / 0 (802.1D)', ''], ['Flags', b.tc ? 'Topology Change' : 'none', b.tc ? 'Receivers shorten the aging of their MAC table' : ''], ...common] });
+    }
     return layers;
   }
   layers.push({ kind: 'eth', depth, name: `${pre}Ethernet II`, bytes: ETH_HDR, fields: [
@@ -6382,12 +6735,13 @@ function stpEditor(dev, upd, sim, shown, rerender) {
   const wrap = h('div');
   const on = h('input', { type: 'checkbox', checked: st.enabled ? true : null });
   on.addEventListener('change', () => { upd(() => st.enabled = on.checked, `${dev.name}: spanning tree ${on.checked ? 'on' : 'off'}`); rerender?.(); });
-  wrap.append(h('h4', {}, 'Spanning tree (802.1D)'),
+  wrap.append(h('h4', {}, st.mode === 'rstp' ? 'Rapid spanning tree (802.1w)' : 'Spanning tree (802.1D)'),
     h('label', { class: 'row', style: { fontSize: '.88rem' } }, on, 'Spanning tree enabled'));
   if (!st.enabled) { wrap.append(h('p', { class: 'small muted' }, 'Off: all ports forward immediately. If the network has a loop, broadcasts circle endlessly.')); return wrap; }
   const prios = []; for (let p = 0; p <= 61440; p += 4096) prios.push([p, String(p) + (p === 32768 ? ' (default)' : '')]);
   const timers = st.timers === 'schnell' ? 'fast' : st.timers;
   wrap.append(h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '110px 1fr', marginTop: '6px' } },
+    h('span', { class: 'small' }, 'Protocol'), select([['stp', 'STP, classic (802.1D)'], ['rstp', 'RSTP, rapid (802.1w)']], st.mode || 'stp', v => { upd(() => st.mode = v, `${dev.name}: ${v.toUpperCase()}`); rerender?.(); }),
     h('span', { class: 'small' }, 'Bridge priority'), select(prios, st.priority, v => upd(() => st.priority = Number(v), `${dev.name}: priority ${v}`)),
     h('span', { class: 'small' }, 'Timers'), select([['standard', 'Standard (hello 2, forward delay 15, max age 20)'], ['fast', 'Fast for the lab (1 / 4 / 6)']], timers, v => upd(() => st.timers = v, `${dev.name}: timers ${v}`))));
   const b = dev.bridge.stpTable();
@@ -6399,11 +6753,14 @@ function stpEditor(dev, upd, sim, shown, rerender) {
       const edge = h('input', { type: 'checkbox', checked: pc.edge ? true : null });
       edge.addEventListener('change', () => upd(() => pc.edge = edge.checked, `${dev.name} ${p}: PortFast ${edge.checked ? 'on' : 'off'}`));
       const cost = numInput(pc.cost ?? 4, 1, 200000000, v => upd(() => pc.cost = v ?? 4, `${dev.name} ${p}: cost ${v}`));
-      g.append(h('span', { class: 'if' }, p), cost, h('label', { class: 'row small' }, edge, dev.bridge.stp?.ports.get(p)?.edgeLost ? 'BPDU received, edge lost' : ''));
+      const ps = dev.bridge.stp?.ports.get(p);
+      g.append(h('span', { class: 'if' }, p), cost, h('label', { class: 'row small' }, edge, ps?.edgeLost ? 'BPDU received, edge lost' : dev.bridge.stp?.rstp && ps?.legacy ? 'neighbor speaks only STP' : ''));
     }
     wrap.append(g);
   }
-  wrap.append(h('p', { class: 'small muted' }, `Cost 4 corresponds to 1 Gbit/s, 19 to 100 Mbit/s. Edge ports for end devices go to Forwarding immediately.`));
+  wrap.append(h('p', { class: 'small muted' }, st.mode === 'rstp'
+    ? 'Cost 4 corresponds to 1 Gbit/s, 19 to 100 Mbit/s. RSTP negotiates ports between switches in milliseconds. Ports to end devices still need the edge setting, otherwise they wait 2 × forward delay.'
+    : 'Cost 4 corresponds to 1 Gbit/s, 19 to 100 Mbit/s. Edge ports for end devices go to Forwarding immediately.'));
   return wrap;
 }
 
@@ -6723,11 +7080,11 @@ export function tablesPanel(dev, sim) {
   if (dev.type === 'switch') {
     const t = dev.bridge.stpTable();
     if (t) {
-      box.append(h('h4', {}, 'Spanning tree'),
+      box.append(h('h4', {}, t.mode === 'rstp' ? 'Rapid spanning tree (RSTP)' : 'Spanning tree (STP)'),
         h('dl', { class: 'kv' }, h('dt', {}, 'Root'), h('dd', { class: 'mono' }, t.root + (t.isRoot ? ' (this bridge)' : '')),
           h('dt', {}, 'Bridge'), h('dd', { class: 'mono' }, t.bridge),
           ...(t.isRoot ? [] : [h('dt', {}, 'Root port'), h('dd', {}, `${t.rootPort}, cost ${t.rootCost}`)])),
-        tbl(['Port', 'Role', 'State', 'Cost'], t.ports.map(p => [p.port + (p.edge ? ' (edge)' : ''), STP_TEXT.ROLE[p.role], STP_TEXT.STATE[p.state], p.cost])));
+        tbl(['Port', 'Role', 'State', 'Cost'], t.ports.map(p => [p.port + (p.edge ? ' (edge)' : p.legacy ? ' (STP neighbor)' : ''), STP_TEXT.ROLE[p.role], STP_TEXT.STATE[p.state], p.cost])));
     }
   }
   if (dev.bridge) {
@@ -7055,6 +7412,9 @@ export const PRESETS = [
   { id: 'loop', title: 'Loop without spanning tree', topics: ['Broadcast storm', 'Loop'],
     text: 'The same triangle, but STP is off. A single ping is enough for a broadcast storm.',
     make: () => stpTriangle({ enabled: false }) },
+  { id: 'rstp', title: 'Rapid spanning tree', topics: ['RSTP', 'Proposal/agreement', 'Fast failover'],
+    text: 'The triangle with RSTP and the standard timers. Ports between switches are negotiated in milliseconds, a cable cut costs no ping.',
+    make: () => stpTriangle({ enabled: true, rootPrio: 4096, timers: 'standard', edge: true, mode: 'rstp' }) },
   { id: 'stpsquare', title: 'Four switches in a ring', topics: ['STP', 'Port costs', 'Port roles'],
     text: 'Which port blocks, and how do you move it with port costs?',
     make: () => stpSquare() },
@@ -7126,19 +7486,24 @@ export function vxlanTopo({ two = false, vni2 = 10010, port2 = 4789, mtu = 1500,
 }
 
 // -------------------------------------------------------------- Spanning tree, subinterfaces, services
-const stpCfg = (enabled, prio = 32768, timers = 'fast') => ({ stp: { enabled, priority: prio, timers } });
-export function stpTriangle({ enabled = true, rootPrio = 32768, timers = 'fast', edge = false } = {}) {
+const stpCfg = (enabled, prio = 32768, timers = 'fast', mode = 'stp') => ({ stp: { enabled, mode, priority: prio, timers } });
+/** modes: one protocol for all switches, or one per switch: { sw1: 'rstp', sw3: 'stp' } */
+const modeOf = (mode, id) => (typeof mode === 'string' ? mode : mode[id] || 'stp');
+export function stpTriangle({ enabled = true, rootPrio = 32768, timers = 'fast', edge = false, mode = 'stp' } = {}) {
   const pcPort = edge ? { mode: 'access', vlan: 1, edge: true } : acc(1);
-  return topo(enabled ? 'Redundancy with spanning tree' : 'Loop without spanning tree', [
-    sw('sw1', 400, 110, {}, stpCfg(enabled, rootPrio, timers)), sw('sw2', 230, 300, { eth5: pcPort }, stpCfg(enabled, 32768, timers)), sw('sw3', 570, 300, { eth5: pcPort }, stpCfg(enabled, 32768, timers)),
+  const rapid = modeOf(mode, 'sw1') === 'rstp' || modeOf(mode, 'sw2') === 'rstp';
+  return topo(!enabled ? 'Loop without spanning tree' : rapid ? 'Redundancy with rapid spanning tree' : 'Redundancy with spanning tree', [
+    sw('sw1', 400, 110, {}, stpCfg(enabled, rootPrio, timers, modeOf(mode, 'sw1'))), sw('sw2', 230, 300, { eth5: pcPort }, stpCfg(enabled, 32768, timers, modeOf(mode, 'sw2'))), sw('sw3', 570, 300, { eth5: pcPort }, stpCfg(enabled, 32768, timers, modeOf(mode, 'sw3'))),
     host('pc1', 80, 300, '10.0.0.1'), host('pc2', 720, 300, '10.0.0.2')],
   [link('sw1', 'eth1', 'sw2', 'eth1'), link('sw1', 'eth2', 'sw3', 'eth1'), link('sw2', 'eth2', 'sw3', 'eth2'),
     link('pc1', 'eth1', 'sw2', 'eth5'), link('pc2', 'eth1', 'sw3', 'eth5')],
   [{ x: 160, y: 40, w: 480, h: 330, label: 'Redundant cabling: three paths, one loop', color: 'yellow' }]);
 }
-export function stpSquare() {
+export function stpSquare({ mode = 'stp', timers = 'fast', edge = false } = {}) {
+  const pc = edge ? { mode: 'access', vlan: 1, edge: true } : acc(1);
   return topo('Four switches in a ring', [
-    sw('sw1', 240, 110, {}, stpCfg(true, 4096)), sw('sw2', 560, 110, {}, stpCfg(true)), sw('sw3', 560, 340, { eth5: acc(1) }, stpCfg(true)), sw('sw4', 240, 340, {}, stpCfg(true)),
+    sw('sw1', 240, 110, { eth5: pc }, stpCfg(true, 4096, timers, modeOf(mode, 'sw1'))), sw('sw2', 560, 110, {}, stpCfg(true, 32768, timers, modeOf(mode, 'sw2'))),
+    sw('sw3', 560, 340, { eth5: pc }, stpCfg(true, 32768, timers, modeOf(mode, 'sw3'))), sw('sw4', 240, 340, {}, stpCfg(true, 32768, timers, modeOf(mode, 'sw4'))),
     host('pc1', 80, 110, '10.0.0.1'), host('pc3', 720, 340, '10.0.0.3')],
   [link('sw1', 'eth1', 'sw2', 'eth1'), link('sw2', 'eth2', 'sw3', 'eth1'), link('sw3', 'eth2', 'sw4', 'eth2'), link('sw4', 'eth1', 'sw1', 'eth2'),
     link('pc1', 'eth1', 'sw1', 'eth5'), link('pc3', 'eth1', 'sw3', 'eth5')],

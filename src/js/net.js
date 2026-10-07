@@ -1,7 +1,8 @@
 // Helper functions for addresses and packet sizes. No DOM, also usable in Node.
 
 export const ETH_HDR = 14, VLAN_TAG = 4, FCS = 4, PREAMBLE = 8, IFG = 12;
-export const IP_HDR = 20, UDP_HDR = 8, ICMP_HDR = 8, VXLAN_HDR = 8, ARP_LEN = 28, TCP_HDR = 20, LLC_LEN = 3, BPDU_LEN = 35;
+export const IP_HDR = 20, UDP_HDR = 8, ICMP_HDR = 8, VXLAN_HDR = 8, ARP_LEN = 28, TCP_HDR = 20, LLC_LEN = 3, BPDU_LEN = 35, RST_BPDU_LEN = 36;
+export const bpduLen = b => (b?.version === 2 ? RST_BPDU_LEN : BPDU_LEN);
 export const STP_MAC = '01:80:c2:00:00:00';
 export const BCAST = 'ff:ff:ff:ff:ff:ff';
 export const VXLAN_PORT = 4789;
@@ -99,7 +100,7 @@ export function frameLen(f) {
 export function framePayloadLen(f) {
   if (f.type === 'arp') return ARP_LEN;
   if (f.type === 'ipv4') return f.payload.totalLength;
-  if (f.type === 'stp') return LLC_LEN + BPDU_LEN;
+  if (f.type === 'stp') return LLC_LEN + bpduLen(f.payload);
   return f.payload?.len || 0;
 }
 /** On the wire: with FCS and padding to 64 bytes */
