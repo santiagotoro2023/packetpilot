@@ -94,6 +94,10 @@ vm "runuser -u postgres -- psql -d @@APP_ID@@ -Atqc 'create table if not exists 
 vm "bash /opt/@@APP_ID@@/@@APP_ID@@-install.sh --backup" > /tmp/$NAME.log 2>&1 || { cat /tmp/$NAME.log; fail "--backup"; }
 backup="$(vm "cat /var/backups/@@APP_ID@@/.last")"
 ok "--backup: $backup"
+n="$(vm "ls /var/backups/@@APP_ID@@/*.dump | wc -l")"
+vm "bash /opt/@@APP_ID@@/@@APP_ID@@-install.sh --backup && bash /opt/@@APP_ID@@/@@APP_ID@@-install.sh --backup" >/dev/null 2>&1 || fail "two backups in a row"
+[ "$(vm "ls /var/backups/@@APP_ID@@/*.dump | wc -l")" = "$((n + 2))" ] || fail "two backups in a row are two files"
+ok "two backups in a row are two files"
 vm "runuser -u postgres -- psql -d @@APP_ID@@ -Atqc 'delete from installer_test'" >/dev/null
 vm "bash /opt/@@APP_ID@@/@@APP_ID@@-install.sh --restore '$backup'" > /tmp/$NAME.log 2>&1 || { cat /tmp/$NAME.log; fail "--restore"; }
 [ "$(vm "runuser -u postgres -- psql -d @@APP_ID@@ -Atqc 'select v from installer_test'")" = "before" ] || fail "--restore brings the data back"

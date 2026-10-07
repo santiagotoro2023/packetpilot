@@ -652,7 +652,10 @@ backup_now() {
   mkdir -p "$APP_BACKUP_DIR"
   chmod 700 "$APP_BACKUP_DIR"
   stamp="$(date +%Y-%m-%d-%H%M%S)"
-  file="${APP_BACKUP_DIR}/${APP_ID}-${stamp}-$(cat "${APP_ROOT}/VERSION" 2>/dev/null || echo "$APP_VERSION").dump"
+  local ver n=1; ver="$(cat "${APP_ROOT}/VERSION" 2>/dev/null || echo "$APP_VERSION")"
+  file="${APP_BACKUP_DIR}/${APP_ID}-${stamp}-${ver}.dump"
+  # Never overwrite a backup (two in the same second: --backup, then --restore of it)
+  while [ -e "$file" ]; do n=$((n + 1)); file="${APP_BACKUP_DIR}/${APP_ID}-${stamp}-${n}-${ver}.dump"; done
   if local_db; then
     as_postgres pg_dump -Fc "$APP_ID" > "${file}.part" || { rm -f "${file}.part"; die "Backup failed (pg_dump)."; }
   else
