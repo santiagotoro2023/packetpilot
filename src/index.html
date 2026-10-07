@@ -4,19 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PacketPilot</title>
-<meta name="description" content="Understand networks by watching every packet: course, lab and frame builder.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='8' width='26' height='16' rx='3' fill='%2317253A'/%3E%3Crect x='7' y='12' width='3' height='8' rx='1' fill='%232F6FDB'/%3E%3Crect x='12' y='12' width='3' height='8' rx='1' fill='%231F9D68'/%3E%3Crect x='17' y='12' width='3' height='8' rx='1' fill='%238B5E3C'/%3E%3Crect x='22' y='12' width='3' height='8' rx='1' fill='%23EE7F1A'/%3E%3C/svg%3E">
+<meta name="description" content="Understand networks by watching every packet.">
+<!-- blueprint:head -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg viewBox='0 0 32 32' xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='3' y='8' width='26' height='16' rx='3' fill='%2317253A'/%3E%3Crect x='7' y='12' width='3' height='8' rx='1' fill='%232F6FDB'/%3E%3Crect x='12' y='12' width='3' height='8' rx='1' fill='%231F9D68'/%3E%3Crect x='17' y='12' width='3' height='8' rx='1' fill='%238B5E3C'/%3E%3Crect x='22' y='12' width='3' height='8' rx='1' fill='%23EE7F1A'/%3E%3C/svg%3E">
 <link rel="preload" href="fonts/cantarell.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="css/base.css">
 <link rel="stylesheet" href="css/app.css">
 <script>try{var t=JSON.parse(localStorage.getItem('packetpilot.v1')||'{}').prefs;if(t&&t.theme)document.documentElement.dataset.theme=t.theme}catch(e){}</script>
+<!-- /blueprint:head -->
 </head>
 <body>
 <div class="app">
   <nav class="rail" aria-label="Main navigation">
+<!-- blueprint:logo -->
     <a class="logo" href="#/" title="PacketPilot" aria-label="PacketPilot home">
-      <svg viewBox="0 0 32 32" width="36" height="36" aria-hidden="true"><rect x="3" y="8" width="26" height="16" rx="3" fill="var(--ink)"/><rect x="7" y="12" width="3" height="8" rx="1" fill="var(--l-eth)"/><rect x="12" y="12" width="3" height="8" rx="1" fill="var(--l-ip)"/><rect x="17" y="12" width="3" height="8" rx="1" fill="var(--l-udp)"/><rect x="22" y="12" width="3" height="8" rx="1" fill="var(--l-arp)"/></svg>
+      <svg viewBox="0 0 32 32" width="36" height="36" aria-hidden="true"><rect x="3" y="8" width="26" height="16" rx="3" fill="var(--ink)"/><rect x="7" y="12" width="3" height="8" rx="1" fill="var(--c-blue)"/><rect x="12" y="12" width="3" height="8" rx="1" fill="var(--c-green)"/><rect x="17" y="12" width="3" height="8" rx="1" fill="var(--c-brown)"/><rect x="22" y="12" width="3" height="8" rx="1" fill="var(--c-orange)"/></svg>
     </a>
+<!-- /blueprint:logo -->
     <a href="#/" data-nav="course"><span data-icon="course"></span>Course</a>
     <a href="#/lab" data-nav="lab"><span data-icon="lab"></span>Lab</a>
     <a href="#/networks" data-nav="networks"><span data-icon="nets"></span>Networks</a>

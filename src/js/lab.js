@@ -5,7 +5,7 @@ import { Sim, PORTS, TYPE_NAMES, TIMING, newId, normalizeDevice, traceOf, STP_TE
 const isCtl = f => f.type === 'stp' || isHello(f);
 import { layerKinds, shortLabel, flowOf, summary } from './packets.js';
 import { isIp } from './net.js';
-import { h, svgEl, toast, iconBtn, resizer, contextMenu } from './ui.js';
+import { h, svgEl, toast, iconBtn, resizer, contextMenu } from './core/ui.js';
 import { store } from './store.js';
 import { I, DEV_ICON } from './icons.js';
 import { renderInspector } from './inspector.js';

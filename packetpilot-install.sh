@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.9.1
+#  PacketPilot 3.0.0
 #  Understand networks by watching every packet.
 #
-#  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
-#  nginx serves the static files over HTTPS with a self-signed certificate,
+#  Installs PacketPilot on Debian 12 (Bookworm) or 13 (Trixie):
+#  nginx serves the web app over HTTPS with a self-signed certificate,
 #  everything else runs in the browser.
-#  Nothing is downloaded from the internet except the nginx packages, with
+#  Nothing is downloaded from the internet except the Debian packages, with
 #  --letsencrypt the acme.sh client and with --update the latest script.
 #
 #  Usage:
@@ -21,63 +21,67 @@
 #  Let's Encrypt certificate for a domain, checked with a DNS TXT record, so the
 #  server needs no open port 80 and may sit in a private network. Works for new and
 #  existing installs, updates keep it and it renews itself:
-#    sudo CF_Token=... bash packetpilot-install.sh --letsencrypt pp.example.com --dns dns_cf
+#    sudo CF_Token=... bash packetpilot-install.sh --letsencrypt app.example.com --dns dns_cf
 #      --dns is the acme.sh name of your DNS provider, its credentials are passed as
 #      environment variables once: https://github.com/acmesh-official/acme.sh/wiki/dnsapi
-#    sudo bash packetpilot-install.sh --letsencrypt pp.example.com --dns manual
+#    sudo bash packetpilot-install.sh --letsencrypt app.example.com --dns manual
 #      Without an API: you create the TXT record by hand (renewal by hand, too)
 #    --email you@example.com                        Optional contact for Let's Encrypt
 #    sudo bash packetpilot-install.sh --no-letsencrypt   Back to the self-signed certificate
 #
 #  Moving to another server (e.g. Docker or Kubernetes, see docs/DEPLOYMENT.md):
 #    sudo bash packetpilot-install.sh --moved-to https://packetpilot.example.com
-#      This server keeps running and shows every learner a card "PacketPilot has a new
-#      address" with a button that carries all their progress over in one click.
+#      This server keeps running and shows every user a card "PacketPilot has a new
+#      address" with a button that carries all their data over in one click.
 #    sudo bash packetpilot-install.sh --not-moved    Remove that card again
 #
 #  With a Let's Encrypt domain, people who open PacketPilot by IP address (or under
-#  another name) get a card offering to move their progress to the domain. To never
+#  another name) get a card offering to move their data to the domain. To never
 #  show that card, e.g. behind a reverse proxy where the address would be wrong:
 #    sudo bash packetpilot-install.sh --no-move-card   (kept on updates, back with --move-card)
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.9.1"
-PP_PORT="8080"
-PP_ROOT="/opt/packetpilot"
-PP_WWW="${PP_ROOT}/www"
-PP_SITE="/etc/nginx/sites-available/packetpilot"
-PP_LINK="/etc/nginx/sites-enabled/packetpilot"
-PP_ACTION="install"
-PP_EXTRACT_DIR=""
-PP_FORCE="no"
-PP_PORT_SET="no"
-PP_TLS="yes"
-PP_TLS_SET="no"
-PP_NEW_CERT="no"
-PP_TLS_DIR="${PP_ROOT}/tls"
-PP_CERT="${PP_TLS_DIR}/packetpilot.crt"
-PP_KEY="${PP_TLS_DIR}/packetpilot.key"
-PP_CONF="${PP_ROOT}/packetpilot.conf"
-PP_SELF="${PP_ROOT}/packetpilot-install.sh"
-PP_LE_DOMAIN=""
-PP_LE_DNS=""
-PP_LE_EMAIL=""
-PP_LE_SET="no"
-PP_MOVED_TO=""
-PP_MOVED_SET="no"
-PP_MOVE_CARD="yes"
-PP_MOVE_CARD_SET="no"
-PP_LE_CERT="${PP_TLS_DIR}/letsencrypt.crt"
-PP_LE_KEY="${PP_TLS_DIR}/letsencrypt.key"
-PP_ACME_HOME="${PP_ROOT}/acme"
-PP_ACME_COMMIT="807da6498377ee5e0cf43a78091f46f12dc59a89"   # acme.sh 3.1.6
-PP_ACME_SHA256="c7d68b021cfd6380ea83a82962abde5b484779fee0b97d38681dfa1396bbc8d7"
-PP_ACME_URL="${PP_ACME_URL:-https://raw.githubusercontent.com/acmesh-official/acme.sh/${PP_ACME_COMMIT}}"
-PP_ACME_SERVER="${PP_ACME_SERVER:-letsencrypt}"
-PP_RENEW="packetpilot-renew"
-PP_REPO="santiagotoro2023/packetpilot"
-PP_SCRIPT_URL="https://raw.githubusercontent.com/${PP_REPO}/main/packetpilot-install.sh"
+# Made from blueprint 1.0.0 (https://github.com/santiagotoro2023/project-blueprint)
+APP_ID="packetpilot"
+APP_NAME="PacketPilot"
+APP_VERSION="3.0.0"
+APP_PROFILE="static"
+APP_PORT="8080"
+APP_ROOT="/opt/${APP_ID}"
+APP_WWW="${APP_ROOT}/www"
+APP_SITE="/etc/nginx/sites-available/${APP_ID}"
+APP_LINK="/etc/nginx/sites-enabled/${APP_ID}"
+APP_ACTION="install"
+APP_EXTRACT_DIR=""
+APP_FORCE="no"
+APP_PORT_SET="no"
+APP_TLS="yes"
+APP_TLS_SET="no"
+APP_NEW_CERT="no"
+APP_TLS_DIR="${APP_ROOT}/tls"
+APP_CERT="${APP_TLS_DIR}/${APP_ID}.crt"
+APP_KEY="${APP_TLS_DIR}/${APP_ID}.key"
+APP_CONF="${APP_ROOT}/${APP_ID}.conf"
+APP_SELF="${APP_ROOT}/${APP_ID}-install.sh"
+APP_LE_DOMAIN=""
+APP_LE_DNS=""
+APP_LE_EMAIL=""
+APP_LE_SET="no"
+APP_MOVED_TO=""
+APP_MOVED_SET="no"
+APP_MOVE_CARD="yes"
+APP_MOVE_CARD_SET="no"
+APP_LE_CERT="${APP_TLS_DIR}/letsencrypt.crt"
+APP_LE_KEY="${APP_TLS_DIR}/letsencrypt.key"
+APP_ACME_HOME="${APP_ROOT}/acme"
+APP_ACME_COMMIT="807da6498377ee5e0cf43a78091f46f12dc59a89"   # acme.sh 3.1.6
+APP_ACME_SHA256="c7d68b021cfd6380ea83a82962abde5b484779fee0b97d38681dfa1396bbc8d7"
+APP_ACME_URL="${APP_ACME_URL:-https://raw.githubusercontent.com/acmesh-official/acme.sh/${APP_ACME_COMMIT}}"
+APP_ACME_SERVER="${APP_ACME_SERVER:-letsencrypt}"
+APP_RENEW="${APP_ID}-renew"
+APP_REPO="santiagotoro2023/packetpilot"
+APP_SCRIPT_URL="https://raw.githubusercontent.com/${APP_REPO}/main/${APP_ID}-install.sh"
 
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m ✓ \033[0m %s\n' "$*"; }
@@ -92,40 +96,49 @@ need() { [ -n "${2:-}" ] || die "$1 needs a value (help with --help)"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --port)      need "$1" "${2:-}"; PP_PORT="$2"; PP_PORT_SET="yes"; shift 2 ;;
-    --port=*)    PP_PORT="${1#*=}"; PP_PORT_SET="yes"; shift ;;
-    --http)      PP_TLS="no"; PP_TLS_SET="yes"; shift ;;
-    --https)     PP_TLS="yes"; PP_TLS_SET="yes"; shift ;;
-    --new-cert)  PP_NEW_CERT="yes"; shift ;;
-    --letsencrypt)   need "$1" "${2:-}"; PP_LE_DOMAIN="$2"; PP_LE_SET="yes"; shift 2 ;;
-    --letsencrypt=*) PP_LE_DOMAIN="${1#*=}"; PP_LE_SET="yes"; shift ;;
-    --dns)           need "$1" "${2:-}"; PP_LE_DNS="$2"; shift 2 ;;
-    --dns=*)         PP_LE_DNS="${1#*=}"; shift ;;
-    --email)         need "$1" "${2:-}"; PP_LE_EMAIL="$2"; shift 2 ;;
-    --email=*)       PP_LE_EMAIL="${1#*=}"; shift ;;
-    --no-letsencrypt) PP_LE_DOMAIN=""; PP_LE_SET="off"; shift ;;
-    --moved-to)  need "$1" "${2:-}"; PP_MOVED_TO="$2"; PP_MOVED_SET="yes"; shift 2 ;;
-    --moved-to=*) PP_MOVED_TO="${1#*=}"; PP_MOVED_SET="yes"; shift ;;
-    --not-moved) PP_MOVED_TO=""; PP_MOVED_SET="off"; shift ;;
-    --no-move-card) PP_MOVE_CARD="no"; PP_MOVE_CARD_SET="yes"; shift ;;
-    --move-card) PP_MOVE_CARD="yes"; PP_MOVE_CARD_SET="yes"; shift ;;
-    --update)    PP_ACTION="update"; shift ;;
-    --uninstall) PP_ACTION="uninstall"; shift ;;
-    --extract)   need "$1" "${2:-}"; PP_ACTION="extract"; PP_EXTRACT_DIR="$2"; shift 2 ;;
-    --force)     PP_FORCE="yes"; shift ;;
+    --port)      need "$1" "${2:-}"; APP_PORT="$2"; APP_PORT_SET="yes"; shift 2 ;;
+    --port=*)    APP_PORT="${1#*=}"; APP_PORT_SET="yes"; shift ;;
+    --http)      APP_TLS="no"; APP_TLS_SET="yes"; shift ;;
+    --https)     APP_TLS="yes"; APP_TLS_SET="yes"; shift ;;
+    --new-cert)  APP_NEW_CERT="yes"; shift ;;
+    --letsencrypt)   need "$1" "${2:-}"; APP_LE_DOMAIN="$2"; APP_LE_SET="yes"; shift 2 ;;
+    --letsencrypt=*) APP_LE_DOMAIN="${1#*=}"; APP_LE_SET="yes"; shift ;;
+    --dns)           need "$1" "${2:-}"; APP_LE_DNS="$2"; shift 2 ;;
+    --dns=*)         APP_LE_DNS="${1#*=}"; shift ;;
+    --email)         need "$1" "${2:-}"; APP_LE_EMAIL="$2"; shift 2 ;;
+    --email=*)       APP_LE_EMAIL="${1#*=}"; shift ;;
+    --no-letsencrypt) APP_LE_DOMAIN=""; APP_LE_SET="off"; shift ;;
+    --moved-to)  need "$1" "${2:-}"; APP_MOVED_TO="$2"; APP_MOVED_SET="yes"; shift 2 ;;
+    --moved-to=*) APP_MOVED_TO="${1#*=}"; APP_MOVED_SET="yes"; shift ;;
+    --not-moved) APP_MOVED_TO=""; APP_MOVED_SET="off"; shift ;;
+    --no-move-card) APP_MOVE_CARD="no"; APP_MOVE_CARD_SET="yes"; shift ;;
+    --move-card) APP_MOVE_CARD="yes"; APP_MOVE_CARD_SET="yes"; shift ;;
+    --update)    APP_ACTION="update"; shift ;;
+    --uninstall) APP_ACTION="uninstall"; shift ;;
+    --extract)   need "$1" "${2:-}"; APP_ACTION="extract"; APP_EXTRACT_DIR="$2"; shift 2 ;;
+    --force)     APP_FORCE="yes"; shift ;;
     -h|--help)   usage ;;
     *) die "Unknown option: $1 (help with --help)" ;;
   esac
 done
-if [ -n "$PP_MOVED_TO" ]; then
-  PP_MOVED_TO="${PP_MOVED_TO%/}"
-  printf '%s' "$PP_MOVED_TO" | grep -Eq '^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$' || die "--moved-to needs an address like https://packetpilot.example.com (no path)"
+if [ -n "$APP_MOVED_TO" ]; then
+  APP_MOVED_TO="${APP_MOVED_TO%/}"
+  printf '%s' "$APP_MOVED_TO" | grep -Eq '^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$' || die "--moved-to needs an address like https://${APP_ID}.example.com (no path)"
 fi
 
-case "$PP_PORT" in
-  ''|*[!0-9]*) die "Invalid port: ${PP_PORT}" ;;
+case "$APP_PORT" in
+  ''|*[!0-9]*) die "Invalid port: ${APP_PORT}" ;;
 esac
-[ "$PP_PORT" -ge 1 ] && [ "$PP_PORT" -le 65535 ] || die "Port must be between 1 and 65535."
+[ "$APP_PORT" -ge 1 ] && [ "$APP_PORT" -le 65535 ] || die "Port must be between 1 and 65535."
+
+
+# ------------------------------------------------------------------ App specific (installer/app.sh)
+# PacketPilot: additions to the installer (blueprint core in installer/core/).
+# This file is pasted into packetpilot-install.sh between the core's options and its actions.
+
+# Installers before 3.0.0 (before the blueprint) read the version of the new script from
+# this line when they run --update. Keep it, so every old server can still update.
+PP_VERSION="3.0.0"
 
 write_files() {
   local W="$1"
@@ -5819,19 +5832,23 @@ __PACKETPILOT_FILE_END__
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PacketPilot</title>
-<meta name="description" content="Understand networks by watching every packet: course, lab and frame builder.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='8' width='26' height='16' rx='3' fill='%2317253A'/%3E%3Crect x='7' y='12' width='3' height='8' rx='1' fill='%232F6FDB'/%3E%3Crect x='12' y='12' width='3' height='8' rx='1' fill='%231F9D68'/%3E%3Crect x='17' y='12' width='3' height='8' rx='1' fill='%238B5E3C'/%3E%3Crect x='22' y='12' width='3' height='8' rx='1' fill='%23EE7F1A'/%3E%3C/svg%3E">
+<meta name="description" content="Understand networks by watching every packet.">
+<!-- blueprint:head -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg viewBox='0 0 32 32' xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='3' y='8' width='26' height='16' rx='3' fill='%2317253A'/%3E%3Crect x='7' y='12' width='3' height='8' rx='1' fill='%232F6FDB'/%3E%3Crect x='12' y='12' width='3' height='8' rx='1' fill='%231F9D68'/%3E%3Crect x='17' y='12' width='3' height='8' rx='1' fill='%238B5E3C'/%3E%3Crect x='22' y='12' width='3' height='8' rx='1' fill='%23EE7F1A'/%3E%3C/svg%3E">
 <link rel="preload" href="fonts/cantarell.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="css/base.css">
 <link rel="stylesheet" href="css/app.css">
 <script>try{var t=JSON.parse(localStorage.getItem('packetpilot.v1')||'{}').prefs;if(t&&t.theme)document.documentElement.dataset.theme=t.theme}catch(e){}</script>
+<!-- /blueprint:head -->
 </head>
 <body>
 <div class="app">
   <nav class="rail" aria-label="Main navigation">
+<!-- blueprint:logo -->
     <a class="logo" href="#/" title="PacketPilot" aria-label="PacketPilot home">
-      <svg viewBox="0 0 32 32" width="36" height="36" aria-hidden="true"><rect x="3" y="8" width="26" height="16" rx="3" fill="var(--ink)"/><rect x="7" y="12" width="3" height="8" rx="1" fill="var(--l-eth)"/><rect x="12" y="12" width="3" height="8" rx="1" fill="var(--l-ip)"/><rect x="17" y="12" width="3" height="8" rx="1" fill="var(--l-udp)"/><rect x="22" y="12" width="3" height="8" rx="1" fill="var(--l-arp)"/></svg>
+      <svg viewBox="0 0 32 32" width="36" height="36" aria-hidden="true"><rect x="3" y="8" width="26" height="16" rx="3" fill="var(--ink)"/><rect x="7" y="12" width="3" height="8" rx="1" fill="var(--c-blue)"/><rect x="12" y="12" width="3" height="8" rx="1" fill="var(--c-green)"/><rect x="17" y="12" width="3" height="8" rx="1" fill="var(--c-brown)"/><rect x="22" y="12" width="3" height="8" rx="1" fill="var(--c-orange)"/></svg>
     </a>
+<!-- /blueprint:logo -->
     <a href="#/" data-nav="course"><span data-icon="course"></span>Course</a>
     <a href="#/lab" data-nav="lab"><span data-icon="lab"></span>Lab</a>
     <a href="#/networks" data-nav="networks"><span data-icon="nets"></span>Networks</a>
@@ -5855,7 +5872,7 @@ __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/app.js" <<'__PACKETPILOT_FILE_END__'
 // PacketPilot: views and navigation
-import { h, toast, download, pickFile, resizer } from './ui.js';
+import { h, toast, download, pickFile, resizer } from './core/ui.js';
 import { I } from './icons.js';
 import { store } from './store.js';
 import { MODULES, UPCOMING, findLesson, nextLesson } from './course/index.js';
@@ -5866,8 +5883,9 @@ import { preview, heroSim } from './minimap.js';
 import { renderFrameBuilder } from './framebuilder.js';
 import { clone } from './net.js';
 import { viewChallenges, viewSubnet } from './practice.js';
-import { shareLink, decodeTopo, unpack } from './share.js';
-import { loadSite, moveCard, siteBase, siteInfo } from './site.js';
+import { shareLink, decodeTopo } from './share.js';
+import { siteBase, siteInfo } from './core/site.js';
+import { startApp, markNav as markRail, routeParts } from './core/shell.js';
 import { CHALLENGES } from './challenges.js';
 import { initGlossary, glossify } from './glossary.js';
 
@@ -5875,21 +5893,6 @@ const main = document.querySelector('.main');
 let cleanup = [];
 initGlossary(main);
 function clear() { cleanup.forEach(f => { try { f(); } catch { /* ignore */ } }); cleanup = []; main.innerHTML = ''; main.scrollTop = 0; }
-
-// ---------------------------------------------------------------- Theme
-function applyTheme() {
-  const t = store.prefs.theme;
-  if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
-  const btn = document.querySelector('#theme');
-  const dark = t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches);
-  btn.innerHTML = `<span>${dark ? I.sun : I.moon}</span>${dark ? 'Light' : 'Dark'}`;
-}
-document.querySelector('#theme').addEventListener('click', () => {
-  const dark = document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
-  store.setPref('theme', dark ? 'light' : 'dark');
-  applyTheme();
-});
-applyTheme();
 
 // ---------------------------------------------------------------- Home page and course
 function lessonProgress(l) { return { done: store.lessonDone(l.id), steps: store.lessonSteps(l.id), total: l.steps.length }; }
@@ -6179,22 +6182,6 @@ async function openShared(code) {
   }
 }
 
-// Progress handed over from an older address of this server (see migrate.html and site.js).
-// Merging never overwrites anything done here, so a second transfer is harmless.
-async function viewMigrate(code) {
-  const q = new URLSearchParams(location.hash.split('?')[1] || '');
-  const from = q.get('from') || '';
-  const to = /^#\/[\w\-/.]*$/.test(q.get('to') || '') ? q.get('to') : '#/';
-  let ok = false;
-  try { store.importAll(await unpack(code), { merge: true }); ok = true; }
-  catch { toast('The progress could not be transferred. Export it as a file at the old address and import it here.'); }
-  // The bridge on plain HTTP waits for this confirmation, so it hands the progress over only once
-  if (ok && from === `http://${location.host}`) { location.replace(`${from}/#/moved/${encodeURIComponent(to)}`); return; }
-  history.replaceState(null, '', to);
-  route();
-  if (ok) toast('Your progress from the old address is here now.');
-}
-
 // ---------------------------------------------------------------- Example networks
 function viewNets() {
   const page = h('div', { class: 'page' }, h('h1', {}, 'Example networks'),
@@ -6263,12 +6250,11 @@ function viewPrint(lessonId) {
 // Older German links (#/lektion, #/labor, #/netze, #/baukasten) keep working
 const ALIAS = { lektion: 'lesson', labor: 'lab', netze: 'networks', baukasten: 'builder' };
 function markNav(nav) {
-  document.querySelectorAll('.rail a').forEach(a => a.classList.toggle('active',
-    (a.dataset.nav === 'course' && (nav === '' || nav === 'lesson' || nav === 'print')) || a.dataset.nav === nav));
+  markRail(n => (n === 'course' && (nav === '' || nav === 'lesson' || nav === 'print')) || n === nav);
 }
 function route() {
   clear();
-  const parts = location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean);
+  const parts = routeParts();
   const nav = ALIAS[parts[0]] || parts[0] || '';
   markNav(nav === 'share' ? 'lab' : nav);
   if (nav === 'lesson') viewLesson(parts[1], parts[2]);
@@ -6279,20 +6265,12 @@ function route() {
   else if (nav === 'troubleshoot') viewChallenges(main, cleanup, parts[1]);
   else if (nav === 'subnetting') viewSubnet(main);
   else if (nav === 'print') viewPrint(parts[1]);
-  else if (nav === 'migrate') { viewMigrate(parts[1] || ''); return; }
   else viewHome();
   glossify(main);
   document.title = 'PacketPilot';
 }
-window.addEventListener('hashchange', route);
-// Arriving from the plain HTTP address after the progress was handed over
-if (/[?&]moved=1/.test(location.hash)) {
-  history.replaceState(null, '', location.hash.replace(/[?&]moved=1/, ''));
-  setTimeout(() => toast('PacketPilot now runs over HTTPS. Your progress came along.'), 300);
-}
-await loadSite();
-route();
-moveCard();
+// Theme, site.json, moving data between addresses and the first route: src/js/core/shell.js
+startApp({ store, route });
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/bgp.js" <<'__PACKETPILOT_FILE_END__'
@@ -7812,6 +7790,367 @@ function showEvpn(dev, say) {
     say(`*> ${r.rt === 2 ? `[2]:[${r.vni}]:[${r.mac}]${r.ip ? ':[' + r.ip + ']' : ''}` : `[3]:[${r.vni}]:[${r.nextHop}]`}`);
     say(`      VTEP ${r.nextHop}, ${r.from === 'local' ? 'local' : 'from ' + r.from}`);
   }
+}
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/core"
+  cat > "$W/js/core/icons.js" <<'__PACKETPILOT_FILE_END__'
+// Line icons of the design system: 24x24 grid, shown at 20 px, stroke 1.8, round caps,
+// currentColor. Projects add their own icons in src/js/icons.js with the same s().
+export const s = (body, extra = '') => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${body}</svg>`;
+
+export const I = {
+  course: s('<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/><path d="M8 7h8M8 11h6"/>'),
+  lab: s('<rect x="3" y="3" width="7" height="6" rx="1.5"/><rect x="14" y="15" width="7" height="6" rx="1.5"/><rect x="14" y="3" width="7" height="6" rx="1.5"/><path d="M6.5 9v4.5a2 2 0 0 0 2 2H14M10 6h4"/>'),
+  nets: s('<circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="5" r="2.2"/><circle cx="19" cy="19" r="2.2"/><circle cx="12" cy="12" r="2.2"/><path d="M7.2 12h2.6M13.7 10.5l3.6-4M13.7 13.5l3.6 4"/>'),
+  frame: s('<rect x="2.5" y="8" width="5" height="8" rx="1"/><rect x="8.5" y="8" width="4" height="8" rx="1"/><rect x="13.5" y="8" width="8" height="8" rx="1"/><path d="M5 5v2M10.5 5v2M17.5 5v2"/>'),
+  fix: s('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3.5 17.3a1.8 1.8 0 0 0 2.6 2.6l5.8-5.8a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>'),
+  calc: s('<rect x="4" y="2.5" width="16" height="19" rx="2.5"/><path d="M8 6.5h8M8 11h.01M12 11h.01M16 11h.01M8 14.5h.01M12 14.5h.01M16 14.5v3.5M8 18h4"/>'),
+  print: s('<path d="M7 8V3h10v5"/><rect x="3" y="8" width="18" height="9" rx="2"/><path d="M7 14h10v7H7z"/>'),
+  share: s('<circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.4M8.2 13.2l7.6 4.4"/>'),
+  timer: s('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9.5 2.5h5"/>'),
+  play: s('<path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="none"/>'),
+  pause: s('<rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/>'),
+  step: s('<path d="M5 5v14l9-7z" fill="currentColor" stroke="none"/><path d="M18 5v14" stroke-width="2.4"/>'),
+  reset: s('<path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4.5h4.5"/>'),
+  cable: s('<path d="M4 20c4 0 4-16 8-16s4 16 8 16"/><circle cx="4" cy="20" r="1.6" fill="currentColor"/><circle cx="20" cy="20" r="1.6" fill="currentColor"/>'),
+  trash: s('<path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/>'),
+  plus: s('<path d="M12 5v14M5 12h14"/>'),
+  minus: s('<path d="M5 12h14"/>'),
+  sun: s('<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/>'),
+  moon: s('<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>'),
+  check: s('<path d="M4.5 12.5l5 5 10-11"/>'),
+  circle: s('<circle cx="12" cy="12" r="8"/>'),
+  lock: s('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/>'),
+  right: s('<path d="M9 5l7 7-7 7"/>'),
+  left: s('<path d="M15 5l-7 7 7 7"/>'),
+  down: s('<path d="M5 9l7 7 7-7"/>'),
+  up: s('<path d="M5 15l7-7 7 7"/>'),
+  terminal: s('<rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="M6.5 9l3.5 3-3.5 3M12 15h5"/>'),
+  table: s('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9.5h18M3 14.5h18M9 9.5V20"/>'),
+  sliders: s('<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>'),
+  target: s('<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/>'),
+  bulb: s('<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.8.6 1.1 1.4 1.1 2.2h5c0-.8.4-1.6 1.1-2.2A6 6 0 0 0 12 3z"/>'),
+  download: s('<path d="M12 4v11M7 10.5l5 5 5-5M4.5 20h15"/>'),
+  upload: s('<path d="M12 20V9M7 13.5l5-5 5 5M4.5 4h15"/>'),
+  full: s('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
+  unfull: s('<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>'),
+  fit: s('<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="10" r="1.6"/><path d="M10.4 11.4l3.2-1"/>'),
+  eye: s('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
+  route: s('<circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="5" r="2.2"/><path d="M8 19h7.5a3.5 3.5 0 0 0 0-7h-7a3.5 3.5 0 0 1 0-7H16"/>'),
+  x: s('<path d="M6 6l12 12M18 6 6 18"/>'),
+  save: s('<path d="M5 3.5h11.5L20.5 7.5V20.5H5z"/><path d="M8 3.5v5h8v-5M8 20.5v-6h8v6"/>'),
+  info: s('<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>'),
+  warn: s('<path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5M12 17.5v.01"/>'),
+  flag: s('<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>'),
+  spark: s('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>'),
+  ffwd: s('<path d="M3.5 6v12l8-6zM12.5 6v12l8-6z" fill="currentColor" stroke="none"/>'),
+  area: s('<rect x="3" y="5" width="18" height="14" rx="2.5" stroke-dasharray="3 2.4"/><path d="M6 9h5"/>'),
+  grip: s('<circle cx="9" cy="7" r="1" fill="currentColor"/><circle cx="15" cy="7" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="17" r="1" fill="currentColor"/><circle cx="15" cy="17" r="1" fill="currentColor"/>')
+};
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/core"
+  cat > "$W/js/core/pack.js" <<'__PACKETPILOT_FILE_END__'
+// Any JSON value as a compact, URL safe string, for links that carry data after the #
+// (share links, moving data to another address). Nothing is uploaded: browsers never
+// send the part after the # to a server.
+const toB64 = bytes => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+const fromB64 = s => { const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(bin, c => c.charCodeAt(0)); };
+async function pipe(bytes, stream) { return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer()); }
+
+/** 'z' + deflated base64url, or 'j' + plain base64url where the browser cannot compress */
+export async function pack(value) {
+  const json = new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value));
+  if (typeof CompressionStream === 'function') return 'z' + toB64(await pipe(json, new CompressionStream('deflate-raw')));
+  return 'j' + toB64(json);
+}
+export async function unpack(code) {
+  const kind = code[0], bytes = fromB64(code.slice(1));
+  const raw = kind === 'z' ? await pipe(bytes, new DecompressionStream('deflate-raw')) : bytes;
+  return JSON.parse(new TextDecoder().decode(raw));
+}
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/core"
+  cat > "$W/js/core/shell.js" <<'__PACKETPILOT_FILE_END__'
+// The app shell of every blueprint project (blueprint 1.0.0): theme switch,
+// the active menu entry, the move card and the start of the hash router.
+import { toast } from './ui.js';
+import { I } from './icons.js';
+import { loadSite, moveCard, receiveMigration } from './site.js';
+
+export function applyTheme(store) {
+  const t = store.prefs.theme;
+  if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  const btn = document.querySelector('#theme');
+  const dark = t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches);
+  btn.innerHTML = `<span>${dark ? I.sun : I.moon}</span>${dark ? 'Light' : 'Dark'}`;
+}
+
+function initTheme(store) {
+  document.querySelector('#theme').addEventListener('click', () => {
+    const dark = document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
+    store.setPref('theme', dark ? 'light' : 'dark');
+    applyTheme(store);
+  });
+  applyTheme(store);
+}
+
+/** Mark the menu entry of the current page: active(entryNav) decides, exactly one should match */
+export function markNav(active) {
+  document.querySelectorAll('.rail a[data-nav]').forEach(a => a.classList.toggle('active', !!active(a.dataset.nav)));
+}
+
+/** The parts of the current hash route: #/lab/routed?x=1 → ['lab', 'routed'] */
+export const routeParts = () => location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean);
+
+/**
+ * Start the app: theme, site.json, the first route, the move card.
+ * route() renders the view of the current hash; it runs again on every hash change.
+ */
+export async function startApp({ store, route }) {
+  initTheme(store);
+  const run = () => {
+    const [first, code] = routeParts();
+    if (first === 'migrate') return receiveMigration(code || '', store, route);
+    route();
+  };
+  window.addEventListener('hashchange', run);
+  // Arriving from the plain HTTP address after the data was handed over (migrate.html)
+  if (/[?&]moved=1/.test(location.hash)) {
+    history.replaceState(null, '', location.hash.replace(/[?&]moved=1/, ''));
+    setTimeout(() => toast('PacketPilot now runs over HTTPS. Your data came along.'), 300);
+  }
+  await loadSite();
+  run();
+  moveCard(store);
+}
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/core"
+  cat > "$W/js/core/site.js" <<'__PACKETPILOT_FILE_END__'
+// Facts about this installation (site.json, written by the installer, the container or
+// the app server) and moving a user's data between addresses (blueprint 1.0.0).
+// Browser data lives per address, so when a server gets a new main address, users take
+// their data along with one click.
+import { h, toast } from './ui.js';
+import { pack, unpack } from './pack.js';
+
+let site = {};
+export const siteInfo = () => site;
+export async function loadSite() {
+  try {
+    const r = await Promise.race([fetch('site.json', { cache: 'no-store' }), new Promise((_, no) => setTimeout(no, 1500))]);
+    if (r.ok) site = await r.json();
+  } catch { /* opened as a file, without the installer, or slow */ }
+  return site;
+}
+
+/** The main address of this server, if it differs from the one in the address bar */
+export function otherHome() {
+  try {
+    const u = site.canonical && new URL(site.canonical);
+    return u && /^https?:$/.test(u.protocol) && u.origin !== location.origin ? u.origin : null;
+  } catch { return null; }
+}
+/** Base for links that others open: the main address when there is one */
+export const siteBase = () => (otherHome() || location.origin) + location.pathname;
+
+async function moveUrl(home, store) {
+  const to = encodeURIComponent(location.hash || '#/');
+  if (store.isEmpty()) return `${home}/${location.hash || ''}`;
+  return `${home}/#/migrate/${await pack(store.snapshot())}?to=${to}`;
+}
+
+/** Small card in the corner when the server has a new main address */
+export function moveCard(store) {
+  const home = otherHome();
+  if (!home || store.prefs.moveHidden === home) return;
+  const name = new URL(home).host;
+  const empty = store.isEmpty();
+  const card = h('aside', { class: 'movecard no-print', role: 'status' },
+    h('b', {}, 'PacketPilot has a new address'),
+    h('p', {}, 'This server is now reachable at ', h('b', {}, name), empty ? '.' : '. Your data is saved in this browser per address, so take it along.'),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn primary', onclick: async () => { location.href = await moveUrl(home, store); } }, empty ? 'Go there' : 'Move my data there'),
+      h('button', { class: 'btn ghost', onclick: () => { store.setPref('moveHidden', home); card.remove(); } }, 'Not now')));
+  document.body.append(card);
+}
+
+/**
+ * #/migrate/<code>?from=…&to=…: data handed over from an older address of this server
+ * (the move card above, or migrate.html for http:// → https://). Merging never
+ * overwrites anything done here, so a second transfer is harmless.
+ */
+export async function receiveMigration(code, store, route) {
+  const q = new URLSearchParams(location.hash.split('?')[1] || '');
+  const from = q.get('from') || '';
+  const to = /^#\/[\w\-/.]*$/.test(q.get('to') || '') ? q.get('to') : '#/';
+  let ok = false;
+  try { store.importAll(await unpack(code), { merge: true }); ok = true; }
+  catch { toast('The data could not be transferred. Download a backup at the old address and restore it here.'); }
+  // The bridge on plain HTTP waits for this confirmation, so it hands the data over only once
+  if (ok && from === `http://${location.host}`) { location.replace(`${from}/#/moved/${encodeURIComponent(to)}`); return; }
+  history.replaceState(null, '', to);
+  route();
+  if (ok) toast('Your data from the old address is here now.');
+}
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/core"
+  cat > "$W/js/core/storage.js" <<'__PACKETPILOT_FILE_END__'
+// Storage in the browser for PacketPilot (blueprint 1.0.0).
+// One key, packetpilot.v1, holds everything. Its shape only ever grows: new fields get
+// defaults, nothing is renamed, so an update never loses what a user did.
+// The project describes its data (src/js/store.js): createStore() does the rest.
+export const STORAGE_KEY = 'packetpilot.v1';
+export const APP_NAME = 'PacketPilot';
+
+/**
+ * shape: {
+ *   empty(): a fresh state (must contain prefs: {})
+ *   normalize(d): d with every missing field filled in
+ *   merge(current, added): both together, nothing done is lost, the current browser wins conflicts
+ *   valid(d): looks like data of this app (for imports)
+ *   isEmpty(d): nothing worth moving
+ * }
+ */
+export function createStore(shape) {
+  const normalize = d => { const n = shape.normalize(d && typeof d === 'object' ? d : shape.empty()); n.prefs ??= {}; return n; };
+  let data = shape.empty();
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) data = normalize(JSON.parse(raw));
+  } catch { /* private window, blocked storage or broken data: start empty */ }
+  const persist = () => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch { /* full or blocked */ } };
+  return {
+    get data() { return data; },
+    persist,
+    get prefs() { return data.prefs; },
+    setPref(k, v) { data.prefs[k] = v; persist(); },
+    /** A backup file: everything in this browser, with a small header so it is recognized later */
+    exportAll(version = '') { return JSON.stringify({ app: APP_NAME, kind: 'backup', version, exported: new Date().toISOString(), data }, null, 2); },
+    /** Import a backup file or transferred data. merge keeps everything already in this browser. */
+    importAll(json, { merge = true } = {}) {
+      let d = typeof json === 'string' ? JSON.parse(json) : json;
+      if (d && d.app === APP_NAME && d.kind === 'backup' && d.data) d = d.data;
+      if (!d || typeof d !== 'object' || !shape.valid(d)) throw new Error(`Not a valid ${APP_NAME} file`);
+      data = merge ? normalize(shape.merge(normalize(JSON.parse(JSON.stringify(data))), normalize(d))) : normalize(d);
+      persist();
+    },
+    snapshot() { return JSON.stringify(data); },
+    isEmpty() { return shape.isEmpty(data); },
+    /** Replace the data with the result of fn(data) and save */
+    update(fn) { data = normalize(fn(data) ?? data); persist(); }
+  };
+}
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/core"
+  cat > "$W/js/core/ui.js" <<'__PACKETPILOT_FILE_END__'
+// Small DOM helpers
+export function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+export function h(tag, attrs = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k === 'class') el.className = v;
+    else if (k === 'html') el.innerHTML = v;
+    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const k of kids.flat()) {
+    if (k === null || k === undefined || k === false) continue;
+    el.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  }
+  return el;
+}
+export function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null) el.setAttribute(k, v);
+  return el;
+}
+let toastTimer;
+export function toast(msg) {
+  let t = document.querySelector('.toast');
+  if (!t) { t = h('div', { class: 'toast', role: 'status' }); document.body.append(t); }
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add('hidden'), 2600);
+}
+export function iconBtn(icon, title, onclick, cls = '') {
+  return h('button', { class: `btn icon ghost ${cls}`, title, 'aria-label': title, onclick, html: icon });
+}
+export function download(name, text) {
+  const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'application/json' })), download: name });
+  document.body.append(a); a.click(); a.remove();
+}
+export function pickFile(accept = '.json') {
+  return new Promise(res => {
+    const i = h('input', { type: 'file', accept });
+    i.onchange = async () => res(i.files[0] ? await i.files[0].text() : null);
+    i.click();
+  });
+}
+/**
+ * Drag handle for resizing panels. axis 'col' drags horizontally, 'row' vertically.
+ * onMove(event) gets every pointer move, onEnd() runs once on release, onReset() on double-click.
+ */
+export function resizer(axis, { onMove, onEnd, onReset, title = 'Drag to resize, double-click to reset' }) {
+  const el = h('div', { class: `rz rz-${axis}`, title, role: 'separator', 'aria-orientation': axis === 'col' ? 'vertical' : 'horizontal' });
+  el.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('active');
+    document.body.classList.add('resizing', axis);
+    const move = ev => onMove(ev);
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      el.classList.remove('active');
+      document.body.classList.remove('resizing', axis);
+      onEnd?.();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  });
+  if (onReset) el.addEventListener('dblclick', onReset);
+  return el;
+}
+
+/** Right-click menu at the mouse position. items: { label, icon, onClick, danger, disabled, hint } or '-' */
+let openMenu = null;
+export function closeMenu() { openMenu?.remove(); openMenu = null; }
+export function contextMenu(ev, items, title = '') {
+  ev.preventDefault(); ev.stopPropagation();
+  closeMenu();
+  const list = items.filter((x, i, a) => x && !(x === '-' && (i === 0 || a[i - 1] === '-' || i === a.length - 1)));
+  if (!list.length) return;
+  const m = h('div', { class: 'ctxmenu', role: 'menu' }, title ? h('div', { class: 'ctx-title' }, title) : null,
+    list.map(it => it === '-' ? h('div', { class: 'ctx-sep', role: 'separator' }) :
+      h('button', { class: `ctx-item${it.danger ? ' danger' : ''}`, role: 'menuitem', disabled: it.disabled ? true : null,
+        html: (it.icon || '<span class="ctx-noicon"></span>') + `<span>${esc(it.label)}</span>` + (it.hint ? `<kbd>${esc(it.hint)}</kbd>` : ''),
+        onclick: () => { closeMenu(); it.onClick?.(); } })));
+  document.body.append(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(ev.clientX, innerWidth - r.width - 6) + 'px';
+  m.style.top = Math.min(ev.clientY, innerHeight - r.height - 6) + 'px';
+  openMenu = m;
+  m.querySelector('button:not([disabled])')?.focus();
+  m.addEventListener('keydown', e => {
+    const btns = [...m.querySelectorAll('button:not([disabled])')], i = btns.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); btns[(i + 1) % btns.length]?.focus(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length]?.focus(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeMenu(); }
+  });
+}
+if (typeof window !== 'undefined') {
+  for (const t of ['pointerdown', 'wheel']) window.addEventListener(t, e => { if (openMenu && !openMenu.contains(e.target)) closeMenu(); }, true);
+  window.addEventListener('blur', e => { if (e.target === window) closeMenu(); });
+  window.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
+  window.addEventListener('hashchange', closeMenu);
 }
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js/course"
@@ -12400,7 +12739,7 @@ __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/framebuilder.js" <<'__PACKETPILOT_FILE_END__'
 // Frame builder: stack layers freely, check rules, compute sizes
-import { h } from './ui.js';
+import { h } from './core/ui.js';
 
 const BLOCKS = {
   eth: { name: 'Ethernet', size: 14, kind: 'eth', note: 'Destination MAC, source MAC, EtherType' },
@@ -12796,58 +13135,12 @@ export function initGlossary(main) {
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/icons.js" <<'__PACKETPILOT_FILE_END__'
-// Custom line icons, 24x24, stroke=currentColor
-const s = (body, extra = '') => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${body}</svg>`;
+// Icons of PacketPilot: the line icons of the design system (src/js/core/icons.js), plus the
+// device symbols of the network diagram.
+import { I as CORE, s } from './core/icons.js';
 
-export const I = {
-  course: s('<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/><path d="M8 7h8M8 11h6"/>'),
-  lab: s('<rect x="3" y="3" width="7" height="6" rx="1.5"/><rect x="14" y="15" width="7" height="6" rx="1.5"/><rect x="14" y="3" width="7" height="6" rx="1.5"/><path d="M6.5 9v4.5a2 2 0 0 0 2 2H14M10 6h4"/>'),
-  nets: s('<circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="5" r="2.2"/><circle cx="19" cy="19" r="2.2"/><circle cx="12" cy="12" r="2.2"/><path d="M7.2 12h2.6M13.7 10.5l3.6-4M13.7 13.5l3.6 4"/>'),
-  frame: s('<rect x="2.5" y="8" width="5" height="8" rx="1"/><rect x="8.5" y="8" width="4" height="8" rx="1"/><rect x="13.5" y="8" width="8" height="8" rx="1"/><path d="M5 5v2M10.5 5v2M17.5 5v2"/>'),
-  fix: s('<path d="M14.7 6.3a4 4 0 0 0-5.4 5.2L3.5 17.3a1.8 1.8 0 0 0 2.6 2.6l5.8-5.8a4 4 0 0 0 5.2-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>'),
-  calc: s('<rect x="4" y="2.5" width="16" height="19" rx="2.5"/><path d="M8 6.5h8M8 11h.01M12 11h.01M16 11h.01M8 14.5h.01M12 14.5h.01M16 14.5v3.5M8 18h4"/>'),
-  print: s('<path d="M7 8V3h10v5"/><rect x="3" y="8" width="18" height="9" rx="2"/><path d="M7 14h10v7H7z"/>'),
-  share: s('<circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.4M8.2 13.2l7.6 4.4"/>'),
-  timer: s('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9.5 2.5h5"/>'),
-  play: s('<path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="none"/>'),
-  pause: s('<rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none"/>'),
-  step: s('<path d="M5 5v14l9-7z" fill="currentColor" stroke="none"/><path d="M18 5v14" stroke-width="2.4"/>'),
-  reset: s('<path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4.5h4.5"/>'),
-  cable: s('<path d="M4 20c4 0 4-16 8-16s4 16 8 16"/><circle cx="4" cy="20" r="1.6" fill="currentColor"/><circle cx="20" cy="20" r="1.6" fill="currentColor"/>'),
-  trash: s('<path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/>'),
-  plus: s('<path d="M12 5v14M5 12h14"/>'),
-  minus: s('<path d="M5 12h14"/>'),
-  sun: s('<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/>'),
-  moon: s('<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>'),
-  check: s('<path d="M4.5 12.5l5 5 10-11"/>'),
-  circle: s('<circle cx="12" cy="12" r="8"/>'),
-  lock: s('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/>'),
-  right: s('<path d="M9 5l7 7-7 7"/>'),
-  left: s('<path d="M15 5l-7 7 7 7"/>'),
-  down: s('<path d="M5 9l7 7 7-7"/>'),
-  up: s('<path d="M5 15l7-7 7 7"/>'),
-  terminal: s('<rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="M6.5 9l3.5 3-3.5 3M12 15h5"/>'),
-  table: s('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9.5h18M3 14.5h18M9 9.5V20"/>'),
-  sliders: s('<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>'),
-  target: s('<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/>'),
-  bulb: s('<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.8.6 1.1 1.4 1.1 2.2h5c0-.8.4-1.6 1.1-2.2A6 6 0 0 0 12 3z"/>'),
-  download: s('<path d="M12 4v11M7 10.5l5 5 5-5M4.5 20h15"/>'),
-  upload: s('<path d="M12 20V9M7 13.5l5-5 5 5M4.5 4h15"/>'),
-  full: s('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
-  unfull: s('<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>'),
-  fit: s('<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="10" r="1.6"/><path d="M10.4 11.4l3.2-1"/>'),
-  eye: s('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
-  route: s('<circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="5" r="2.2"/><path d="M8 19h7.5a3.5 3.5 0 0 0 0-7h-7a3.5 3.5 0 0 1 0-7H16"/>'),
-  x: s('<path d="M6 6l12 12M18 6 6 18"/>'),
-  save: s('<path d="M5 3.5h11.5L20.5 7.5V20.5H5z"/><path d="M8 3.5v5h8v-5M8 20.5v-6h8v6"/>'),
-  info: s('<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>'),
-  warn: s('<path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5M12 17.5v.01"/>'),
-  flag: s('<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>'),
-  spark: s('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>'),
-  ffwd: s('<path d="M3.5 6v12l8-6zM12.5 6v12l8-6z" fill="currentColor" stroke="none"/>'),
-  area: s('<rect x="3" y="5" width="18" height="14" rx="2.5" stroke-dasharray="3 2.4"/><path d="M6 9h5"/>'),
-  grip: s('<circle cx="9" cy="7" r="1" fill="currentColor"/><circle cx="15" cy="7" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="17" r="1" fill="currentColor"/><circle cx="15" cy="17" r="1" fill="currentColor"/>')
-};
+export const I = { ...CORE };
+export { s };
 
 // Device symbols for the network diagram (40x40, own colors via CSS)
 export const DEV_ICON = {
@@ -12863,7 +13156,7 @@ __PACKETPILOT_FILE_END__
 // Packet inspector: layers, fields, byte bar
 import { dissect, summary } from './packets.js';
 import { frameLen, frameWireLen } from './net.js';
-import { h, esc } from './ui.js';
+import { h, esc } from './core/ui.js';
 
 export function renderInspector(el, entry, { onTrack } = {}) {
   el.innerHTML = '';
@@ -13385,7 +13678,7 @@ import { Sim, PORTS, TYPE_NAMES, TIMING, newId, normalizeDevice, traceOf, STP_TE
 const isCtl = f => f.type === 'stp' || isHello(f);
 import { layerKinds, shortLabel, flowOf, summary } from './packets.js';
 import { isIp } from './net.js';
-import { h, svgEl, toast, iconBtn, resizer, contextMenu } from './ui.js';
+import { h, svgEl, toast, iconBtn, resizer, contextMenu } from './core/ui.js';
 import { store } from './store.js';
 import { I, DEV_ICON } from './icons.js';
 import { renderInspector } from './inspector.js';
@@ -14499,7 +14792,7 @@ __PACKETPILOT_FILE_END__
 // Static preview of a topology and the live mini simulation on the home page
 import { Sim, TIMING } from './engine.js';
 import { layerKinds, shortLabel } from './packets.js';
-import { svgEl } from './ui.js';
+import { svgEl } from './core/ui.js';
 import { DEV_ICON } from './icons.js';
 
 function frame(topo, pad = 70) {
@@ -15283,7 +15576,7 @@ __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/panels.js" <<'__PACKETPILOT_FILE_END__'
 // Side panel: configuration, tables and console of a device
-import { h, toast, contextMenu } from './ui.js';
+import { h, toast, contextMenu } from './core/ui.js';
 import { I } from './icons.js';
 import { isIp, parseCidr, isAnyIp, isIp6, parseCidr6, norm6 } from './net.js';
 import { staticAddrs } from './ipv6.js';
@@ -16196,7 +16489,7 @@ __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/practice.js" <<'__PACKETPILOT_FILE_END__'
 // Practice: troubleshooting challenges and the subnetting trainer
-import { h, resizer } from './ui.js';
+import { h, resizer } from './core/ui.js';
 import { I } from './icons.js';
 import { store } from './store.js';
 import { Lab } from './lab.js';
@@ -17486,9 +17779,7 @@ __PACKETPILOT_FILE_END__
   cat > "$W/js/share.js" <<'__PACKETPILOT_FILE_END__'
 // Shareable links: the whole network travels compressed in the URL fragment.
 // Nothing is uploaded, the server never sees the part after the #.
-const toB64 = bytes => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
-const fromB64 = s => { const bin = atob(s.replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(bin, c => c.charCodeAt(0)); };
-async function pipe(bytes, stream) { return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer()); }
+import { pack, unpack } from './core/pack.js';
 
 /** Smallest form of a topology: drop defaults that normalizeDevice fills in again */
 function slim(topo) {
@@ -17507,18 +17798,7 @@ function slim(topo) {
   return t;
 }
 
-/** Any JSON value as a compact, URL safe string ('z' deflated, 'j' plain) */
-export async function pack(value) {
-  const json = new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value));
-  if (typeof CompressionStream === 'function') return 'z' + toB64(await pipe(json, new CompressionStream('deflate-raw')));
-  return 'j' + toB64(json);
-}
-export async function unpack(code) {
-  const kind = code[0], bytes = fromB64(code.slice(1));
-  const raw = kind === 'z' ? await pipe(bytes, new DecompressionStream('deflate-raw')) : bytes;
-  return JSON.parse(new TextDecoder().decode(raw));
-}
-
+export { pack, unpack };
 export const encodeTopo = topo => pack(slim(topo));
 export async function decodeTopo(code) {
   const t = await unpack(code);
@@ -17531,67 +17811,13 @@ export async function shareLink(topo, base = location.origin + location.pathname
 }
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
-  cat > "$W/js/site.js" <<'__PACKETPILOT_FILE_END__'
-// Facts about this installation (site.json, written by the installer) and moving
-// progress between addresses. Progress lives in the browser per address, so when a
-// server gets a domain name, the learner takes it along with one click.
-import { h } from './ui.js';
-import { store } from './store.js';
-import { pack } from './share.js';
-
-let site = {};
-export const siteInfo = () => site;
-export async function loadSite() {
-  try {
-    const r = await Promise.race([fetch('site.json', { cache: 'no-store' }), new Promise((_, no) => setTimeout(no, 1500))]);
-    if (r.ok) site = await r.json();
-  } catch { /* opened as a file, without the installer or slow */ }
-  return site;
-}
-
-/** The main address of this server, if it differs from the one in the address bar */
-export function otherHome() {
-  try {
-    const u = site.canonical && new URL(site.canonical);
-    return u && /^https?:$/.test(u.protocol) && u.origin !== location.origin ? u.origin : null;
-  } catch { return null; }
-}
-/** Base for links that others open: the main address when there is one */
-export const siteBase = () => (otherHome() || location.origin) + location.pathname;
-
-async function moveUrl(home) {
-  const to = encodeURIComponent(location.hash || '#/');
-  if (store.isEmpty()) return `${home}/${location.hash || ''}`;
-  return `${home}/#/migrate/${await pack(store.snapshot())}?to=${to}`;
-}
-
-/** Small card in the corner when the server has a new main address */
-export function moveCard() {
-  const home = otherHome();
-  if (!home || store.prefs.moveHidden === home) return;
-  const name = new URL(home).host;
-  const empty = store.isEmpty();
-  const card = h('aside', { class: 'movecard no-print', role: 'status' },
-    h('b', {}, 'PacketPilot has a new address'),
-    h('p', {}, 'This server is now reachable at ', h('b', {}, name), empty ? '.' : '. Your progress is saved in this browser per address, so take it along.'),
-    h('div', { class: 'row' },
-      h('button', { class: 'btn primary', onclick: async () => { location.href = await moveUrl(home); } }, empty ? 'Go there' : 'Move my progress there'),
-      h('button', { class: 'btn ghost', onclick: () => { store.setPref('moveHidden', home); card.remove(); } }, 'Not now')));
-  document.body.append(card);
-}
-__PACKETPILOT_FILE_END__
-  mkdir -p "$W/js"
   cat > "$W/js/store.js" <<'__PACKETPILOT_FILE_END__'
-// Storage in the browser, robust against blocked storage.
-// The key and the shape only ever grow: new fields get defaults, nothing is renamed,
-// so an update of PacketPilot never loses what a learner did.
-const KEY = 'packetpilot.v1';
+// What PacketPilot keeps in the browser, on top of src/js/core/storage.js (key packetpilot.v1).
+// The shape only ever grows: new fields get defaults, nothing is renamed, so an update of
+// PacketPilot never loses what a learner did.
+import { createStore } from './core/storage.js';
+
 const empty = () => ({ progress: {}, nets: {}, prefs: {}, answers: {}, practice: { challenges: {}, subnet: {} } });
-let mem = empty();
-try {
-  const raw = localStorage.getItem(KEY);
-  if (raw) mem = withDefaults(JSON.parse(raw));
-} catch { /* private window or similar */ }
 
 function withDefaults(d) {
   const e = empty();
@@ -17600,7 +17826,6 @@ function withDefaults(d) {
   for (const k of ['progress', 'nets', 'prefs', 'answers']) if (!m[k] || typeof m[k] !== 'object') m[k] = {};
   return m;
 }
-function persist() { try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch { /* ignore */ } }
 
 /** Combine two saved states: nothing done is lost, on conflicts the current browser wins */
 export function mergeState(cur, add) {
@@ -17632,48 +17857,52 @@ export function mergeState(cur, add) {
   return out;
 }
 
+const base = createStore({
+  empty,
+  normalize: withDefaults,
+  merge: mergeState,
+  valid: d => 'progress' in d || 'nets' in d || 'prefs' in d,
+  isEmpty: d => !Object.keys(d.progress).length && !Object.keys(d.nets).length && !Object.keys(d.answers).length && !Object.keys(d.practice.challenges).length
+});
+const mem = () => base.data;
+const persist = base.persist;
+
 export const store = {
-  get prefs() { return mem.prefs; },
-  setPref(k, v) { mem.prefs[k] = v; persist(); },
-  stepDone(lessonId, idx) { return !!mem.progress[lessonId]?.steps?.[idx]; },
+  get prefs() { return base.prefs; },
+  setPref: base.setPref,
+  stepDone(lessonId, idx) { return !!mem().progress[lessonId]?.steps?.[idx]; },
   markStep(lessonId, idx) {
-    const p = (mem.progress[lessonId] ??= { steps: {}, done: false });
+    const p = (mem().progress[lessonId] ??= { steps: {}, done: false });
     if (!p.steps[idx]) { p.steps[idx] = true; persist(); }
   },
-  markLesson(lessonId) { const p = (mem.progress[lessonId] ??= { steps: {}, done: false }); p.done = true; persist(); },
-  lessonDone(lessonId) { return !!mem.progress[lessonId]?.done; },
-  lessonSteps(lessonId) { return Object.keys(mem.progress[lessonId]?.steps || {}).length; },
-  resetProgress() { mem.progress = {}; mem.answers = {}; mem.practice = empty().practice; persist(); },
+  markLesson(lessonId) { const p = (mem().progress[lessonId] ??= { steps: {}, done: false }); p.done = true; persist(); },
+  lessonDone(lessonId) { return !!mem().progress[lessonId]?.done; },
+  lessonSteps(lessonId) { return Object.keys(mem().progress[lessonId]?.steps || {}).length; },
+  resetProgress() { base.update(d => ({ ...d, progress: {}, answers: {}, practice: empty().practice })); },
   // Partial answers of an exercise or lab step, so they survive navigation and reloads
-  answer(key) { return mem.answers?.[key]; },
-  saveAnswer(key, value) { (mem.answers ??= {})[key] = value; persist(); },
+  answer(key) { return mem().answers?.[key]; },
+  saveAnswer(key, value) { (mem().answers ??= {})[key] = value; persist(); },
   // Troubleshooting challenges and the subnetting trainer
-  challenge(id) { return mem.practice.challenges[id] || null; },
-  saveChallenge(id, v) { mem.practice.challenges[id] = v; persist(); },
-  subnetStats(mode) { return mem.practice.subnet[mode] || { right: 0, total: 0, streak: 0, best: 0 }; },
-  saveSubnetStats(mode, v) { mem.practice.subnet[mode] = v; persist(); },
-  nets() { return mem.nets; },
-  saveNet(name, topo) { mem.nets[name] = { topo, saved: Date.now() }; persist(); },
-  deleteNet(name) { delete mem.nets[name]; persist(); },
+  challenge(id) { return mem().practice.challenges[id] || null; },
+  saveChallenge(id, v) { mem().practice.challenges[id] = v; persist(); },
+  subnetStats(mode) { return mem().practice.subnet[mode] || { right: 0, total: 0, streak: 0, best: 0 }; },
+  saveSubnetStats(mode, v) { mem().practice.subnet[mode] = v; persist(); },
+  nets() { return mem().nets; },
+  saveNet(name, topo) { mem().nets[name] = { topo, saved: Date.now() }; persist(); },
+  deleteNet(name) { delete mem().nets[name]; persist(); },
   /** A backup file: everything in this browser, with a small header so it is recognized later */
-  exportAll(version = '') { return JSON.stringify({ app: 'PacketPilot', kind: 'backup', version, exported: new Date().toISOString(), data: mem }, null, 2); },
+  exportAll: base.exportAll,
   summary() {
-    const lessons = Object.values(mem.progress).filter(p => p.done).length;
-    const challenges = Object.values(mem.practice.challenges).filter(c => c.solved).length;
-    const sub = Object.values(mem.practice.subnet);
-    return { lessons, nets: Object.keys(mem.nets).length, challenges, subnetBest: Math.max(0, ...sub.map(x => x.best || 0)), subnetRight: sub.reduce((a, x) => a + (x.right || 0), 0) };
+    const m = mem();
+    const lessons = Object.values(m.progress).filter(p => p.done).length;
+    const challenges = Object.values(m.practice.challenges).filter(c => c.solved).length;
+    const sub = Object.values(m.practice.subnet);
+    return { lessons, nets: Object.keys(m.nets).length, challenges, subnetBest: Math.max(0, ...sub.map(x => x.best || 0)), subnetRight: sub.reduce((a, x) => a + (x.right || 0), 0) };
   },
-  snapshot() { return JSON.stringify(mem); },
+  snapshot: base.snapshot,
   /** Import a file or a transferred state. merge keeps everything already in this browser. */
-  importAll(json, { merge = true } = {}) {
-    let d = typeof json === 'string' ? JSON.parse(json) : json;
-    // Backups since 2.8 wrap the data with a header; older exports are the data itself
-    if (d && d.app === 'PacketPilot' && d.data) d = d.data;
-    if (typeof d !== 'object' || !d || !('progress' in d || 'nets' in d || 'prefs' in d)) throw new Error('Not a valid PacketPilot file');
-    mem = merge ? mergeState(mem, d) : withDefaults(d);
-    persist();
-  },
-  isEmpty() { return !Object.keys(mem.progress).length && !Object.keys(mem.nets).length && !Object.keys(mem.answers).length && !Object.keys(mem.practice.challenges).length; }
+  importAll: base.importAll,
+  isEmpty: base.isEmpty
 };
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
@@ -17785,118 +18014,6 @@ export function checkField(field, value) {
   const [, expected, norm] = field;
   const n = norm || (v => String(v).trim().toLowerCase());
   return n(value) === n(expected);
-}
-__PACKETPILOT_FILE_END__
-  mkdir -p "$W/js"
-  cat > "$W/js/ui.js" <<'__PACKETPILOT_FILE_END__'
-// Small DOM helpers
-export function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-export function h(tag, attrs = {}, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (v === undefined || v === null || v === false) continue;
-    if (k === 'class') el.className = v;
-    else if (k === 'html') el.innerHTML = v;
-    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
-    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
-    else el.setAttribute(k, v === true ? '' : v);
-  }
-  for (const k of kids.flat()) {
-    if (k === null || k === undefined || k === false) continue;
-    el.append(k instanceof Node ? k : document.createTextNode(String(k)));
-  }
-  return el;
-}
-export function svgEl(tag, attrs = {}) {
-  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
-  for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null) el.setAttribute(k, v);
-  return el;
-}
-let toastTimer;
-export function toast(msg) {
-  let t = document.querySelector('.toast');
-  if (!t) { t = h('div', { class: 'toast', role: 'status' }); document.body.append(t); }
-  t.textContent = msg;
-  t.classList.remove('hidden');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.add('hidden'), 2600);
-}
-export function iconBtn(icon, title, onclick, cls = '') {
-  return h('button', { class: `btn icon ghost ${cls}`, title, 'aria-label': title, onclick, html: icon });
-}
-export function download(name, text) {
-  const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'application/json' })), download: name });
-  document.body.append(a); a.click(); a.remove();
-}
-export function pickFile(accept = '.json') {
-  return new Promise(res => {
-    const i = h('input', { type: 'file', accept });
-    i.onchange = async () => res(i.files[0] ? await i.files[0].text() : null);
-    i.click();
-  });
-}
-/**
- * Drag handle for resizing panels. axis 'col' drags horizontally, 'row' vertically.
- * onMove(event) gets every pointer move, onEnd() runs once on release, onReset() on double-click.
- */
-export function resizer(axis, { onMove, onEnd, onReset, title = 'Drag to resize, double-click to reset' }) {
-  const el = h('div', { class: `rz rz-${axis}`, title, role: 'separator', 'aria-orientation': axis === 'col' ? 'vertical' : 'horizontal' });
-  el.addEventListener('pointerdown', e => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    el.setPointerCapture(e.pointerId);
-    el.classList.add('active');
-    document.body.classList.add('resizing', axis);
-    const move = ev => onMove(ev);
-    const up = () => {
-      el.removeEventListener('pointermove', move);
-      el.removeEventListener('pointerup', up);
-      el.removeEventListener('pointercancel', up);
-      el.classList.remove('active');
-      document.body.classList.remove('resizing', axis);
-      onEnd?.();
-    };
-    el.addEventListener('pointermove', move);
-    el.addEventListener('pointerup', up);
-    el.addEventListener('pointercancel', up);
-  });
-  if (onReset) el.addEventListener('dblclick', onReset);
-  return el;
-}
-
-/** Right-click menu at the mouse position. items: { label, icon, onClick, danger, disabled, hint } or '-' */
-let openMenu = null;
-export function closeMenu() { openMenu?.remove(); openMenu = null; }
-export function contextMenu(ev, items, title = '') {
-  ev.preventDefault(); ev.stopPropagation();
-  closeMenu();
-  const list = items.filter((x, i, a) => x && !(x === '-' && (i === 0 || a[i - 1] === '-' || i === a.length - 1)));
-  if (!list.length) return;
-  const m = h('div', { class: 'ctxmenu', role: 'menu' }, title ? h('div', { class: 'ctx-title' }, title) : null,
-    list.map(it => it === '-' ? h('div', { class: 'ctx-sep', role: 'separator' }) :
-      h('button', { class: `ctx-item${it.danger ? ' danger' : ''}`, role: 'menuitem', disabled: it.disabled ? true : null,
-        html: (it.icon || '<span class="ctx-noicon"></span>') + `<span>${esc(it.label)}</span>` + (it.hint ? `<kbd>${esc(it.hint)}</kbd>` : ''),
-        onclick: () => { closeMenu(); it.onClick?.(); } })));
-  document.body.append(m);
-  const r = m.getBoundingClientRect();
-  m.style.left = Math.min(ev.clientX, innerWidth - r.width - 6) + 'px';
-  m.style.top = Math.min(ev.clientY, innerHeight - r.height - 6) + 'px';
-  openMenu = m;
-  m.querySelector('button:not([disabled])')?.focus();
-  m.addEventListener('keydown', e => {
-    const btns = [...m.querySelectorAll('button:not([disabled])')], i = btns.indexOf(document.activeElement);
-    if (e.key === 'ArrowDown') { e.preventDefault(); btns[(i + 1) % btns.length]?.focus(); }
-    if (e.key === 'ArrowUp') { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length]?.focus(); }
-    if (e.key === 'Escape') { e.preventDefault(); closeMenu(); }
-  });
-}
-if (typeof window !== 'undefined') {
-  for (const t of ['pointerdown', 'wheel']) window.addEventListener(t, e => { if (openMenu && !openMenu.contains(e.target)) closeMenu(); }, true);
-  window.addEventListener('blur', e => { if (e.target === window) closeMenu(); });
-  window.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
-  window.addEventListener('hashchange', closeMenu);
 }
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
@@ -18106,7 +18223,7 @@ __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/widgets.js" <<'__PACKETPILOT_FILE_END__'
 // Interactive exercises for the lessons
-import { h, esc } from './ui.js';
+import { h, esc } from './core/ui.js';
 import { I } from './icons.js';
 import { inNet, parseCidr, isGroupMac, isLocalMac } from './net.js';
 
@@ -18490,7 +18607,7 @@ __PACKETPILOT_FILE_END__
 <meta name="robots" content="noindex">
 <title>PacketPilot</title>
 <style>
-  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #F2F5F9; color: #17253A; }
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #F3F6FA; color: #17253A; }
   @media (prefers-color-scheme: dark) { body { background: #0E1624; color: #E4EBF5; } a { color: #8FB8FF; } }
   main { max-width: 34rem; padding: 24px; }
 </style>
@@ -18498,12 +18615,12 @@ __PACKETPILOT_FILE_END__
 <body>
 <main>
   <h1>PacketPilot moved to HTTPS</h1>
-  <p id="msg">Taking you to the secure address and bringing your progress along …</p>
+  <p id="msg">Taking you to the secure address and bringing your data along …</p>
   <noscript><p>Please open the address with <b>https://</b> in front.</p></noscript>
 </main>
 <script>
 // nginx shows this page for plain HTTP requests to the HTTPS port (error 497).
-// It still runs on the old http:// address, so it can read the progress that was
+// It still runs on the old http:// address, so it can read the data that was
 // saved there and hand it to the https:// address of the same server once.
 (async () => {
   const KEY = 'packetpilot.v1', MOVED = 'packetpilot.moved';
@@ -18538,9 +18655,6 @@ __PACKETPILOT_FILE_END__
 </body>
 </html>
 __PACKETPILOT_FILE_END__
-  cat > "$W/site.json" <<'__PACKETPILOT_FILE_END__'
-{}
-__PACKETPILOT_FILE_END__
 }
 
 check_system() {
@@ -18550,7 +18664,7 @@ check_system() {
   . /etc/os-release
   if [ "${ID:-}" = "debian" ] && { [ "${VERSION_ID:-}" = "12" ] || [ "${VERSION_ID:-}" = "13" ]; }; then
     ok "Detected Debian ${VERSION_ID} (${VERSION_CODENAME:-?})"
-  elif [ "$PP_FORCE" = "yes" ]; then
+  elif [ "$APP_FORCE" = "yes" ]; then
     warn "Untested system (${PRETTY_NAME:-unknown}), continuing anyway because of --force."
   else
     die "Tested on Debian 12 and 13, found: ${PRETTY_NAME:-unknown}. Use --force to install anyway."
@@ -18559,16 +18673,16 @@ check_system() {
 
 port_in_use() {
   command -v ss >/dev/null 2>&1 || return 1
-  ss -Hltn "sport = :${PP_PORT}" 2>/dev/null | grep -q .
+  ss -Hltn "sport = :${APP_PORT}" 2>/dev/null | grep -q .
 }
 
-install_nginx() {
+install_packages() {
   local pkgs=()
   command -v nginx >/dev/null 2>&1 || pkgs+=(nginx)
-  [ "$PP_TLS" = "yes" ] && ! command -v openssl >/dev/null 2>&1 && pkgs+=(openssl)
-  [ -n "$PP_LE_DOMAIN" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1 && pkgs+=(curl)
+  [ "$APP_TLS" = "yes" ] && ! command -v openssl >/dev/null 2>&1 && pkgs+=(openssl)
+  [ -n "$APP_LE_DOMAIN" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1 && pkgs+=(curl)
   if [ ${#pkgs[@]} -eq 0 ]; then
-    ok "nginx is already installed"
+    ok "All packages are already installed"
   else
     say "Installing ${pkgs[*]}"
     export DEBIAN_FRONTEND=noninteractive
@@ -18582,10 +18696,10 @@ install_nginx() {
 # browsers that already accepted it do not warn again; it is only replaced when it
 # is missing, broken, expires within 30 days or --new-cert is given.
 ensure_cert() {
-  [ "$PP_TLS" = "yes" ] || return 0
-  if [ "$PP_NEW_CERT" = "no" ] && [ -s "$PP_CERT" ] && [ -s "$PP_KEY" ] \
-     && openssl x509 -in "$PP_CERT" -noout -checkend 2592000 >/dev/null 2>&1; then
-    ok "Keeping the existing certificate ($(openssl x509 -in "$PP_CERT" -noout -enddate | cut -d= -f2))"
+  [ "$APP_TLS" = "yes" ] || return 0
+  if [ "$APP_NEW_CERT" = "no" ] && [ -s "$APP_CERT" ] && [ -s "$APP_KEY" ] \
+     && openssl x509 -in "$APP_CERT" -noout -checkend 2592000 >/dev/null 2>&1; then
+    ok "Keeping the existing certificate ($(openssl x509 -in "$APP_CERT" -noout -enddate | cut -d= -f2))"
     return 0
   fi
   say "Generating a self-signed certificate"
@@ -18600,134 +18714,134 @@ ensure_cert() {
     case "$ip" in fe80:*) continue ;; esac
     san="${san},IP:${ip}"
   done
-  mkdir -p "$PP_TLS_DIR"
-  chmod 700 "$PP_TLS_DIR"
+  mkdir -p "$APP_TLS_DIR"
+  chmod 700 "$APP_TLS_DIR"
   # 825 days is the longest validity Apple devices accept for TLS server certificates
   openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
-    -keyout "${PP_KEY}.new" -out "${PP_CERT}.new" \
-    -subj "/CN=${host}/O=PacketPilot" \
+    -keyout "${APP_KEY}.new" -out "${APP_CERT}.new" \
+    -subj "/CN=${host}/O=${APP_NAME}" \
     -addext "subjectAltName=${san}" \
     -addext "basicConstraints=critical,CA:FALSE" \
     -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
     -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1 \
     || die "Could not generate the certificate with openssl."
-  chmod 600 "${PP_KEY}.new"
-  chmod 644 "${PP_CERT}.new"
-  mv "${PP_KEY}.new" "$PP_KEY"
-  mv "${PP_CERT}.new" "$PP_CERT"
+  chmod 600 "${APP_KEY}.new"
+  chmod 644 "${APP_CERT}.new"
+  mv "${APP_KEY}.new" "$APP_KEY"
+  mv "${APP_CERT}.new" "$APP_CERT"
   ok "Certificate for ${san//,/, } (valid 825 days)"
 }
 
 # ------------------------------------------------------------------ Let's Encrypt
 # acme.sh (a single shell script) is fetched from a fixed commit and checked, then it
 # asks Let's Encrypt for a certificate and proves the domain with a DNS TXT record.
-acme() { "${PP_ACME_HOME}/acme.sh" --home "$PP_ACME_HOME" --config-home "${PP_ACME_HOME}/data" --cert-home "${PP_ACME_HOME}/certs" "$@"; }
+acme() { "${APP_ACME_HOME}/acme.sh" --home "$APP_ACME_HOME" --config-home "${APP_ACME_HOME}/data" --cert-home "${APP_ACME_HOME}/certs" "$@"; }
 
 fetch() {
   if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"; else wget -qO "$2" "$1"; fi
 }
 
 install_acme() {
-  local dir="$PP_ACME_HOME" tmp
+  local dir="$APP_ACME_HOME" tmp
   mkdir -p "${dir}/dnsapi" "${dir}/data" "${dir}/certs"
   chmod 700 "$dir"
-  if ! echo "${PP_ACME_SHA256}  ${dir}/acme.sh" | sha256sum -c --status 2>/dev/null; then
+  if ! echo "${APP_ACME_SHA256}  ${dir}/acme.sh" | sha256sum -c --status 2>/dev/null; then
     say "Fetching acme.sh"
     tmp="$(mktemp)"
-    fetch "${PP_ACME_URL}/acme.sh" "$tmp" || die "Download failed: ${PP_ACME_URL}/acme.sh"
-    echo "${PP_ACME_SHA256}  ${tmp}" | sha256sum -c --status || { rm -f "$tmp"; die "acme.sh does not match the expected checksum, aborting."; }
+    fetch "${APP_ACME_URL}/acme.sh" "$tmp" || die "Download failed: ${APP_ACME_URL}/acme.sh"
+    echo "${APP_ACME_SHA256}  ${tmp}" | sha256sum -c --status || { rm -f "$tmp"; die "acme.sh does not match the expected checksum, aborting."; }
     install -m 700 "$tmp" "${dir}/acme.sh"
     rm -f "$tmp"
     ok "acme.sh installed in ${dir}"
   fi
-  if [ "$PP_LE_DNS" != "manual" ] && [ ! -s "${dir}/dnsapi/${PP_LE_DNS}.sh" ]; then
+  if [ "$APP_LE_DNS" != "manual" ] && [ ! -s "${dir}/dnsapi/${APP_LE_DNS}.sh" ]; then
     tmp="$(mktemp)"
-    fetch "${PP_ACME_URL}/dnsapi/${PP_LE_DNS}.sh" "$tmp" 2>/dev/null \
-      || { rm -f "$tmp"; die "Unknown DNS provider '${PP_LE_DNS}'. The names are listed at https://github.com/acmesh-official/acme.sh/wiki/dnsapi"; }
-    install -m 600 "$tmp" "${dir}/dnsapi/${PP_LE_DNS}.sh"
+    fetch "${APP_ACME_URL}/dnsapi/${APP_LE_DNS}.sh" "$tmp" 2>/dev/null \
+      || { rm -f "$tmp"; die "Unknown DNS provider '${APP_LE_DNS}'. The names are listed at https://github.com/acmesh-official/acme.sh/wiki/dnsapi"; }
+    install -m 600 "$tmp" "${dir}/dnsapi/${APP_LE_DNS}.sh"
     rm -f "$tmp"
   fi
 }
 
 # Is there a certificate for the domain that acme.sh can renew and that is valid for 30 more days?
 le_cert_ok() {
-  [ -s "$PP_LE_CERT" ] && [ -s "$PP_LE_KEY" ] || return 1
-  local conf want="$PP_LE_DNS"
-  conf="$(ls "${PP_ACME_HOME}/certs/${PP_LE_DOMAIN}"*/"${PP_LE_DOMAIN}.conf" 2>/dev/null | head -1)"
+  [ -s "$APP_LE_CERT" ] && [ -s "$APP_LE_KEY" ] || return 1
+  local conf want="$APP_LE_DNS"
+  conf="$(ls "${APP_ACME_HOME}/certs/${APP_LE_DOMAIN}"*/"${APP_LE_DOMAIN}.conf" 2>/dev/null | head -1)"
   [ -n "$conf" ] || return 1
   # Renewals use the DNS provider of the last issue: a new provider needs a new certificate
   [ "$want" = "manual" ] && want="dns"
   grep -q "^Le_Webroot='\{0,1\}${want}'\{0,1\}\$" "$conf" || return 1
-  openssl x509 -in "$PP_LE_CERT" -noout -checkend 2592000 >/dev/null 2>&1 || return 1
-  openssl x509 -in "$PP_LE_CERT" -noout -ext subjectAltName 2>/dev/null | grep -q "DNS:${PP_LE_DOMAIN}\(,\|\$\)"
+  openssl x509 -in "$APP_LE_CERT" -noout -checkend 2592000 >/dev/null 2>&1 || return 1
+  openssl x509 -in "$APP_LE_CERT" -noout -ext subjectAltName 2>/dev/null | grep -q "DNS:${APP_LE_DOMAIN}\(,\|\$\)"
 }
 
 le_check_options() {
-  [ -n "$PP_LE_DOMAIN" ] || return 0
-  printf '%s' "$PP_LE_DOMAIN" | grep -Eq '^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$' \
-    || die "Not a domain name: ${PP_LE_DOMAIN} (an IP address cannot get a Let's Encrypt certificate this way)"
-  PP_LE_DOMAIN="$(printf '%s' "$PP_LE_DOMAIN" | tr 'A-Z' 'a-z')"
-  [ -n "$PP_LE_DNS" ] || die "Which DNS provider? Add --dns <name> (e.g. dns_cf) or --dns manual."
-  case "$PP_LE_DNS" in manual) ;; dns_*) ;; *) PP_LE_DNS="dns_${PP_LE_DNS}" ;; esac
-  printf '%s' "$PP_LE_DNS" | grep -Eq '^(manual|dns_[a-z0-9_]+)$' || die "Invalid DNS provider name: ${PP_LE_DNS}"
-  [ -z "$PP_LE_EMAIL" ] || printf '%s' "$PP_LE_EMAIL" | grep -Eq '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' || die "Invalid e-mail address: ${PP_LE_EMAIL}"
-  if [ "$PP_TLS" = "no" ]; then
-    if [ "$PP_TLS_SET" = "yes" ]; then
-      [ "$PP_LE_SET" = "yes" ] && die "--letsencrypt needs HTTPS, it cannot be combined with --http."
-      die "Let's Encrypt is set up for ${PP_LE_DOMAIN} and needs HTTPS. For plain HTTP add --no-letsencrypt."
+  [ -n "$APP_LE_DOMAIN" ] || return 0
+  printf '%s' "$APP_LE_DOMAIN" | grep -Eq '^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$' \
+    || die "Not a domain name: ${APP_LE_DOMAIN} (an IP address cannot get a Let's Encrypt certificate this way)"
+  APP_LE_DOMAIN="$(printf '%s' "$APP_LE_DOMAIN" | tr 'A-Z' 'a-z')"
+  [ -n "$APP_LE_DNS" ] || die "Which DNS provider? Add --dns <name> (e.g. dns_cf) or --dns manual."
+  case "$APP_LE_DNS" in manual) ;; dns_*) ;; *) APP_LE_DNS="dns_${APP_LE_DNS}" ;; esac
+  printf '%s' "$APP_LE_DNS" | grep -Eq '^(manual|dns_[a-z0-9_]+)$' || die "Invalid DNS provider name: ${APP_LE_DNS}"
+  [ -z "$APP_LE_EMAIL" ] || printf '%s' "$APP_LE_EMAIL" | grep -Eq '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' || die "Invalid e-mail address: ${APP_LE_EMAIL}"
+  if [ "$APP_TLS" = "no" ]; then
+    if [ "$APP_TLS_SET" = "yes" ]; then
+      [ "$APP_LE_SET" = "yes" ] && die "--letsencrypt needs HTTPS, it cannot be combined with --http."
+      die "Let's Encrypt is set up for ${APP_LE_DOMAIN} and needs HTTPS. For plain HTTP add --no-letsencrypt."
     fi
-    PP_TLS="yes"
+    APP_TLS="yes"
     ok "Switching to HTTPS for the Let's Encrypt certificate"
   fi
 }
 
 ensure_le() {
-  if [ -z "$PP_LE_DOMAIN" ]; then
-    [ "$PP_LE_SET" = "off" ] && remove_le
+  if [ -z "$APP_LE_DOMAIN" ]; then
+    [ "$APP_LE_SET" = "off" ] && remove_le
     return 0
   fi
   install_acme
   # Another domain before: stop renewing it, both would write the same certificate files
   local dir old
-  for dir in "${PP_ACME_HOME}"/certs/*/; do
+  for dir in "${APP_ACME_HOME}"/certs/*/; do
     [ -d "$dir" ] || continue
     old="$(basename "$dir")"; old="${old%_ecc}"
-    if [ "$old" != "$PP_LE_DOMAIN" ]; then
+    if [ "$old" != "$APP_LE_DOMAIN" ]; then
       acme --remove -d "$old" --ecc >/dev/null 2>&1 || true
-      rm -rf "${PP_ACME_HOME}/certs/${old}" "${PP_ACME_HOME}/certs/${old}_ecc"
+      rm -rf "${APP_ACME_HOME}/certs/${old}" "${APP_ACME_HOME}/certs/${old}_ecc"
       ok "No longer renewing the certificate for ${old}"
     fi
   done
-  if [ "$PP_NEW_CERT" = "no" ] && le_cert_ok; then
-    ok "Keeping the Let's Encrypt certificate for ${PP_LE_DOMAIN} (until $(openssl x509 -in "$PP_LE_CERT" -noout -enddate | cut -d= -f2))"
+  if [ "$APP_NEW_CERT" = "no" ] && le_cert_ok; then
+    ok "Keeping the Let's Encrypt certificate for ${APP_LE_DOMAIN} (until $(openssl x509 -in "$APP_LE_CERT" -noout -enddate | cut -d= -f2))"
     ensure_renewal
     return 0
   fi
-  say "Requesting a Let's Encrypt certificate for ${PP_LE_DOMAIN} (DNS challenge)"
+  say "Requesting a Let's Encrypt certificate for ${APP_LE_DOMAIN} (DNS challenge)"
   # Extra acme.sh arguments for tests against a local test CA, e.g. "--insecure --dnssleep 1"
   # shellcheck disable=SC2206
-  local extra=(${PP_ACME_ARGS:-}) rc=0
-  if [ -n "$PP_LE_EMAIL" ]; then
-    acme --register-account --server "$PP_ACME_SERVER" -m "$PP_LE_EMAIL" "${extra[@]}" >/dev/null 2>&1 || warn "Could not register ${PP_LE_EMAIL} with Let's Encrypt, continuing without."
+  local extra=(${APP_ACME_ARGS:-${PP_ACME_ARGS:-}}) rc=0
+  if [ -n "$APP_LE_EMAIL" ]; then
+    acme --register-account --server "$APP_ACME_SERVER" -m "$APP_LE_EMAIL" "${extra[@]}" >/dev/null 2>&1 || warn "Could not register ${APP_LE_EMAIL} with Let's Encrypt, continuing without."
   fi
-  local args=(--issue --server "$PP_ACME_SERVER" -d "$PP_LE_DOMAIN" --keylength ec-256)
-  [ "$PP_NEW_CERT" = "yes" ] && args+=(--force)
+  local args=(--issue --server "$APP_ACME_SERVER" -d "$APP_LE_DOMAIN" --keylength ec-256)
+  [ "$APP_NEW_CERT" = "yes" ] && args+=(--force)
   # acme.sh talks a lot: its messages go to a log and are shown when something fails
-  local log="${PP_ACME_HOME}/last-run.log"
-  if [ "$PP_LE_DNS" = "manual" ]; then
+  local log="${APP_ACME_HOME}/last-run.log"
+  if [ "$APP_LE_DNS" = "manual" ]; then
     [ -t 0 ] || die "--dns manual waits for you to create a DNS record, run it in an interactive terminal."
     acme "${args[@]}" --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please "${extra[@]}" > "$log" 2>&1 || rc=$?
     if [ "$rc" -eq 3 ]; then
       echo
       say "Create this TXT record at your DNS provider:"
       sed -n "s/.*Domain: *'\([^']*\)'.*/      Name:  \1/p; s/.*TXT value: *'\([^']*\)'.*/      Value: \1/p" "$log"
-      echo "    Check that it is visible, e.g.: dig +short TXT _acme-challenge.${PP_LE_DOMAIN}"
+      echo "    Check that it is visible, e.g.: dig +short TXT _acme-challenge.${APP_LE_DOMAIN}"
       read -r -p "    Press Enter when the record is published ... " _
       rc=0
-      acme --renew -d "$PP_LE_DOMAIN" --ecc --yes-I-know-dns-manual-mode-enough-go-ahead-please "${extra[@]}" > "$log" 2>&1 || rc=$?
+      acme --renew -d "$APP_LE_DOMAIN" --ecc --yes-I-know-dns-manual-mode-enough-go-ahead-please "${extra[@]}" > "$log" 2>&1 || rc=$?
     fi
   else
-    acme "${args[@]}" --dns "$PP_LE_DNS" "${extra[@]}" > "$log" 2>&1 || rc=$?
+    acme "${args[@]}" --dns "$APP_LE_DNS" "${extra[@]}" > "$log" 2>&1 || rc=$?
   fi
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
     sed 's/^/    /' "$log" | grep -v -e '-----' -e '^    [A-Za-z0-9+/=]\{40,\}$' | tail -n 20 >&2
@@ -18737,29 +18851,23 @@ ensure_le() {
     fi
   fi
   # 2: nothing to do, the certificate is still fresh
-  [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ] || die "Let's Encrypt did not issue a certificate (full log: ${log}). Nothing was changed, PacketPilot keeps its current certificate."
-  mkdir -p "$PP_TLS_DIR"
-  acme --install-cert -d "$PP_LE_DOMAIN" --ecc --key-file "$PP_LE_KEY" --fullchain-file "$PP_LE_CERT" \
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ] || die "Let's Encrypt did not issue a certificate (full log: ${log}). Nothing was changed, ${APP_NAME} keeps its current certificate."
+  mkdir -p "$APP_TLS_DIR"
+  acme --install-cert -d "$APP_LE_DOMAIN" --ecc --key-file "$APP_LE_KEY" --fullchain-file "$APP_LE_CERT" \
     --reloadcmd "systemctl reload nginx" >/dev/null 2>&1 || true
-  [ -s "$PP_LE_CERT" ] && [ -s "$PP_LE_KEY" ] || die "acme.sh did not store the certificate in ${PP_TLS_DIR}."
-  chmod 600 "$PP_LE_KEY"
-  ok "Let's Encrypt certificate for ${PP_LE_DOMAIN} (until $(openssl x509 -in "$PP_LE_CERT" -noout -enddate | cut -d= -f2))"
+  [ -s "$APP_LE_CERT" ] && [ -s "$APP_LE_KEY" ] || die "acme.sh did not store the certificate in ${APP_TLS_DIR}."
+  chmod 600 "$APP_LE_KEY"
+  ok "Let's Encrypt certificate for ${APP_LE_DOMAIN} (until $(openssl x509 -in "$APP_LE_CERT" -noout -enddate | cut -d= -f2))"
   ensure_renewal
 }
 
-# A daily check renews the certificate 30 days before it expires and reloads nginx
-ensure_renewal() {
-  if [ "$PP_LE_DNS" = "manual" ]; then
-    remove_renewal
-    warn "Manual DNS: the certificate does not renew itself. Within 30 days before"
-    warn "$(openssl x509 -in "$PP_LE_CERT" -noout -enddate | cut -d= -f2) run again: sudo bash ${PP_SELF}"
-    return 0
-  fi
-  local cmd="${PP_ACME_HOME}/acme.sh --cron --home ${PP_ACME_HOME} --config-home ${PP_ACME_HOME}/data --cert-home ${PP_ACME_HOME}/certs"
+# A daily systemd timer (or cron job without systemd) that runs a command as root
+daily_job() {
+  local unit="$1" what="$2" cmd="$3"
   if [ -d /run/systemd/system ]; then
-    cat > "/etc/systemd/system/${PP_RENEW}.service" <<UNIT
+    cat > "/etc/systemd/system/${unit}.service" <<UNIT
 [Unit]
-Description=Renew the Let's Encrypt certificate of PacketPilot
+Description=${what}
 Wants=network-online.target
 After=network-online.target
 
@@ -18767,9 +18875,9 @@ After=network-online.target
 Type=oneshot
 ExecStart=${cmd}
 UNIT
-    cat > "/etc/systemd/system/${PP_RENEW}.timer" <<UNIT
+    cat > "/etc/systemd/system/${unit}.timer" <<UNIT
 [Unit]
-Description=Daily renewal check for the PacketPilot certificate
+Description=${what} (daily)
 
 [Timer]
 OnCalendar=daily
@@ -18780,34 +18888,49 @@ Persistent=true
 WantedBy=timers.target
 UNIT
     systemctl daemon-reload
-    systemctl enable --now "${PP_RENEW}.timer" >/dev/null 2>&1 || warn "Could not enable ${PP_RENEW}.timer"
-    ok "Automatic renewal: systemd timer ${PP_RENEW}.timer"
+    systemctl enable --now "${unit}.timer" >/dev/null 2>&1 || warn "Could not enable ${unit}.timer"
+    ok "${what}: systemd timer ${unit}.timer"
   else
-    printf '# PacketPilot: renew the Let'"'"'s Encrypt certificate\n%s %s * * * root %s >/dev/null 2>&1\n' \
-      "$((RANDOM % 60))" "$((RANDOM % 24))" "$cmd" > "/etc/cron.d/${PP_RENEW}"
-    ok "Automatic renewal: /etc/cron.d/${PP_RENEW}"
+    printf '# %s: %s\n%s %s * * * root %s >/dev/null 2>&1\n' "$APP_NAME" "$what" \
+      "$((RANDOM % 60))" "$((RANDOM % 24))" "$cmd" > "/etc/cron.d/${unit}"
+    ok "${what}: /etc/cron.d/${unit}"
   fi
 }
 
-remove_renewal() {
-  if [ -f "/etc/systemd/system/${PP_RENEW}.timer" ]; then
-    systemctl disable --now "${PP_RENEW}.timer" >/dev/null 2>&1 || true
-    rm -f "/etc/systemd/system/${PP_RENEW}.timer" "/etc/systemd/system/${PP_RENEW}.service"
+remove_daily_job() {
+  local unit="$1"
+  if [ -f "/etc/systemd/system/${unit}.timer" ]; then
+    systemctl disable --now "${unit}.timer" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/${unit}.timer" "/etc/systemd/system/${unit}.service"
     systemctl daemon-reload >/dev/null 2>&1 || true
   fi
-  rm -f "/etc/cron.d/${PP_RENEW}"
+  rm -f "/etc/cron.d/${unit}"
 }
+
+# A daily check renews the certificate 30 days before it expires and reloads nginx
+ensure_renewal() {
+  if [ "$APP_LE_DNS" = "manual" ]; then
+    remove_renewal
+    warn "Manual DNS: the certificate does not renew itself. Within 30 days before"
+    warn "$(openssl x509 -in "$APP_LE_CERT" -noout -enddate | cut -d= -f2) run again: sudo bash ${APP_SELF}"
+    return 0
+  fi
+  daily_job "$APP_RENEW" "Renew the Let's Encrypt certificate of ${APP_NAME}" \
+    "${APP_ACME_HOME}/acme.sh --cron --home ${APP_ACME_HOME} --config-home ${APP_ACME_HOME}/data --cert-home ${APP_ACME_HOME}/certs"
+}
+
+remove_renewal() { remove_daily_job "$APP_RENEW"; }
 
 remove_le() {
   remove_renewal
-  [ -d "$PP_ACME_HOME" ] || [ -f "$PP_LE_CERT" ] || return 0
-  rm -rf "$PP_ACME_HOME"
-  rm -f "$PP_LE_CERT" "$PP_LE_KEY"
+  [ -d "$APP_ACME_HOME" ] || [ -f "$APP_LE_CERT" ] || return 0
+  rm -rf "$APP_ACME_HOME"
+  rm -f "$APP_LE_CERT" "$APP_LE_KEY"
   ok "Let's Encrypt removed, back to the self-signed certificate"
 }
 
 # One server block per certificate: the self-signed one answers for IP addresses and
-# other names, the Let's Encrypt one for its domain. Both serve the same files.
+# other names, the Let's Encrypt one for its domain. Both serve the same app.
 server_block() {
   local name="$1" cert="$2" key="$3" listen4="$4" listen6="$5" tls=""
   if [ -n "$cert" ]; then
@@ -18815,10 +18938,10 @@ server_block() {
     ssl_certificate     ${cert};
     ssl_certificate_key ${key};
     ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_session_cache   shared:PacketPilot:1m;
+    ssl_session_cache   shared:${APP_ID}:1m;
     ssl_session_timeout 1d;
     # Plain HTTP on the HTTPS port: a small page that moves to HTTPS and takes the
-    # progress saved under the old http:// address along (it lives in the browser)
+    # data saved under the old http:// address along (it lives in the browser)
     error_page 497 =200 /migrate.html;
 "
   fi
@@ -18828,7 +18951,7 @@ ${listen4}
 ${listen6}
     server_name ${name};
 ${tls}
-    root ${PP_WWW};
+    root ${APP_WWW};
     index index.html;
     charset utf-8;
 
@@ -18837,6 +18960,11 @@ ${tls}
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'" always;
 
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
     location / {
         try_files \$uri \$uri/ /index.html;
     }
@@ -18850,254 +18978,286 @@ NGINX
 }
 
 write_site() {
-  say "Writing nginx configuration for port ${PP_PORT}"
-  local listen6="    listen [::]:${PP_PORT};" listen4="    listen ${PP_PORT};" note=" (--http)"
+  say "Writing nginx configuration for port ${APP_PORT}"
+  local listen6="    listen [::]:${APP_PORT};" listen4="    listen ${APP_PORT};" note=" (--http)"
   if [ ! -f /proc/net/if_inet6 ]; then
     listen6="    # IPv6 is not available on this system"
-    warn "No IPv6 available, PacketPilot only listens on IPv4."
+    warn "No IPv6 available, ${APP_NAME} only listens on IPv4."
   fi
-  if [ "$PP_TLS" = "yes" ]; then
+  if [ "$APP_TLS" = "yes" ]; then
     note=""
     listen4="${listen4/;/ ssl;}"
-    listen6="${listen6/:${PP_PORT};/:${PP_PORT} ssl;}"
+    listen6="${listen6/:${APP_PORT};/:${APP_PORT} ssl;}"
   fi
   {
-    echo "# PacketPilot ${PP_VERSION}, generated by packetpilot-install.sh${note}"
-    echo "# Settings: ${PP_CONF}"
-    if [ "$PP_TLS" = "yes" ]; then
-      server_block "_" "$PP_CERT" "$PP_KEY" "$listen4" "$listen6"
-      if [ -n "$PP_LE_DOMAIN" ]; then
+    echo "# ${APP_NAME} ${APP_VERSION}, generated by ${APP_ID}-install.sh${note}"
+    echo "# Settings: ${APP_CONF}"
+    if [ "$APP_TLS" = "yes" ]; then
+      server_block "_" "$APP_CERT" "$APP_KEY" "$listen4" "$listen6"
+      if [ -n "$APP_LE_DOMAIN" ]; then
         echo
-        server_block "$PP_LE_DOMAIN" "$PP_LE_CERT" "$PP_LE_KEY" "$listen4" "$listen6"
+        server_block "$APP_LE_DOMAIN" "$APP_LE_CERT" "$APP_LE_KEY" "$listen4" "$listen6"
       fi
     else
       server_block "_" "" "" "$listen4" "$listen6"
     fi
-  } > "$PP_SITE"
-  ln -sf "$PP_SITE" "$PP_LINK"
-  if [ "$PP_PORT" = "80" ] && [ -L /etc/nginx/sites-enabled/default ]; then
+  } > "$APP_SITE"
+  ln -sf "$APP_SITE" "$APP_LINK"
+  if [ "$APP_PORT" = "80" ] && [ -L /etc/nginx/sites-enabled/default ]; then
     warn "Port 80: the nginx default site is disabled (only the link in sites-enabled, the file stays)."
+    rm -f /etc/nginx/sites-enabled/default
+  fi
+  # Without IPv6 the Debian default site (listen [::]:80) stops nginx from starting at all
+  if [ ! -f /proc/net/if_inet6 ] && [ -L /etc/nginx/sites-enabled/default ] && grep -q 'listen \[::\]' /etc/nginx/sites-enabled/default; then
+    warn "No IPv6: the nginx default site, which listens on [::]:80, is disabled (only the link in sites-enabled, the file stays)."
     rm -f /etc/nginx/sites-enabled/default
   fi
   nginx -t >/dev/null 2>&1 || { nginx -t; die "nginx configuration is invalid, see above."; }
   systemctl enable --now nginx >/dev/null 2>&1 || true
+  local old_workers; old_workers="$(nginx_workers)"
   systemctl reload nginx
+  # The reload only signals nginx: wait until the old workers are gone, so the new
+  # settings (HTTP or HTTPS, port, certificate) are what answers when this script ends
+  local i w left
+  for i in $(seq 1 50); do
+    left=""
+    for w in $old_workers; do [ -d "/proc/$w" ] && left=1; done
+    [ -z "$left" ] && break
+    sleep 0.2
+  done
   ok "nginx reloaded"
 }
 
-# The address learners should use. The web app offers to move progress there when it
-# is opened under another address (progress is stored per address in the browser).
+# The worker processes of the running nginx (nothing when it does not run)
+nginx_workers() {
+  local master; master="$(cat /run/nginx.pid 2>/dev/null || true)"
+  [ -n "$master" ] && [ -d "/proc/$master" ] || return 0
+  if command -v pgrep >/dev/null 2>&1; then pgrep -P "$master" || true
+  else cat "/proc/$master/task/$master/children" 2>/dev/null || true; fi
+}
+
+# The address users should use. The web app offers to move their data there when it
+# is opened under another address (browser data is stored per address).
 main_url() {
   local scheme="http" port=""
-  [ "$PP_TLS" = "yes" ] && scheme="https"
-  { [ "$scheme" = "https" ] && [ "$PP_PORT" = "443" ]; } || { [ "$scheme" = "http" ] && [ "$PP_PORT" = "80" ]; } || port=":${PP_PORT}"
-  [ -n "$PP_LE_DOMAIN" ] && echo "${scheme}://${PP_LE_DOMAIN}${port}/"
+  [ "$APP_TLS" = "yes" ] && scheme="https"
+  { [ "$scheme" = "https" ] && [ "$APP_PORT" = "443" ]; } || { [ "$scheme" = "http" ] && [ "$APP_PORT" = "80" ]; } || port=":${APP_PORT}"
+  [ -n "$APP_LE_DOMAIN" ] && echo "${scheme}://${APP_LE_DOMAIN}${port}/"
   return 0
+}
+
+# The public address the web app is told about (site.json), empty for none
+canonical_url() {
+  local url
+  url="$(main_url)"
+  # --no-move-card: no main address, so no browser is ever told to move (share links
+  # then use whatever address the user opened)
+  [ "$APP_MOVE_CARD" = "no" ] && url=""
+  # A new home elsewhere (--moved-to) is an explicit wish: it always shows the card
+  [ -n "$APP_MOVED_TO" ] && url="$APP_MOVED_TO"
+  printf '%s' "${url%/}"
 }
 
 write_site_json() {
   local url
-  url="$(main_url)"
-  # --no-move-card: no main address, so no browser is ever told to move (share links
-  # then use whatever address the learner opened)
-  [ "$PP_MOVE_CARD" = "no" ] && url=""
-  # A new home elsewhere (--moved-to) is an explicit wish: it always shows the card
-  [ -n "$PP_MOVED_TO" ] && url="$PP_MOVED_TO"
+  url="$(canonical_url)"
   if [ -n "$url" ]; then
-    printf '{ "version": "%s", "canonical": "%s" }\n' "$PP_VERSION" "${url%/}" > "${PP_WWW}/site.json"
+    printf '{ "version": "%s", "canonical": "%s" }\n' "$APP_VERSION" "$url" > "${APP_WWW}/site.json"
   else
-    printf '{ "version": "%s" }\n' "$PP_VERSION" > "${PP_WWW}/site.json"
+    printf '{ "version": "%s" }\n' "$APP_VERSION" > "${APP_WWW}/site.json"
   fi
 }
 
 open_firewall() {
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-    ufw allow "${PP_PORT}/tcp" >/dev/null && ok "ufw: port ${PP_PORT}/tcp opened"
+    ufw allow "${APP_PORT}/tcp" >/dev/null && ok "ufw: port ${APP_PORT}/tcp opened"
   fi
 }
 
 # Settings of the last install, so updates and reinstalls change nothing by surprise.
 # Options on the command line win.
 save_settings() {
-  mkdir -p "$PP_ROOT"
-  cat > "$PP_CONF" <<CONF
-# PacketPilot settings, written by packetpilot-install.sh and kept across updates.
+  mkdir -p "$APP_ROOT"
+  cat > "$APP_CONF" <<CONF
+# ${APP_NAME} settings, written by ${APP_ID}-install.sh and kept across updates.
 # Change them with the options of the script (see --help), not here.
-PORT=${PP_PORT}
-TLS=${PP_TLS}
-LE_DOMAIN=${PP_LE_DOMAIN}
-LE_DNS=${PP_LE_DNS}
-LE_EMAIL=${PP_LE_EMAIL}
-MOVED_TO=${PP_MOVED_TO}
-MOVE_CARD=${PP_MOVE_CARD}
+PORT=${APP_PORT}
+TLS=${APP_TLS}
+LE_DOMAIN=${APP_LE_DOMAIN}
+LE_DNS=${APP_LE_DNS}
+LE_EMAIL=${APP_LE_EMAIL}
+MOVED_TO=${APP_MOVED_TO}
+MOVE_CARD=${APP_MOVE_CARD}
 CONF
-  chmod 644 "$PP_CONF"
+  chmod 644 "$APP_CONF"
 }
 
 keep_settings() {
   local k v c_port="" c_tls="" c_domain="" c_dns="" c_email="" c_moved="" c_card=""
-  if [ -f "$PP_CONF" ]; then
+  if [ -f "$APP_CONF" ]; then
     while IFS='=' read -r k v; do
       case "$k" in
         PORT) c_port="$v" ;; TLS) c_tls="$v" ;; LE_DOMAIN) c_domain="$v" ;; LE_DNS) c_dns="$v" ;; LE_EMAIL) c_email="$v" ;; MOVED_TO) c_moved="$v" ;; MOVE_CARD) c_card="$v" ;;
       esac
-    done < "$PP_CONF"
-  elif [ -f "$PP_SITE" ]; then
-    # Installed by a version before 2.0.0: read the nginx site
-    c_port="$(awk '/^[[:space:]]*listen[[:space:]]+[0-9]+[[:space:];]/ { gsub(";", "", $2); print $2; exit }' "$PP_SITE")"
-    # Sites written by versions before 1.2.0 never had TLS: those switch to HTTPS now
+    done < "$APP_CONF"
+  elif [ -f "$APP_SITE" ]; then
+    # Installed by a very old version without a settings file: read the nginx site
+    c_port="$(awk '/^[[:space:]]*listen[[:space:]]+[0-9]+[[:space:];]/ { gsub(";", "", $2); print $2; exit }' "$APP_SITE")"
     c_tls="yes"
-    grep -q "^# PacketPilot.*--http" "$PP_SITE" && c_tls="no"
+    grep -q "^# ${APP_NAME}.*--http" "$APP_SITE" && c_tls="no"
   fi
-  if [ "$PP_PORT_SET" = "no" ] && [ -n "$c_port" ] && [ "$c_port" != "$PP_PORT" ]; then
-    case "$c_port" in *[!0-9]*) ;; *) PP_PORT="$c_port"; ok "Keeping previous port ${PP_PORT} (change with --port)" ;; esac
+  if [ "$APP_PORT_SET" = "no" ] && [ -n "$c_port" ] && [ "$c_port" != "$APP_PORT" ]; then
+    case "$c_port" in *[!0-9]*) ;; *) APP_PORT="$c_port"; ok "Keeping previous port ${APP_PORT} (change with --port)" ;; esac
   fi
-  if [ "$PP_TLS_SET" = "no" ] && [ "$c_tls" = "no" ]; then
-    PP_TLS="no"
+  if [ "$APP_TLS_SET" = "no" ] && [ "$c_tls" = "no" ]; then
+    APP_TLS="no"
     ok "Keeping plain HTTP (switch with --https)"
   fi
-  if [ "$PP_MOVE_CARD_SET" = "no" ] && [ "$c_card" = "no" ]; then PP_MOVE_CARD="no"; ok "Keeping: no card about another address (show it again with --move-card)"; fi
-  if [ "$PP_MOVED_SET" = "no" ] && [ -n "$c_moved" ]; then PP_MOVED_TO="$c_moved"; ok "Keeping the new address ${PP_MOVED_TO} (remove with --not-moved)"; fi
-  case "$PP_LE_SET" in
+  if [ "$APP_MOVE_CARD_SET" = "no" ] && [ "$c_card" = "no" ]; then APP_MOVE_CARD="no"; ok "Keeping: no card about another address (show it again with --move-card)"; fi
+  if [ "$APP_MOVED_SET" = "no" ] && [ -n "$c_moved" ]; then APP_MOVED_TO="$c_moved"; ok "Keeping the new address ${APP_MOVED_TO} (remove with --not-moved)"; fi
+  case "$APP_LE_SET" in
     no)
       if [ -n "$c_domain" ]; then
-        PP_LE_DOMAIN="$c_domain"; PP_LE_DNS="$c_dns"; PP_LE_EMAIL="$c_email"
-        ok "Keeping Let's Encrypt for ${PP_LE_DOMAIN} (remove with --no-letsencrypt)"
+        APP_LE_DOMAIN="$c_domain"; APP_LE_DNS="$c_dns"; APP_LE_EMAIL="$c_email"
+        ok "Keeping Let's Encrypt for ${APP_LE_DOMAIN} (remove with --no-letsencrypt)"
       fi ;;
     yes)
       # Same domain again: the DNS provider and e-mail may be left out
-      if [ "$PP_LE_DOMAIN" = "$c_domain" ]; then
-        [ -n "$PP_LE_DNS" ] || PP_LE_DNS="$c_dns"
-        [ -n "$PP_LE_EMAIL" ] || PP_LE_EMAIL="$c_email"
+      if [ "$APP_LE_DOMAIN" = "$c_domain" ]; then
+        [ -n "$APP_LE_DNS" ] || APP_LE_DNS="$c_dns"
+        [ -n "$APP_LE_EMAIL" ] || APP_LE_EMAIL="$c_email"
       fi ;;
   esac
   return 0
 }
 
+
 do_install() {
   check_system
   keep_settings
   le_check_options
-  if port_in_use && [ ! -f "$PP_SITE" ]; then
-    warn "Port ${PP_PORT} is already in use. If you run into problems, choose another one with --port."
+  if port_in_use && [ ! -f "$APP_SITE" ]; then
+    warn "Port ${APP_PORT} is already in use. If you run into problems, choose another one with --port."
   fi
-  install_nginx
+  install_packages
   ensure_cert
   ensure_le
-  say "Writing web files to ${PP_WWW}"
+  say "Writing web files to ${APP_WWW}"
   local tmp
   tmp="$(mktemp -d)"
   write_files "$tmp"
-  mkdir -p "$PP_ROOT"
-  rm -rf "${PP_WWW}.new"
-  mv "$tmp" "${PP_WWW}.new"
-  rm -rf "$PP_WWW"
-  mv "${PP_WWW}.new" "$PP_WWW"
-  echo "$PP_VERSION" > "${PP_ROOT}/VERSION"
+  mkdir -p "$APP_ROOT"
+  rm -rf "${APP_WWW}.new"
+  mv "$tmp" "${APP_WWW}.new"
+  rm -rf "$APP_WWW"
+  mv "${APP_WWW}.new" "$APP_WWW"
+  echo "$APP_VERSION" > "${APP_ROOT}/VERSION"
   write_site_json
-  # A copy of this script for later runs (renewal by hand, changing options)
-  if [ -f "$0" ] && [ "$(readlink -f "$0")" != "$PP_SELF" ]; then install -m 755 "$0" "$PP_SELF"; fi
-  chown -R root:root "$PP_ROOT"
-  find "$PP_WWW" -type d -exec chmod 755 {} +
-  find "$PP_WWW" -type f -exec chmod 644 {} +
-  ok "$(find "$PP_WWW" -type f | wc -l) files installed"
+  # A copy of this script for later runs (renewal by hand, changing options, backups)
+  if [ -f "$0" ] && [ "$(readlink -f "$0")" != "$APP_SELF" ]; then install -m 755 "$0" "$APP_SELF"; fi
+  chown -R root:root "$APP_ROOT"
+  find "$APP_WWW" -type d -exec chmod 755 {} +
+  find "$APP_WWW" -type f -exec chmod 644 {} +
+  ok "$(find "$APP_WWW" -type f | wc -l) files installed"
   write_site
   save_settings
   open_firewall
+  type app_after_install >/dev/null 2>&1 && app_after_install
   local ips main
   ips="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -3 || true)"
   main="$(main_url)"
   echo
   local scheme="http"
-  [ "$PP_TLS" = "yes" ] && scheme="https"
-  say "PacketPilot ${PP_VERSION} is ready:"
+  [ "$APP_TLS" = "yes" ] && scheme="https"
+  say "${APP_NAME} ${APP_VERSION} is ready:"
   if [ -n "$main" ]; then
     echo "      ${main}"
     echo "    Also reachable by IP address (self-signed certificate there):"
   fi
   if [ -n "$ips" ]; then
-    for ip in $ips; do echo "      ${scheme}://${ip}:${PP_PORT}/"; done
+    for ip in $ips; do echo "      ${scheme}://${ip}:${APP_PORT}/"; done
   else
-    echo "      ${scheme}://<IP-of-this-server>:${PP_PORT}/"
+    echo "      ${scheme}://<IP-of-this-server>:${APP_PORT}/"
   fi
   echo
-  if [ "$PP_TLS" = "yes" ]; then
+  if [ "$APP_TLS" = "yes" ]; then
     if [ -n "$main" ]; then
-      echo "    ${PP_LE_DOMAIN} has a certificate from Let's Encrypt, browsers trust it without a"
+      echo "    ${APP_LE_DOMAIN} has a certificate from Let's Encrypt, browsers trust it without a"
       echo "    warning. The domain must point to this server in DNS. Opened by IP address, the"
-      echo "    app offers to move the progress saved there to ${PP_LE_DOMAIN}."
+      echo "    app offers to move the data saved there to ${APP_LE_DOMAIN}."
     else
       echo "    The certificate is self-signed, so the browser warns once. Compare the fingerprint"
       echo "    before you accept it:"
-      echo "      $(openssl x509 -in "$PP_CERT" -noout -fingerprint -sha256 | cut -d= -f2)"
-      echo "    Certificate: ${PP_CERT}"
+      echo "      $(openssl x509 -in "$APP_CERT" -noout -fingerprint -sha256 | cut -d= -f2)"
+      echo "    Certificate: ${APP_CERT}"
       echo "    A trusted certificate for a domain: --letsencrypt <domain> --dns <provider> (see --help)"
     fi
     echo
   fi
   echo "    Progress and own networks are stored in each browser and survive updates."
-  [ "$PP_TLS" = "yes" ] && echo "    Opened with http://, the old address hands its progress over to https:// once."
-  echo "    Update: sudo bash ${PP_SELF} --update. Remove: --uninstall"
+  [ "$APP_TLS" = "yes" ] && echo "    Opened with http://, the old address hands its data over to https:// once."
+  echo "    Update: sudo bash ${APP_SELF} --update. Remove: --uninstall"
 }
 
 do_update() {
   [ "$(id -u)" -eq 0 ] || die "Please run with sudo or as root."
   local tmp new
   tmp="$(mktemp)"
-  say "Downloading the latest version from github.com/${PP_REPO}"
+  say "Downloading the latest version from github.com/${APP_REPO}"
   command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || die "Neither curl nor wget found. Install with: apt install curl"
   fetch() { if command -v curl >/dev/null 2>&1; then curl -fsSL -H "$2" "$1" -o "$3"; else wget -q --header="$2" -O "$3" "$1"; fi; }
   # raw.githubusercontent.com caches main/ for minutes: ask for the newest commit and load
   # the script of exactly that commit, which is never stale
-  local sha url="$PP_SCRIPT_URL"
-  if fetch "https://api.github.com/repos/${PP_REPO}/commits/main" "Accept: application/vnd.github.sha" "$tmp" 2>/dev/null; then
+  local sha url="$APP_SCRIPT_URL"
+  if fetch "https://api.github.com/repos/${APP_REPO}/commits/main" "Accept: application/vnd.github.sha" "$tmp" 2>/dev/null; then
     sha="$(head -c 40 "$tmp")"
-    case "$sha" in *[!0-9a-f]*|"") ;; *) url="https://raw.githubusercontent.com/${PP_REPO}/${sha}/packetpilot-install.sh" ;; esac
+    case "$sha" in *[!0-9a-f]*|"") ;; *) url="https://raw.githubusercontent.com/${APP_REPO}/${sha}/${APP_ID}-install.sh" ;; esac
   fi
   fetch "$url" "Cache-Control: no-cache" "$tmp" || die "Download failed: ${url}"
   bash -n "$tmp" || die "The downloaded script is broken, aborting."
-  new="$(sed -n 's/^PP_VERSION="\(.*\)"$/\1/p' "$tmp" | head -1)"
-  [ -n "$new" ] || die "The downloaded script does not look like PacketPilot."
-  say "Installed: $(cat "${PP_ROOT}/VERSION" 2>/dev/null || echo none), available: ${new}"
+  grep -q "^APP_ID=\"${APP_ID}\"\$" "$tmp" || die "The downloaded script is not the installer of ${APP_NAME}, aborting."
+  new="$(sed -n 's/^APP_VERSION="\(.*\)"$/\1/p' "$tmp" | head -1)"
+  [ -n "$new" ] || die "The downloaded script has no version, aborting."
+  say "Installed: $(cat "${APP_ROOT}/VERSION" 2>/dev/null || echo none), available: ${new}"
   # Never go back to an older version than the one running right now
-  if [ "$new" != "$PP_VERSION" ] && [ "$(printf '%s\n%s\n' "$new" "$PP_VERSION" | sort -V | tail -1)" = "$PP_VERSION" ]; then
-    warn "GitHub offers ${new}, this script is ${PP_VERSION}: installing ${PP_VERSION} instead"
+  if [ "$new" != "$APP_VERSION" ] && [ "$(printf '%s\n%s\n' "$new" "$APP_VERSION" | sort -V | tail -1)" = "$APP_VERSION" ]; then
+    warn "GitHub offers ${new}, this script is ${APP_VERSION}: installing ${APP_VERSION} instead"
     cp "$0" "$tmp" 2>/dev/null || die "Cannot reuse this script, download it again"
   fi
   local args=()
-  [ "$PP_PORT_SET" = "yes" ] && args+=(--port "$PP_PORT")
-  [ "$PP_FORCE" = "yes" ] && args+=(--force)
-  [ "$PP_TLS_SET" = "yes" ] && { [ "$PP_TLS" = "yes" ] && args+=(--https) || args+=(--http); }
-  [ "$PP_NEW_CERT" = "yes" ] && args+=(--new-cert)
-  [ "$PP_LE_SET" = "yes" ] && args+=(--letsencrypt "$PP_LE_DOMAIN")
-  [ "$PP_LE_SET" = "off" ] && args+=(--no-letsencrypt)
-  [ -n "$PP_LE_DNS" ] && args+=(--dns "$PP_LE_DNS")
-  [ -n "$PP_LE_EMAIL" ] && args+=(--email "$PP_LE_EMAIL")
+  [ "$APP_PORT_SET" = "yes" ] && args+=(--port "$APP_PORT")
+  [ "$APP_FORCE" = "yes" ] && args+=(--force)
+  [ "$APP_TLS_SET" = "yes" ] && { [ "$APP_TLS" = "yes" ] && args+=(--https) || args+=(--http); }
+  [ "$APP_NEW_CERT" = "yes" ] && args+=(--new-cert)
+  [ "$APP_LE_SET" = "yes" ] && args+=(--letsencrypt "$APP_LE_DOMAIN")
+  [ "$APP_LE_SET" = "off" ] && args+=(--no-letsencrypt)
+  [ -n "$APP_LE_DNS" ] && args+=(--dns "$APP_LE_DNS")
+  [ -n "$APP_LE_EMAIL" ] && args+=(--email "$APP_LE_EMAIL")
   # Every option given together with --update goes to the new script as well
-  [ "$PP_MOVE_CARD_SET" = "yes" ] && { [ "$PP_MOVE_CARD" = "no" ] && args+=(--no-move-card) || args+=(--move-card); }
-  [ "$PP_MOVED_SET" = "yes" ] && args+=(--moved-to "$PP_MOVED_TO")
-  [ "$PP_MOVED_SET" = "off" ] && args+=(--not-moved)
+  [ "$APP_MOVE_CARD_SET" = "yes" ] && { [ "$APP_MOVE_CARD" = "no" ] && args+=(--no-move-card) || args+=(--move-card); }
+  [ "$APP_MOVED_SET" = "yes" ] && args+=(--moved-to "$APP_MOVED_TO")
+  [ "$APP_MOVED_SET" = "off" ] && args+=(--not-moved)
   exec bash "$tmp" "${args[@]}"
 }
 
 do_uninstall() {
   [ "$(id -u)" -eq 0 ] || die "Please run with sudo or as root."
-  say "Removing PacketPilot"
+  say "Removing ${APP_NAME}"
   remove_renewal
-  rm -f "$PP_LINK" "$PP_SITE"
-  rm -rf "$PP_ROOT"
+  rm -f "$APP_LINK" "$APP_SITE"
+  rm -rf "$APP_ROOT"
   if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then systemctl reload nginx || true; fi
-  ok "PacketPilot removed. nginx itself stays installed (remove with: apt purge nginx)."
+  ok "${APP_NAME} removed. nginx itself stays installed (remove with: apt purge nginx)."
 }
 
 do_extract() {
-  [ -n "$PP_EXTRACT_DIR" ] || die "Specify a target folder: --extract ./web"
-  mkdir -p "$PP_EXTRACT_DIR"
-  write_files "$PP_EXTRACT_DIR"
-  ok "Web files extracted to ${PP_EXTRACT_DIR}. Test e.g. with: python3 -m http.server -d ${PP_EXTRACT_DIR} 8080"
+  [ -n "$APP_EXTRACT_DIR" ] || die "Specify a target folder: --extract ./web"
+  mkdir -p "$APP_EXTRACT_DIR"
+  write_files "$APP_EXTRACT_DIR"
+  ok "Web files extracted to ${APP_EXTRACT_DIR}. Test e.g. with: python3 -m http.server -d ${APP_EXTRACT_DIR} 8080"
 }
 
-case "$PP_ACTION" in
+case "$APP_ACTION" in
   install)   do_install ;;
   update)    do_update ;;
   uninstall) do_uninstall ;;

@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex">
 <title>PacketPilot</title>
 <style>
-  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #F2F5F9; color: #17253A; }
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #F3F6FA; color: #17253A; }
   @media (prefers-color-scheme: dark) { body { background: #0E1624; color: #E4EBF5; } a { color: #8FB8FF; } }
   main { max-width: 34rem; padding: 24px; }
 </style>
@@ -14,12 +14,12 @@
 <body>
 <main>
   <h1>PacketPilot moved to HTTPS</h1>
-  <p id="msg">Taking you to the secure address and bringing your progress along …</p>
+  <p id="msg">Taking you to the secure address and bringing your data along …</p>
   <noscript><p>Please open the address with <b>https://</b> in front.</p></noscript>
 </main>
 <script>
 // nginx shows this page for plain HTTP requests to the HTTPS port (error 497).
-// It still runs on the old http:// address, so it can read the progress that was
+// It still runs on the old http:// address, so it can read the data that was
 // saved there and hand it to the https:// address of the same server once.
 (async () => {
   const KEY = 'packetpilot.v1', MOVED = 'packetpilot.moved';

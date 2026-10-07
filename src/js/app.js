@@ -1,5 +1,5 @@
 // PacketPilot: views and navigation
-import { h, toast, download, pickFile, resizer } from './ui.js';
+import { h, toast, download, pickFile, resizer } from './core/ui.js';
 import { I } from './icons.js';
 import { store } from './store.js';
 import { MODULES, UPCOMING, findLesson, nextLesson } from './course/index.js';
@@ -10,8 +10,9 @@ import { preview, heroSim } from './minimap.js';
 import { renderFrameBuilder } from './framebuilder.js';
 import { clone } from './net.js';
 import { viewChallenges, viewSubnet } from './practice.js';
-import { shareLink, decodeTopo, unpack } from './share.js';
-import { loadSite, moveCard, siteBase, siteInfo } from './site.js';
+import { shareLink, decodeTopo } from './share.js';
+import { siteBase, siteInfo } from './core/site.js';
+import { startApp, markNav as markRail, routeParts } from './core/shell.js';
 import { CHALLENGES } from './challenges.js';
 import { initGlossary, glossify } from './glossary.js';
 
@@ -19,21 +20,6 @@ const main = document.querySelector('.main');
 let cleanup = [];
 initGlossary(main);
 function clear() { cleanup.forEach(f => { try { f(); } catch { /* ignore */ } }); cleanup = []; main.innerHTML = ''; main.scrollTop = 0; }
-
-// ---------------------------------------------------------------- Theme
-function applyTheme() {
-  const t = store.prefs.theme;
-  if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
-  const btn = document.querySelector('#theme');
-  const dark = t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches);
-  btn.innerHTML = `<span>${dark ? I.sun : I.moon}</span>${dark ? 'Light' : 'Dark'}`;
-}
-document.querySelector('#theme').addEventListener('click', () => {
-  const dark = document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
-  store.setPref('theme', dark ? 'light' : 'dark');
-  applyTheme();
-});
-applyTheme();
 
 // ---------------------------------------------------------------- Home page and course
 function lessonProgress(l) { return { done: store.lessonDone(l.id), steps: store.lessonSteps(l.id), total: l.steps.length }; }
@@ -323,22 +309,6 @@ async function openShared(code) {
   }
 }
 
-// Progress handed over from an older address of this server (see migrate.html and site.js).
-// Merging never overwrites anything done here, so a second transfer is harmless.
-async function viewMigrate(code) {
-  const q = new URLSearchParams(location.hash.split('?')[1] || '');
-  const from = q.get('from') || '';
-  const to = /^#\/[\w\-/.]*$/.test(q.get('to') || '') ? q.get('to') : '#/';
-  let ok = false;
-  try { store.importAll(await unpack(code), { merge: true }); ok = true; }
-  catch { toast('The progress could not be transferred. Export it as a file at the old address and import it here.'); }
-  // The bridge on plain HTTP waits for this confirmation, so it hands the progress over only once
-  if (ok && from === `http://${location.host}`) { location.replace(`${from}/#/moved/${encodeURIComponent(to)}`); return; }
-  history.replaceState(null, '', to);
-  route();
-  if (ok) toast('Your progress from the old address is here now.');
-}
-
 // ---------------------------------------------------------------- Example networks
 function viewNets() {
   const page = h('div', { class: 'page' }, h('h1', {}, 'Example networks'),
@@ -407,12 +377,11 @@ function viewPrint(lessonId) {
 // Older German links (#/lektion, #/labor, #/netze, #/baukasten) keep working
 const ALIAS = { lektion: 'lesson', labor: 'lab', netze: 'networks', baukasten: 'builder' };
 function markNav(nav) {
-  document.querySelectorAll('.rail a').forEach(a => a.classList.toggle('active',
-    (a.dataset.nav === 'course' && (nav === '' || nav === 'lesson' || nav === 'print')) || a.dataset.nav === nav));
+  markRail(n => (n === 'course' && (nav === '' || nav === 'lesson' || nav === 'print')) || n === nav);
 }
 function route() {
   clear();
-  const parts = location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean);
+  const parts = routeParts();
   const nav = ALIAS[parts[0]] || parts[0] || '';
   markNav(nav === 'share' ? 'lab' : nav);
   if (nav === 'lesson') viewLesson(parts[1], parts[2]);
@@ -423,17 +392,9 @@ function route() {
   else if (nav === 'troubleshoot') viewChallenges(main, cleanup, parts[1]);
   else if (nav === 'subnetting') viewSubnet(main);
   else if (nav === 'print') viewPrint(parts[1]);
-  else if (nav === 'migrate') { viewMigrate(parts[1] || ''); return; }
   else viewHome();
   glossify(main);
   document.title = 'PacketPilot';
 }
-window.addEventListener('hashchange', route);
-// Arriving from the plain HTTP address after the progress was handed over
-if (/[?&]moved=1/.test(location.hash)) {
-  history.replaceState(null, '', location.hash.replace(/[?&]moved=1/, ''));
-  setTimeout(() => toast('PacketPilot now runs over HTTPS. Your progress came along.'), 300);
-}
-await loadSite();
-route();
-moveCard();
+// Theme, site.json, moving data between addresses and the first route: src/js/core/shell.js
+startApp({ store, route });

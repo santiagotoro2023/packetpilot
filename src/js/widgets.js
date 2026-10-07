@@ -1,5 +1,5 @@
 // Interactive exercises for the lessons
-import { h, esc } from './ui.js';
+import { h, esc } from './core/ui.js';
 import { I } from './icons.js';
 import { inNet, parseCidr, isGroupMac, isLocalMac } from './net.js';
 

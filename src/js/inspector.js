@@ -1,7 +1,7 @@
 // Packet inspector: layers, fields, byte bar
 import { dissect, summary } from './packets.js';
 import { frameLen, frameWireLen } from './net.js';
-import { h, esc } from './ui.js';
+import { h, esc } from './core/ui.js';
 
 export function renderInspector(el, entry, { onTrack } = {}) {
   el.innerHTML = '';

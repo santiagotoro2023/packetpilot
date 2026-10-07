@@ -1,47 +1,54 @@
 #!/usr/bin/env bash
-# Builds the standalone installer script packetpilot-install.sh from src/
+# Builds packetpilot-install.sh, the one-file installer, from src/
+# after writing every blueprint file from project.conf and VERSION (blueprint 1.0.0).
+#   bash build.sh            render, build, check
 set -euo pipefail
 cd "$(dirname "$0")"
+
+node .blueprint/tools/blueprint.mjs render
 
 VERSION="$(cat VERSION)"
 OUT="packetpilot-install.sh"
 DELIM="__PACKETPILOT_FILE_END__"
 
-if grep -rq "$DELIM" src; then echo "The delimiter $DELIM occurs in src/, please change it." >&2; exit 1; fi
-
-{
-  sed "s/@@VERSION@@/${VERSION}/" installer/head.sh
-  echo 'write_files() {'
+# One heredoc per file; binary files (fonts, images) travel as base64
+pack_tree() {
+  local fn="$1" root="$2"; shift 2
+  echo "${fn}() {"
   echo '  local W="$1"'
-  find src -type f ! -name package.json | sort | while read -r f; do
-    rel="${f#src/}"
+  (cd "$root" && find "$@" -type f ! -name '.DS_Store' | LC_ALL=C sort) | while read -r rel; do
+    local f="${root}/${rel}" dir
+    rel="${rel#./}"
     dir="$(dirname "$rel")"
     [ "$dir" != "." ] && echo "  mkdir -p \"\$W/${dir}\""
-    if grep -Iq . "$f"; then
+    if grep -Iq . "$f" 2>/dev/null || [ ! -s "$f" ]; then
+      grep -q "$DELIM" "$f" && { echo "The delimiter $DELIM occurs in $f, please change it." >&2; exit 1; }
       echo "  cat > \"\$W/${rel}\" <<'${DELIM}'"
       cat "$f"
-      # Make sure the file ends with a newline
       [ -n "$(tail -c1 "$f")" ] && echo
     else
-      # Binary files (fonts) travel as base64
       echo "  base64 -d > \"\$W/${rel}\" <<'${DELIM}'"
       base64 -w 76 "$f"
     fi
     echo "${DELIM}"
   done
   echo '}'
-  cat installer/tail.sh
+}
+
+# The app's additions to the installer, with its version. The token is written in two parts,
+# so that rendering this file does not replace it; no other placeholder may be left over.
+APP_HOOKS="$(sed "s/@@VER""SION@@/${VERSION}/g" installer/app.sh)"
+if printf '%s' "$APP_HOOKS" | grep -E '@@[A-Z_]+@@' >/dev/null; then echo "installer/app.sh: unknown placeholder $(printf '%s' "$APP_HOOKS" | grep -oE '@@[A-Z_]+@@' | head -1)" >&2; exit 1; fi
+
+{
+  cat installer/core/head.sh
+  echo
+  echo '# ------------------------------------------------------------------ App specific (installer/app.sh)'
+  printf '%s\n' "$APP_HOOKS"
+  echo
+  pack_tree write_files src . ! -name package.json
+  cat installer/core/tail.sh
 } > "$OUT"
 chmod +x "$OUT"
 bash -n "$OUT"
-
-# The container deployment files name the same version as the installer
-sed -i -E "s/^version: .*/version: ${VERSION}/; s/^appVersion: .*/appVersion: \"${VERSION}\"/" deploy/helm/packetpilot/Chart.yaml
-sed -i -E "s#(image: ghcr.io/santiagotoro2023/packetpilot:)[0-9][^ ]*#\1${VERSION}#" deploy/kubernetes/packetpilot.yaml
-# The design system starter kit (docs/design/kit) carries exact copies of the shared files
-KIT=docs/design/kit
-cp src/css/base.css "$KIT/css/base.css"
-cp src/js/ui.js "$KIT/js/ui.js"
-cp src/fonts/* "$KIT/fonts/"
-sed -n '1,/^};$/p' src/js/icons.js > "$KIT/js/icons.js"
 echo "Built: $OUT ($(du -h "$OUT" | cut -f1), version ${VERSION})"

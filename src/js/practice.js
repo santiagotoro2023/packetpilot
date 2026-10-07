@@ -1,5 +1,5 @@
 // Practice: troubleshooting challenges and the subnetting trainer
-import { h, resizer } from './ui.js';
+import { h, resizer } from './core/ui.js';
 import { I } from './icons.js';
 import { store } from './store.js';
 import { Lab } from './lab.js';

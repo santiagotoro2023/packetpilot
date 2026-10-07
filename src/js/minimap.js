@@ -1,7 +1,7 @@
 // Static preview of a topology and the live mini simulation on the home page
 import { Sim, TIMING } from './engine.js';
 import { layerKinds, shortLabel } from './packets.js';
-import { svgEl } from './ui.js';
+import { svgEl } from './core/ui.js';
 import { DEV_ICON } from './icons.js';
 
 function frame(topo, pad = 70) {

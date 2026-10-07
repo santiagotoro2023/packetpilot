@@ -1,9 +1,9 @@
 apiVersion: v2
 name: packetpilot
-description: PacketPilot, a network course with a packet-level lab simulator. Stateless static web app (progress is stored in the learners' browsers).
+description: "PacketPilot: A network course with a packet-level lab simulator: build networks, send packets in slow motion and take every frame apart."
 type: application
-version: 2.9.1
-appVersion: "2.9.1"
+version: 3.0.0
+appVersion: "3.0.0"
 home: https://github.com/santiagotoro2023/packetpilot
 sources:
   - https://github.com/santiagotoro2023/packetpilot

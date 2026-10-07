@@ -5,7 +5,7 @@
 #
 # Before you use the Ingress at the end: set your host name (two places) and the
 # ingressClassName of your cluster. PACKETPILOT_CANONICAL should be the same address.
-# The app is stateless (progress lives in the learners' browsers): no volume needed.
+# The app is stateless (data lives in the users' browsers): no volume needed.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -46,7 +46,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: packetpilot
-          image: ghcr.io/santiagotoro2023/packetpilot:2.9.1
+          image: ghcr.io/santiagotoro2023/packetpilot:3.0.0
           imagePullPolicy: IfNotPresent
           env:
             - name: PACKETPILOT_CANONICAL

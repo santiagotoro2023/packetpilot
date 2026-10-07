@@ -15,7 +15,7 @@ services:
     environment:
       # Public address, if it has one (share links point there): https://packetpilot.example.com
       PACKETPILOT_CANONICAL: ""
-    # Stateless and locked down: progress lives in the browsers of the learners
+    # Stateless and locked down: data lives in the browsers of the users
     read_only: true
     tmpfs:
       - /tmp

@@ -13,9 +13,9 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# The public address learners use, e.g. https://packetpilot.example.com. Share links
+# The public address users use, e.g. https://packetpilot.example.com. Share links
 # point there, and a browser that opens PacketPilot under another address is offered
-# to take its progress along. Empty: taken from the first Ingress host (https if TLS).
+# to take its data along. Empty: taken from the first Ingress host (https if TLS).
 canonicalUrl: ""
 
 podAnnotations: {}

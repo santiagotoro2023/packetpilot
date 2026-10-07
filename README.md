@@ -4,6 +4,7 @@ Understand networks by watching every packet.
 
 PacketPilot is a small learning web app for networking. It simulates hosts, servers, switches, routers and VXLAN VTEPs entirely in the browser. You build networks by drag and drop, send packets in slow motion, follow every hop and take every frame apart layer by layer. A guided course leads you through the concepts step by step, with theory, exercises and lab tasks that are checked automatically.
 
+<!-- blueprint:install -->
 ## Installation
 
 Three ways, all with the same app:
@@ -12,7 +13,7 @@ Three ways, all with the same app:
 - **Docker / Docker Compose**: `docker compose up -d` in this repository, or `docker run -p 8080:8080 ghcr.io/santiagotoro2023/packetpilot:latest`.
 - **Kubernetes**: a Helm chart (`helm install packetpilot oci://ghcr.io/santiagotoro2023/charts/packetpilot -n packetpilot --create-namespace`) or a single manifest, ready for a small cluster with three nodes.
 
-Docker, Compose, Kubernetes, Helm and moving learners between servers are explained step by step in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+Docker, Compose, Kubernetes, Helm and moving users between servers are explained step by step in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
 ### Debian installer
 
@@ -38,11 +39,12 @@ PacketPilot then runs at `https://<server>:8080/`, secured with a self-signed ce
 | `bash packetpilot-install.sh --extract ./web` | only extracts the web files, no root needed |
 | `--force` | also installs on untested systems |
 | `--no-move-card` | never show the card "PacketPilot has a new address" (e.g. behind a reverse proxy or when people use the IP on purpose), back with `--move-card` |
-| `--moved-to https://new.example.com` | PacketPilot moved elsewhere (e.g. to Kubernetes): every learner gets a one-click move of their progress (`--not-moved` removes it) |
+| `--moved-to https://new.example.com` | PacketPilot moved elsewhere (e.g. to Kubernetes): every user gets a one-click move of their browser data (`--not-moved` removes it) |
 
-The script installs nginx (and openssl, if missing) from the Debian packages, writes the files to `/opt/packetpilot/www` and creates `/etc/nginx/sites-available/packetpilot`. The certificate and key live in `/opt/packetpilot/tls/`. The certificate covers the hostname, `localhost` and all IP addresses of the server and is valid for 825 days. Updates keep it, so browsers don't warn again; it is only replaced when it expires within 30 days or with `--new-cert`. To use your own certificate, replace `packetpilot.crt` and `packetpilot.key` there and run `systemctl reload nginx`. If `ufw` is active, the port is opened. At runtime PacketPilot loads nothing from the internet, so it also works in isolated lab networks.
+The script installs nginx (and openssl, if missing) from the Debian packages, writes the files to `/opt/packetpilot/www` and creates `/etc/nginx/sites-available/packetpilot`.
+The certificate and key live in `/opt/packetpilot/tls/`. The certificate covers the hostname, `localhost` and all IP addresses of the server and is valid for 825 days. Updates keep it, so browsers don't warn again; it is only replaced when it expires within 30 days or with `--new-cert`. To use your own certificate, replace `packetpilot.crt` and `packetpilot.key` there and run `systemctl reload nginx`. If `ufw` is active, the port is opened. At runtime PacketPilot loads nothing from the internet, so it also works in isolated networks.
 
-All settings (port, HTTP or HTTPS, Let's Encrypt) are saved in `/opt/packetpilot/packetpilot.conf`, and updates keep them. A copy of the installer is kept at `/opt/packetpilot/packetpilot-install.sh`.
+All settings (port, HTTP or HTTPS, Let's Encrypt, the address options) are saved in `/opt/packetpilot/packetpilot.conf`, and updates keep them. A copy of the installer is kept at `/opt/packetpilot/packetpilot-install.sh`.
 
 ### Let's Encrypt
 
@@ -50,33 +52,26 @@ If the server has a domain name, it can get a certificate from Let's Encrypt. Th
 
 ```bash
 # With the API of your DNS provider (here Cloudflare), renews itself
-sudo CF_Token=xxxxx CF_Zone_ID=xxxxx bash packetpilot-install.sh --letsencrypt pp.example.com --dns dns_cf
+sudo CF_Token=xxxxx CF_Zone_ID=xxxxx bash packetpilot-install.sh --letsencrypt packetpilot.example.com --dns dns_cf
 
 # Without an API: the script shows the TXT record, you create it by hand and press Enter
-sudo bash packetpilot-install.sh --letsencrypt pp.example.com --dns manual
+sudo bash packetpilot-install.sh --letsencrypt packetpilot.example.com --dns manual
 ```
 
 `--dns` takes the name of any DNS provider that [acme.sh supports](https://github.com/acmesh-official/acme.sh/wiki/dnsapi) (`dns_cf`, `dns_hetzner`, `dns_ionos`, `dns_aws`, `dns_gd`, …). The wiki page lists the environment variables each provider needs. Pass them once, after `sudo` as shown, and acme.sh keeps them for renewals. `--email you@example.com` is optional. The installer fetches acme.sh 3.1.6 from a fixed commit, checks its checksum and keeps it in `/opt/packetpilot/acme`. A daily systemd timer (`packetpilot-renew.timer`) renews the certificate 30 days before it expires and reloads nginx. With `--dns manual` there is no automatic renewal: within the last 30 days, run the installer again and create the new TXT record.
 
-The self-signed certificate keeps serving access by IP address. When someone opens PacketPilot by IP, a small card offers to move their progress to the domain. If you don't want that card (for example because the server sits behind a reverse proxy and the address in the card would be wrong), add `--no-move-card`.
+The self-signed certificate keeps serving access by IP address. When someone opens PacketPilot by IP, a small card offers to move their browser data to the domain. If you don't want that card (for example because the server sits behind a reverse proxy and the address in the card would be wrong), add `--no-move-card`.
 
-### Your progress is safe
+### Your data is safe
 
-Each browser stores progress, partial answers (including the network you edited in a lab step), troubleshooting and subnetting results, settings and your own networks locally. The server never sees them, and updates don't touch them. Browsers keep this data per address, so PacketPilot carries it along when the address changes:
+Each browser stores everything a user does in PacketPilot locally. The server never sees it, and updates don't touch it. Browsers keep this data per address, so PacketPilot carries it along when the address changes:
 
-- **HTTP to HTTPS**: opening the old `http://` address shows a short page that hands the progress saved there to the `https://` address (once, then it just forwards). This is also how progress from versions before 1.2 comes back.
-- **IP address to domain**: after setting up Let's Encrypt, a card offers to move the progress to the domain with one click.
-- Merging never overwrites anything: lessons done on either side stay done, and when two networks share a name, both are kept.
-- **Another server** (e.g. moving to Docker or Kubernetes): with the same address nothing changes for the learners. With a new address, run the old installer with `--moved-to <new address>`, and everyone can move their progress with one click. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#moving-learners-and-their-progress).
-- **Backup file**: on the home page, "Your progress and networks" downloads everything as one file (lessons, answers, saved networks, Fix it times and solved variants, subnetting statistics and streaks, settings) and restores it anywhere. Restoring merges and never loses anything.
-
-## Logo
-
-The logo for presentations and marketing is in [`assets/logo`](assets/logo): the icon alone and with the name PacketPilot, each for light and dark backgrounds, transparent or with a background (PNG), plus the icon as SVG.
-
-## Design system
-
-PacketPilot's look is a reusable design system: **[docs/DESIGN.md](docs/DESIGN.md)** specifies colors, fonts, sizes, layout, components, logo and wording down to the pixel, and [`docs/design/kit`](docs/design/kit) is a runnable starter app with exact copies of the shared files (`base.css`, the fonts, `ui.js`, the icons). New projects start from the kit and look exactly like PacketPilot; `docs/design/logo/make-logo.mjs` makes their logos in the same style.
+- **HTTP to HTTPS**: opening the old `http://` address shows a short page that hands the data saved there to the `https://` address (once, then it just forwards).
+- **IP address to domain**: after setting up Let's Encrypt, a card offers to move the data to the domain with one click.
+- Merging never overwrites anything: what was done on either side stays done.
+- **Another server** (e.g. moving to Docker or Kubernetes): with the same address nothing changes for the users. With a new address, run the old installer with `--moved-to <new address>`, and everyone can move their data with one click. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#moving-users-and-their-data).
+- **Backup file**: on the home page, "Download backup" saves everything as one file and "Restore backup" brings it back anywhere. Restoring merges and never loses anything.
+<!-- /blueprint:install -->
 
 ## What's inside
 
@@ -136,31 +131,54 @@ Endless random questions in five kinds (network and broadcast, prefix and mask, 
 
 **Frame builder**: stack headers freely, have the order checked and compute sizes, overhead and MTU requirements.
 
+### What your browser keeps
+
+Each browser stores progress, partial answers (including the network you edited in a lab step), troubleshooting and subnetting results, settings and your own networks locally. Merging (after a move or a restored backup) never overwrites anything: lessons done on either side stay done, and when two networks share a name, both are kept. The backup file on the home page ("Your progress and networks") contains all of it: lessons, answers, saved networks, Fix it times and solved variants, subnetting statistics and streaks, settings. Progress from versions before 1.2 (plain HTTP) comes back through the move page on the old `http://` address.
+
+<!-- blueprint:logo -->
+## Logo
+
+The logo is in [`assets/logo`](assets/logo): the icon as SVG for light and dark backgrounds, and as PNG (1024 × 1024, transparent or on the page color, plus a 180 × 180 icon for phones). It is made from `project.conf` (`LOGO_PATTERN` bars, `LOGO_COLORS` blue,green,brown,orange) by the blueprint, in the same style as every project of the family: a dark rounded card holding a few flat parts in signal colors, no text. `node .blueprint/tools/blueprint.mjs logo` makes the PNG files again.
+<!-- /blueprint:logo -->
+
+For presentations there is also the icon with the name PacketPilot next to it (`packetpilot-logo-*.png`, light and dark, transparent or with a background).
+
+<!-- blueprint:development -->
 ## Development
 
-The sources live in `src/`, with no build step and no dependencies (ES modules, plain HTML, CSS and JavaScript).
+PacketPilot follows the [project blueprint](https://github.com/santiagotoro2023/project-blueprint) 1.0.0 (`.blueprint/`, specification in `.blueprint/spec/`): the same design, installer, deployment, tests and repository layout as every project of the family. `project.conf` holds the settings every blueprint file is made from; [DEVIATIONS.md](DEVIATIONS.md) lists where this project deliberately differs.
 
 ```bash
-python3 -m http.server -d src 8765     # test locally
-node test/engine.test.mjs               # simulation engine
-node test/course.test.mjs               # play through every lab lesson with its reference solution
-node test/build.test.mjs                # check the frame exercises against the simulation
-node test/challenges.test.mjs           # every troubleshooting variant is broken and solvable
-node test/subnet.test.mjs               # subnetting questions and answers are consistent
-node test/store.test.mjs                # backups: format, old exports, merging
-node test/design.test.mjs               # the design kit is an exact copy, DESIGN.md names every token
-bash build.sh                           # regenerate packetpilot-install.sh
+npm install                             # once: Playwright for the browser tests
+node test/lib/serve.mjs                 # the app on http://localhost:8080 (src/, no build step)
+node test/run.mjs                       # unit tests (test/unit/)
+node test/run.mjs --browser             # browser tests (test/browser/)
+bash build.sh                           # writes the blueprint files, builds packetpilot-install.sh
+bash test/installer/run.sh debian:12    # the installer on a real Debian (Docker)
+node .blueprint/tools/blueprint.mjs check    # does the project still follow the blueprint?
+node .blueprint/tools/blueprint.mjs update   # move to a newer blueprint (read its changelog)
 ```
 
-`test/ui.test.mjs`, `test/features.test.mjs`, `test/lesson.test.mjs`, `test/persist.test.mjs`, `test/practice.test.mjs` and `test/featremove.test.mjs` require Playwright with Chromium and the local server from above.
+Every push runs all of it on GitHub (`.github/workflows/release.yml`) and publishes the image and the Helm chart from `main`.
+
+```
+project.conf          name, profile, logo: the settings of the blueprint
+VERSION               the version of PacketPilot (semantic versioning)
+src/                  the web app: index.html, css/base.css (design system), css/app.css,
+                      fonts/, js/core/ (blueprint), js/ (this app)
+installer/            core/ (blueprint) and app.sh (this app's additions)
+deploy/               Docker, Compose with HTTPS, Kubernetes manifest, Helm chart
+test/                 unit/, browser/, installer/, lib/ and run.mjs
+docs/DEPLOYMENT.md    every way to run PacketPilot
+.blueprint/           the blueprint this project follows (never edited by hand)
+```
+<!-- /blueprint:development -->
+
+### PacketPilot's code
 
 ```
 src/
-  index.html
-  css/base.css        the design system (shared by every project, see docs/DESIGN.md)
   css/app.css         PacketPilot's own styles: lab, diagram, frame builder
-  fonts/              Cantarell and DejaVu Sans Mono, shipped so every system shows the same letters
-  migrate.html        moves progress from http:// to https:// (served by nginx for plain HTTP)
   site.json           main address of the server, written by the installer
   js/engine.js        simulation (event queue, L2, STP, L3, TCP/UDP, VXLAN)
   js/services.js      DHCP, NAT, VRRP, OSPF and BFD
@@ -182,17 +200,7 @@ src/
   js/practice.js      the Fix it and Subnets pages
   js/glossary.js      glossary and tooltips
   js/share.js         share links
-  js/site.js          main address and moving progress
-  js/store.js         storage in the browser
-installer/            head and tail of the installer script
-build.sh              assembles the installer script (syncs the version into deploy/ and the shared files into docs/design/kit)
-Dockerfile            container image (nginx unprivileged, port 8080)
-docker-compose.yml    quick start with Compose
-deploy/               Compose with HTTPS, Kubernetes manifest, Helm chart, container config
-docs/DEPLOYMENT.md    Docker, Compose, Kubernetes, Helm, moving learners
-docs/DESIGN.md        the design specification for PacketPilot and every later project
-docs/design/          starter kit, logo template and generator, reference screenshots
-.github/workflows/    tests, image (amd64, arm64) and chart to ghcr.io
+  js/store.js         what the browser keeps (on top of js/core/storage.js)
 ```
 
 A new lesson is an object in `src/js/course/m*.js`. Lab steps consist of a topology, an introduction and goals. A goal is either a function that checks the state of the simulation, or a question whose correct answer is computed from the simulation.

@@ -27,6 +27,7 @@ app.kubernetes.io/name: {{ include "packetpilot.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
+
 {{/* The public address: set explicitly, or from the first Ingress host */}}
 {{- define "packetpilot.canonical" -}}
 {{- if .Values.canonicalUrl }}

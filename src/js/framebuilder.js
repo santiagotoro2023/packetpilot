@@ -1,5 +1,5 @@
 // Frame builder: stack layers freely, check rules, compute sizes
-import { h } from './ui.js';
+import { h } from './core/ui.js';
 
 const BLOCKS = {
   eth: { name: 'Ethernet', size: 14, kind: 'eth', note: 'Destination MAC, source MAC, EtherType' },

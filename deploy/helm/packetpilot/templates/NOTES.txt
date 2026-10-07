@@ -21,6 +21,6 @@ Try it right away:
   open http://localhost:8080/
 {{- end }}
 
-Progress is stored in each learner's browser, per address. Moving from another
-PacketPilot server? See docs/DEPLOYMENT.md ("Moving learners"): one click on the old
-server carries everything over, or a backup file from the home page.
+Users' data is stored in their browsers, per address. Moving from another
+PacketPilot server? See docs/DEPLOYMENT.md ("Moving users and their data"): one click
+on the old server carries everything over, or a backup file from the home page.

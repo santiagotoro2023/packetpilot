@@ -1,5 +1,7 @@
-# Tests, then builds the container image (amd64 and arm64) and the Helm chart and
-# publishes both to the GitHub Container Registry:
+# Blueprint 1.0.0: the same pipeline in every project.
+# Every push and pull request: blueprint check, unit and browser tests, Helm chart and
+# Kubernetes manifest, Compose, and the installer on Debian 12 and 13 (systemd).
+# Pushes to main and tags v* then publish to the GitHub Container Registry:
 #   image:  ghcr.io/<owner>/packetpilot:<version> and :latest
 #   chart:  oci://ghcr.io/<owner>/charts/packetpilot --version <version>
 # The version comes from the file VERSION.
@@ -9,11 +11,15 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
+
+env:
+  KUBERNETES_VERSION: 1.31.0
 
 jobs:
   test:
@@ -23,14 +29,67 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Simulation, course, challenges and frame exercises
+      - name: Dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Blueprint check
+        run: node .blueprint/tools/blueprint.mjs check
+      - name: Build (every generated file must be committed)
         run: |
-          for t in engine course challenges build subnet store design; do node test/$t.test.mjs; done
-      - name: Installer builds
-        run: bash build.sh && git diff --exit-code -- deploy/ || (echo "Run build.sh and commit deploy/ changes" && exit 1)
+          bash build.sh
+          git diff --exit-code || { echo "::error::Run build.sh and commit the changes"; exit 1; }
+      - name: Unit tests
+        run: node test/run.mjs
+      - name: Browser tests
+        run: |
+          npx playwright install --with-deps chromium
+          node test/run.mjs --browser
+      - name: Helm chart and Kubernetes manifest
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar -xz kubeconform
+          helm lint --strict deploy/helm/packetpilot
+          helm template t deploy/helm/packetpilot --set ingress.enabled=true --set autoscaling.enabled=true --set networkPolicy.enabled=true \
+            | ./kubeconform -strict -summary -kubernetes-version "$KUBERNETES_VERSION"
+          ./kubeconform -strict -summary -kubernetes-version "$KUBERNETES_VERSION" deploy/kubernetes/packetpilot.yaml
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose up (built from this commit)
+        run: |
+          docker compose up -d --build --wait
+          for i in $(seq 1 30); do curl -fsS http://localhost:8080/healthz && break; sleep 2; done
+          curl -fsS http://localhost:8080/site.json
+          curl -fsS http://localhost:8080/ | grep -q '<nav class="rail"'
+          docker compose down -v
+
+  installer:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        debian: ['12', '13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the installer
+        run: npm ci --no-audit --no-fund && bash build.sh
+      - name: The installer of the previous release (to test the update from it)
+        run: |
+          last="$(git rev-list -n1 HEAD -- VERSION)"
+          git show "${last}~1:packetpilot-install.sh" > /tmp/previous-install.sh 2>/dev/null || rm -f /tmp/previous-install.sh
+          [ -s /tmp/previous-install.sh ] && echo "Previous: $(grep -m1 -E '^(APP|PP)_VERSION=' /tmp/previous-install.sh)" || echo "No previous release"
+      - name: Install, update and remove on Debian ${{ matrix.debian }}
+        run: bash test/installer/run.sh debian:${{ matrix.debian }} /tmp/previous-install.sh
 
   image:
-    needs: test
+    if: github.event_name != 'pull_request'
+    needs: [test, compose, installer]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
@@ -65,6 +124,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   chart:
+    if: github.event_name != 'pull_request'
     needs: image
     runs-on: ubuntu-latest
     steps:

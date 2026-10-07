@@ -1,5 +1,5 @@
 // Side panel: configuration, tables and console of a device
-import { h, toast, contextMenu } from './ui.js';
+import { h, toast, contextMenu } from './core/ui.js';
 import { I } from './icons.js';
 import { isIp, parseCidr, isAnyIp, isIp6, parseCidr6, norm6 } from './net.js';
 import { staticAddrs } from './ipv6.js';

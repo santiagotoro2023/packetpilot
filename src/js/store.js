@@ -1,13 +1,9 @@
-// Storage in the browser, robust against blocked storage.
-// The key and the shape only ever grow: new fields get defaults, nothing is renamed,
-// so an update of PacketPilot never loses what a learner did.
-const KEY = 'packetpilot.v1';
+// What PacketPilot keeps in the browser, on top of src/js/core/storage.js (key packetpilot.v1).
+// The shape only ever grows: new fields get defaults, nothing is renamed, so an update of
+// PacketPilot never loses what a learner did.
+import { createStore } from './core/storage.js';
+
 const empty = () => ({ progress: {}, nets: {}, prefs: {}, answers: {}, practice: { challenges: {}, subnet: {} } });
-let mem = empty();
-try {
-  const raw = localStorage.getItem(KEY);
-  if (raw) mem = withDefaults(JSON.parse(raw));
-} catch { /* private window or similar */ }
 
 function withDefaults(d) {
   const e = empty();
@@ -16,7 +12,6 @@ function withDefaults(d) {
   for (const k of ['progress', 'nets', 'prefs', 'answers']) if (!m[k] || typeof m[k] !== 'object') m[k] = {};
   return m;
 }
-function persist() { try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch { /* ignore */ } }
 
 /** Combine two saved states: nothing done is lost, on conflicts the current browser wins */
 export function mergeState(cur, add) {
@@ -48,46 +43,50 @@ export function mergeState(cur, add) {
   return out;
 }
 
+const base = createStore({
+  empty,
+  normalize: withDefaults,
+  merge: mergeState,
+  valid: d => 'progress' in d || 'nets' in d || 'prefs' in d,
+  isEmpty: d => !Object.keys(d.progress).length && !Object.keys(d.nets).length && !Object.keys(d.answers).length && !Object.keys(d.practice.challenges).length
+});
+const mem = () => base.data;
+const persist = base.persist;
+
 export const store = {
-  get prefs() { return mem.prefs; },
-  setPref(k, v) { mem.prefs[k] = v; persist(); },
-  stepDone(lessonId, idx) { return !!mem.progress[lessonId]?.steps?.[idx]; },
+  get prefs() { return base.prefs; },
+  setPref: base.setPref,
+  stepDone(lessonId, idx) { return !!mem().progress[lessonId]?.steps?.[idx]; },
   markStep(lessonId, idx) {
-    const p = (mem.progress[lessonId] ??= { steps: {}, done: false });
+    const p = (mem().progress[lessonId] ??= { steps: {}, done: false });
     if (!p.steps[idx]) { p.steps[idx] = true; persist(); }
   },
-  markLesson(lessonId) { const p = (mem.progress[lessonId] ??= { steps: {}, done: false }); p.done = true; persist(); },
-  lessonDone(lessonId) { return !!mem.progress[lessonId]?.done; },
-  lessonSteps(lessonId) { return Object.keys(mem.progress[lessonId]?.steps || {}).length; },
-  resetProgress() { mem.progress = {}; mem.answers = {}; mem.practice = empty().practice; persist(); },
+  markLesson(lessonId) { const p = (mem().progress[lessonId] ??= { steps: {}, done: false }); p.done = true; persist(); },
+  lessonDone(lessonId) { return !!mem().progress[lessonId]?.done; },
+  lessonSteps(lessonId) { return Object.keys(mem().progress[lessonId]?.steps || {}).length; },
+  resetProgress() { base.update(d => ({ ...d, progress: {}, answers: {}, practice: empty().practice })); },
   // Partial answers of an exercise or lab step, so they survive navigation and reloads
-  answer(key) { return mem.answers?.[key]; },
-  saveAnswer(key, value) { (mem.answers ??= {})[key] = value; persist(); },
+  answer(key) { return mem().answers?.[key]; },
+  saveAnswer(key, value) { (mem().answers ??= {})[key] = value; persist(); },
   // Troubleshooting challenges and the subnetting trainer
-  challenge(id) { return mem.practice.challenges[id] || null; },
-  saveChallenge(id, v) { mem.practice.challenges[id] = v; persist(); },
-  subnetStats(mode) { return mem.practice.subnet[mode] || { right: 0, total: 0, streak: 0, best: 0 }; },
-  saveSubnetStats(mode, v) { mem.practice.subnet[mode] = v; persist(); },
-  nets() { return mem.nets; },
-  saveNet(name, topo) { mem.nets[name] = { topo, saved: Date.now() }; persist(); },
-  deleteNet(name) { delete mem.nets[name]; persist(); },
+  challenge(id) { return mem().practice.challenges[id] || null; },
+  saveChallenge(id, v) { mem().practice.challenges[id] = v; persist(); },
+  subnetStats(mode) { return mem().practice.subnet[mode] || { right: 0, total: 0, streak: 0, best: 0 }; },
+  saveSubnetStats(mode, v) { mem().practice.subnet[mode] = v; persist(); },
+  nets() { return mem().nets; },
+  saveNet(name, topo) { mem().nets[name] = { topo, saved: Date.now() }; persist(); },
+  deleteNet(name) { delete mem().nets[name]; persist(); },
   /** A backup file: everything in this browser, with a small header so it is recognized later */
-  exportAll(version = '') { return JSON.stringify({ app: 'PacketPilot', kind: 'backup', version, exported: new Date().toISOString(), data: mem }, null, 2); },
+  exportAll: base.exportAll,
   summary() {
-    const lessons = Object.values(mem.progress).filter(p => p.done).length;
-    const challenges = Object.values(mem.practice.challenges).filter(c => c.solved).length;
-    const sub = Object.values(mem.practice.subnet);
-    return { lessons, nets: Object.keys(mem.nets).length, challenges, subnetBest: Math.max(0, ...sub.map(x => x.best || 0)), subnetRight: sub.reduce((a, x) => a + (x.right || 0), 0) };
+    const m = mem();
+    const lessons = Object.values(m.progress).filter(p => p.done).length;
+    const challenges = Object.values(m.practice.challenges).filter(c => c.solved).length;
+    const sub = Object.values(m.practice.subnet);
+    return { lessons, nets: Object.keys(m.nets).length, challenges, subnetBest: Math.max(0, ...sub.map(x => x.best || 0)), subnetRight: sub.reduce((a, x) => a + (x.right || 0), 0) };
   },
-  snapshot() { return JSON.stringify(mem); },
+  snapshot: base.snapshot,
   /** Import a file or a transferred state. merge keeps everything already in this browser. */
-  importAll(json, { merge = true } = {}) {
-    let d = typeof json === 'string' ? JSON.parse(json) : json;
-    // Backups since 2.8 wrap the data with a header; older exports are the data itself
-    if (d && d.app === 'PacketPilot' && d.data) d = d.data;
-    if (typeof d !== 'object' || !d || !('progress' in d || 'nets' in d || 'prefs' in d)) throw new Error('Not a valid PacketPilot file');
-    mem = merge ? mergeState(mem, d) : withDefaults(d);
-    persist();
-  },
-  isEmpty() { return !Object.keys(mem.progress).length && !Object.keys(mem.nets).length && !Object.keys(mem.answers).length && !Object.keys(mem.practice.challenges).length; }
+  importAll: base.importAll,
+  isEmpty: base.isEmpty
 };
