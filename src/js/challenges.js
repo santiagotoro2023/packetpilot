@@ -1,7 +1,8 @@
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo, ipv6Topo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo, ipv6Topo, vpnTopo } from './presets.js';
 import { macFor } from './net.js';
+import { wgPubKey, wgGenKey } from './vpn.js';
 
 const preset = id => PRESETS.find(p => p.id === id).make();
 const dev = (t, id) => t.devices.find(d => d.id === id);
@@ -209,6 +210,20 @@ export const CHALLENGES = [
     goals: [{ text: 'pc1 opens http://www.lab/ over IPv6.', check: sim => sim.log.some(e => e.dev === 'pc1' && e.tag === 'tcp-done' && e.data.ok && String(e.data.dst).includes(':')) }],
     hints: ['dig www.lab AAAA and dig www.lab A on pc1: which addresses does DNS give out?', 'Does the web server answer ping -6 at that address? Look at its IPv6 configuration.'],
     presets: { pc1: ['curl http://www.lab/', 'curl -4 http://www.lab/', 'dig www.lab AAAA', 'ping -6 -c 2 2001:db8:2::80'], web: ['ip -6 addr', 'ip -6 route'] } },
+
+  { id: 'vpn', level: 2, title: 'The new tunnel stays dark', topics: ['VPN', 'WireGuard'],
+    symptom: '<p>Yesterday the two sites were connected with WireGuard between gwA and gwB. pcA still cannot reach the server srvB (10.2.0.10) at site B. Both gateways reach each other over the internet.</p>',
+    topo: () => vpnTopo(),
+    variants: [
+      { fault: t => { dev(t, 'gwB').wg.peers[0].publicKey = wgPubKey(wgGenKey('typo')); }, cause: 'gwB had a wrong public key for gwA. gwA\'s handshake carried a key gwB did not know, and WireGuard answers strangers with silence.' },
+      { fault: t => { dev(t, 'gwA').wg.peers[0].publicKey = wgPubKey(wgGenKey('old-gwB')); }, cause: 'gwA used an old public key for gwB. The handshake was encrypted for a key gwB does not have, so gwB could not read it and stayed silent.' },
+      { fault: t => { dev(t, 'gwA').wg.peers[0].endpoint = '203.0.113.1:51821'; }, cause: 'gwA sent its handshakes to port 51821, gwB listens on 51820. gwB answered with ICMP port unreachable.' },
+      { fault: t => { dev(t, 'gwB').wg.peers[0].allowedIps = '10.99.0.1/32'; }, cause: 'The allowed IPs of gwA on gwB only contained 10.99.0.1/32. gwB decrypted the pings but dropped them, because 10.1.0.10 was not allowed from that peer, and had no route back into the tunnel.' },
+      { fault: t => { dev(t, 'gwA').wg.peers[0].allowedIps = '10.99.0.2/32'; }, cause: 'gwA did not have 10.2.0.0/24 in the allowed IPs of gwB. Without a route into wg0, pcA\'s packets went unencrypted to the provider, which has no route to private networks.' },
+      { fault: t => { dev(t, 'isp').acl = [{ action: 'drop', proto: 'udp', port: 51820, src: 'any', dst: 'any' }]; }, cause: 'The provider dropped UDP port 51820. No handshake ever arrived. A different listen port, or a talk with the provider, helps.' }],
+    goals: [{ text: 'pcA pings srvB (10.2.0.10).', check: pingAfterStart('pcA', '10.2.0.10') }],
+    hints: ['wg show on both gateways: is there a latest handshake?', 'Read the log of the gateways: WireGuard drops silently, but the simulator tells you why.', 'Compare the keys: the public key gwA shows for itself must be the one gwB has for gwA, and the other way round.'],
+    presets: { pcA: ['ping -c 2 10.2.0.10', 'traceroute 10.2.0.10'], gwA: ['wg show', 'ip route'], gwB: ['wg show', 'ip route'], isp: ['ip route'] } },
 
   { id: 'ospf', level: 2, title: 'One site is missing from the map', topics: ['OSPF'],
     symptom: '<p>Three sites run OSPF. pc1 cannot reach the server srv3 at site 3.</p>',

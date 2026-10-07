@@ -5,6 +5,7 @@ const ipCmp = (a, b) => (ipToInt(a) ?? 0) - (ipToInt(b) ?? 0);
 import { ethFrame, arpPacket, ipPacket, icmp, icmp6, udp, tcp, ipChecksum, summary, icmpName, fmtBid } from './packets.js';
 import { serveDns, rrText, fqdn, resolverOf } from './dns.js';
 import { Ip6, icmp6Name } from './ipv6.js';
+import { Wg, wgDataLen } from './vpn.js';
 import { dhcpOn67, natIn, natOut, Vrrp, Ospf, Bfd, BFD_PORT, DHCP_TIMING, vrrpMac } from './services.js';
 
 export const PORTS = {
@@ -186,13 +187,15 @@ export function flowHash(ip, policy = 'l3') {
 export function isHello(f) {
   if (f?.type === 'ipv6') return !!f.payload.l4?.periodic;
   const l4 = f?.type === 'ipv4' ? f.payload.l4 : null;
-  return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello') || (l4.kind === 'udp' && l4.payload?.kind === 'bfd'));
+  return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello') || (l4.kind === 'udp' && l4.payload?.kind === 'bfd')
+    || (l4.kind === 'udp' && l4.payload?.kind === 'wg' && l4.payload.type === 'data' && !l4.payload.inner));
 }
 export function traceOf(f) {
   if (f?.type === 'ipv6') return f.payload.trace;
   if (!f || f.type !== 'ipv4') return null;
   const l4 = f.payload.l4;
   if (l4?.kind === 'udp' && l4.payload?.kind === 'vxlan') return traceOf(l4.payload.frame) ?? f.payload.trace;
+  if (l4?.kind === 'udp' && l4.payload?.kind === 'wg' && l4.payload.inner) return l4.payload.inner.trace ?? f.payload.trace;
   return f.payload.trace;
 }
 
@@ -210,6 +213,7 @@ export function normalizeDevice(cfg) {
     cfg.recursion = { enabled: false, roots: '', ...(cfg.recursion || {}) };
     cfg.ipv6 = { enabled: false, slaac: true, gw: '', ...(cfg.ipv6 || {}) };
   }
+  if (t === 'pc' || t === 'server' || t === 'router') cfg.wg = { enabled: false, listenPort: 51820, privateKey: '', mtu: 1420, peers: [], ...(cfg.wg || {}) };
   if (t === 'router') {
     for (const p of PORTS.router) cfg.ifaces[p] ??= { ip: '', prefix: 24 };
     cfg.ifaces.lo ??= { ip: '', prefix: 32 };
@@ -295,7 +299,7 @@ class L3 {
     // An interface in DHCP mode uses the address from its lease, if there is one
     return Object.entries(this.cfg.ifaces || {})
       .map(([name, v]) => v?.dhcp ? [name, { ...v, ip: this.lease?.ifname === name ? this.lease.ip : '', prefix: this.lease?.prefix ?? 24 }] : [name, v])
-      .filter(([, v]) => v && isIp(v.ip))
+      .filter(([n, v]) => v && isIp(v.ip) && (n !== 'wg0' || !!this.cfg.wg?.enabled))
       .map(([name, v]) => ({ name, ip: v.ip, prefix: Number(v.prefix ?? 24), vlan: v.vlan ? Number(v.vlan) : null, phys: v.parent || name }));
   }
   gateway() { return isIp(this.cfg.gw) ? this.cfg.gw : this.lease?.router || ''; }
@@ -310,8 +314,8 @@ class L3 {
   }
   isOwn(ip) { if (String(ip).includes(':')) return this.v6.isOwn(ip); return this.ifaces().some(i => i.ip === ip) || !!this.dev.vrrp?.ownsIp(ip); }
   ifIp(ifname) { return this.ifaces().find(i => i.name === ifname)?.ip || null; }
-  mtu(ifname) { return ifname === 'lo' ? 65536 : this.sim.mtuOf(this.dev.id, this.phys(ifname)); }
-  linkUp(ifname) { if (ifname === 'lo') return true; const l = this.sim.linkAt(this.dev.id, this.phys(ifname)); return !!l && l.up; }
+  mtu(ifname) { return ifname === 'lo' ? 65536 : ifname === 'wg0' ? (this.dev.wg?.mtu() ?? 1420) : this.sim.mtuOf(this.dev.id, this.phys(ifname)); }
+  linkUp(ifname) { if (ifname === 'lo' || ifname === 'wg0') return true; const l = this.sim.linkAt(this.dev.id, this.phys(ifname)); return !!l && l.up; }
 
   routes() {
     const out = [];
@@ -332,17 +336,20 @@ class L3 {
         distance: Number(r.distance) > 0 ? Number(r.distance) : 1 });
     }
     for (const r of this.dev.ospf?.routes || []) out.push({ net: r.net, len: r.len, via: r.via, dev: r.dev, proto: 'O', metric: r.cost });
+    for (const r of this.dev.wg?.routes() || []) out.push(r);
     return out;
   }
   /** All equally good routes to dst: longest prefix, then the administrative distance
    *  (connected 0, static 1, OSPF 110), then the metric */
-  lookupAll(dst) {
-    // A static route can carry its own distance (a "floating" backup route, e.g. 200)
-    const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, O: 110 }[r.proto] ?? 255;
+  lookupAll(dst, skipDev = null) {
+    // A static route can carry its own distance (a "floating" backup route, e.g. 200). Routes
+    // into the WireGuard tunnel win like wg-quick's own routing table.
+    const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, W: 0, O: 110 }[r.proto] ?? 255;
     let best = [];
     const better = (a, b) => a.len !== b.len ? a.len > b.len : ad(a) !== ad(b) ? ad(a) < ad(b) : (a.metric || 0) < (b.metric || 0);
     for (const r of this.routes()) {
       if (r.proto === 'S' && !r.dev) continue;
+      if (skipDev && r.dev === skipDev) continue;
       if (!inNet(dst, r.net, r.len)) continue;
       if (!best.length || better(r, best[0])) best = [r];
       else if (!better(best[0], r) && !best.some(b => b.via === r.via && b.dev === r.dev)) best.push(r);
@@ -353,7 +360,8 @@ class L3 {
    *  one, so all packets of a flow take the same path */
   lookup(dst, pkt) {
     if (String(dst).includes(':')) return this.v6.lookup(dst, pkt);
-    const all = this.lookupAll(dst);
+    // The encrypted outer packets of WireGuard must not go back into the tunnel
+    const all = this.lookupAll(dst, pkt?.wgOuter ? 'wg0' : null);
     if (!all.length) return null;
     const max = Math.max(1, Number(this.cfg.maxPaths ?? 4));
     const cand = all.slice(0, max);
@@ -391,10 +399,15 @@ class L3 {
         return { ok: false, error: `message too long, mtu=${mtu}`, mtu };
       }
       const frags = this.fragment(pkt, mtu);
-      this.dev.record('info', `Packet (${pkt.totalLength} bytes) larger than MTU ${mtu}: split into ${frags.length} fragments`, { tag: 'fragmented', data: { count: frags.length, mtu } });
-      for (const f of frags) this.l2send(f, r.dev, r.via || pkt.dst);
+      this.dev.record('info', `Packet (${pkt.totalLength} bytes) larger than MTU ${mtu}${r.dev === 'wg0' ? ' of the tunnel wg0' : ''}: split into ${frags.length} fragments`, { tag: 'fragmented', data: { count: frags.length, mtu } });
+      for (const f of frags) this.via(f, r);
       return { ok: true };
     }
+    return this.via(pkt, r);
+  }
+  /** Out of an interface: into the WireGuard tunnel, or onto the wire after ARP */
+  via(pkt, r) {
+    if (r.dev === 'wg0' && this.dev.wg) return this.dev.wg.send(pkt);
     this.l2send(pkt, r.dev, r.via || pkt.dst);
     return { ok: true };
   }
@@ -708,6 +721,7 @@ class L3 {
     if (l4.kind === 'tcp') return this.onTcp(ip, frame);
     if (l4.kind === 'udp') {
       if (l4.dport === BFD_PORT && l4.payload?.kind === 'bfd') { this.dev.bfd?.onPacket(ip); return; }
+      if (l4.payload?.kind === 'wg' && this.dev.wg?.on && l4.dport === this.dev.wg.port() && this.dev.wg.onPacket(ip)) return;
       if (l4.dport === 67 && l4.payload?.kind === 'dhcp' && dhcpOn67(this, ip, ifname, frame)) return;
       if (this.dev.onUdp?.(ip, ifname, frame)) return;
       if (this.resolverSvc?.onUdp(ip)) return;
@@ -1316,7 +1330,7 @@ class UdpSend extends Session {
 
 // ---------------------------------------------------------------- Hosts and routers
 class Host extends Device {
-  constructor(sim, cfg) { super(sim, cfg); this.l3 = new L3(this); }
+  constructor(sim, cfg) { super(sim, cfg); this.l3 = new L3(this); this.wg = new Wg(this); }
   receive(ifname, frame) { this.l3.receive(ifname, frame); }
   ping(dst, o = {}) { const s = new PingSession(this.l3, dst, o); s.start(); return s; }
   traceroute(dst, o = {}) { const s = new TraceSession(this.l3, dst, o); s.start(); return s; }
@@ -1340,12 +1354,13 @@ class Host extends Device {
   }
   udpSend(dst, port, len = 32) { const s = new UdpSend(this.l3, dst, port, len); s.start(); return s; }
   rdisc6(ifname = 'eth1') { const s = new RdiscSession(this.l3, ifname); s.start(); return s; }
-  onConfig() { this.l3.v6.onConfig(); }
+  onConfig() { this.l3.v6.onConfig(); this.wg.onConfig(); }
   onLink(ifname, up) { this.l3.v6.onLink(ifname, up); }
-  stop() { this.l3.v6.stop(); }
+  stop() { this.l3.v6.stop(); this.wg.stop(); }
   // Interfaces in DHCP mode ask for an address shortly after the device starts
   start() {
     this.l3.v6.start();
+    this.wg.start();
     if (this.cfg.recursion?.enabled && this.cfg.recursion.seed?.length) resolverOf(this.l3).seed(this.cfg.recursion.seed);
     for (const [n, v] of Object.entries(this.cfg.ifaces || {})) {
       if (v?.dhcp) this.sim.schedule(600 + this.sim.random() * 600, () => { if (!this.l3.lease && !this.dhcpRunning(n)) this.dhclient(n, { boot: true }); });

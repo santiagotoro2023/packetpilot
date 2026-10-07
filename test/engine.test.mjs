@@ -1,5 +1,5 @@
 import { Sim } from '../src/js/engine.js';
-import { ipv6Topo, dnsTopo } from '../src/js/presets.js';
+import { ipv6Topo, dnsTopo, vpnTopo } from '../src/js/presets.js';
 import { runCommand } from '../src/js/cli.js';
 import { slaacFor } from '../src/js/net.js';
 import assert from 'node:assert/strict';
@@ -666,6 +666,23 @@ test('DNS: iterative resolution, cache with TTL and negative caching', () => {
   assert.equal(sim.log.filter(e => e.tag === 'dns-nxdomain').length, 1, 'NXDOMAIN cached');
   dig('shop.firma.lab');
   assert.match(out(sim, 'client'), /shop\.firma\.lab\.\t3600\tIN\tCNAME\twww\.firma\.lab\./);
+});
+
+test('WireGuard: handshake, encryption, allowed IPs and roaming', () => {
+  const sim = new Sim(vpnTopo());
+  sim.runFor(1000);
+  sim.dev('pcA').ping('10.2.0.10', { count: 2 }); sim.runFor(4000);
+  assert.match(out(sim, 'pcA'), /2 received/);
+  const outer = sim.log.find(e => e.dev === 'isp' && e.kind === 'send' && e.frame?.payload?.l4?.payload?.inner);
+  assert.equal(outer.frame.payload.src, '198.51.100.1'); assert.equal(outer.frame.payload.l4.dport, 51820);
+  assert.equal(outer.frame.payload.totalLength, 20 + 8 + 32 + 96, 'outer packet: IP, UDP, WireGuard, padded inner packet');
+  assert.ok(!sim.log.some(e => e.dev === 'isp' && e.tag === 'forwarded' && e.data.dst.startsWith('10.')), 'the provider never sees private addresses');
+  assert.equal(sim.dev('gwB').wg.table()[0].endpoint, '198.51.100.1:51820', 'gwB learned the endpoint from the handshake');
+  sim.dev('gwB').cfg.wg.peers[0].allowedIps = '10.99.0.1/32, 10.1.0.0/25'; sim.configChanged('gwB');
+  sim.dev('pcA2').ping('10.2.0.10', { count: 1 }); sim.runFor(5000);
+  assert.ok(sim.hasTag('wg-notallowed'));
+  sim.dev('gwA').cfg.wg.peers[0].publicKey = sim.dev('gwA').wg.pub; sim.configChanged('gwA');
+  sim.dev('pcA').l3.arp.clear();
 });
 
 console.log(`\n${passed} tests passed`);

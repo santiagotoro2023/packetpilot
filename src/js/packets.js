@@ -85,6 +85,7 @@ export function shortLabel(f) {
   }
   if (l4.kind === 'icmp6') return { 128: 'Ping6', 129: 'Pong6', 133: 'RS', 134: 'RA', 135: 'NS', 136: 'NA', 1: 'Unreach', 2: 'MTU!', 3: 'HL!' }[l4.type] || 'ICMPv6';
   if (l4.kind === 'udp' && l4.payload?.kind === 'vxlan') return 'VXLAN';
+  if (l4.kind === 'udp' && l4.payload?.kind === 'wg') return { init: 'WG hello', resp: 'WG hello', data: l4.payload.inner ? 'WG' : 'WG keep' }[l4.payload.type] || 'WG';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dns') return 'DNS';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return 'DHCP ' + (DHCP_NAME[l4.payload.op] || '');
   if (l4.kind === 'udp' && l4.payload?.kind === 'bfd') return 'BFD';
@@ -118,6 +119,7 @@ export function layerKinds(f) {
     if (l4.kind === 'udp') {
       out.push('udp');
       if (l4.payload?.kind === 'vxlan') { out.push('vxlan'); cur = l4.payload.frame; continue; }
+      if (l4.payload?.kind === 'wg') { out.push('vpn'); if (l4.payload.inner) out.push('ip', l4.payload.inner.l4?.kind === 'tcp' ? 'tcp' : l4.payload.inner.l4?.kind === 'udp' ? 'udp' : 'icmp'); break; }
       out.push(l4.payload?.kind === 'bfd' ? 'rt' : 'data');
     }
     if (l4.kind === 'tcp') { out.push('tcp'); if (l4.dataLen) out.push('data'); }
@@ -160,6 +162,10 @@ export function summary(f) {
   } else if (l4.kind === 'icmp') {
     if (l4.type === 8 || l4.type === 0) s = `ICMP ${l4.type === 8 ? 'Echo Request' : 'Echo Reply'} ${base}, seq ${l4.seq}, TTL ${ip.ttl}, ${ip.totalLength} bytes`;
     else s = `ICMP ${icmpName(l4.type, l4.code)}${l4.mtu ? ` (MTU ${l4.mtu})` : ''} ${base}`;
+  } else if (l4.kind === 'udp' && l4.payload?.kind === 'wg') {
+    const w = l4.payload, ends = `${ip.src}:${l4.sport} > ${ip.dst}:${l4.dport}`;
+    s = w.type === 'init' ? `WireGuard handshake initiation ${ends}` : w.type === 'resp' ? `WireGuard handshake response ${ends}`
+      : w.inner ? `WireGuard data ${ends}, counter ${w.counter}  ⟶  encrypted inside: ${w.inner.src} > ${w.inner.dst}` : `WireGuard keepalive ${ends}`;
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'vxlan') {
     s = `VXLAN ${base}, VNI ${l4.payload.vni}, UDP ${l4.sport} > ${l4.dport}  ⟶  ${summary(l4.payload.frame)}`;
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') {
@@ -369,6 +375,21 @@ function l4Layers(f, ip, layers, depth, pre) {
       ['Question', `${d.qname || '.'} ${d.qtype || 'A'}`, ''], ...(d.qr ? [['Response code', d.rcode, { NOERROR: 'No error', NXDOMAIN: 'The name does not exist', REFUSED: 'The server refuses to answer', SERVFAIL: 'The resolver failed to find an answer' }[d.rcode] || ''],
         ...(d.answers || []).map(a => rrF('Answer', a)), ...(d.authority || []).map(a => rrF('Authority', a)), ...(d.additional || []).map(a => rrF('Additional', a))] : [])] });
   } else if (l4.kind === 'udp') {
+    if (l4.payload?.kind === 'wg') {
+      const w = l4.payload;
+      layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), 'Listen port of the sending peer'],
+        ['Destination port', String(l4.dport), l4.dport === 51820 ? 'WireGuard (usual port)' : 'Listen port of the peer'], ['Length', `${UDP_HDR + udpPayloadLen(l4)} bytes`, '']] });
+      const fields = [['Type', { init: '1 (handshake initiation)', resp: '2 (handshake response)', data: '4 (transport data)' }[w.type], '']];
+      if (w.type === 'init') fields.push(['Sender index', String(w.sender), 'Number the initiator uses for this session'], ['Ephemeral key, static key, timestamp', '116 bytes, encrypted', 'Encrypted with the public key of the receiver: only the right peer can read it'],
+        ['MAC1 / MAC2', '32 bytes', 'Protection against strangers and floods']);
+      if (w.type === 'resp') fields.push(['Sender / receiver index', `${w.sender} / ${w.receiver}`, 'Both sides now know each other\'s session number'], ['Ephemeral key, empty', '48 bytes, encrypted', 'Completes the key exchange']);
+      if (w.type === 'data') fields.push(['Receiver index', String(w.receiver), 'Tells the receiver which session (and key) to use'], ['Counter', String(w.counter), 'Nonce and protection against replays'],
+        ['Encrypted packet', w.inner ? `${Math.ceil(w.inner.totalLength / 16) * 16} bytes (padded to 16)` : '0 bytes: keepalive', 'ChaCha20: nobody on the way can read it'], ['Authentication tag', '16 bytes', 'Poly1305: any change is noticed']);
+      layers.push({ kind: 'vpn', depth, name: 'WireGuard', bytes: udpPayloadLen(l4) - (w.inner ? Math.ceil(w.inner.totalLength / 16) * 16 : 0), fields });
+      if (w.inner) layers.push(...dissect({ type: w.inner.v === 6 ? 'ipv6' : 'ipv4', payload: w.inner, src: '', dst: '' }, depth + 1).slice(1)
+        .map((l, i) => i === 0 ? { ...l, name: `${l.name} (encrypted, shown decrypted)` } : l));
+      return layers;
+    }
     const vx = l4.payload?.kind === 'vxlan';
     layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [
       ['Source port', String(l4.sport), vx ? 'Hash over the inner frame (distribution with ECMP)' : ''],
@@ -414,6 +435,10 @@ export function flowOf(f) {
     return { key: `icmp:${pair(ip.src, ip.dst)}:${l4.ident}`, kind: 'icmp', label: `Ping between ${ip.src} and ${ip.dst}` };
   }
   if (l4?.kind === 'udp' && l4.payload?.kind === 'vxlan') return flowOf(l4.payload.frame);
+  if (l4?.kind === 'udp' && l4.payload?.kind === 'wg') {
+    if (l4.payload.inner) return flowOf({ type: l4.payload.inner.v === 6 ? 'ipv6' : 'ipv4', payload: l4.payload.inner });
+    return { key: `wg:${pair(ip.src, ip.dst)}`, kind: 'wg', label: `WireGuard between ${ip.src} and ${ip.dst}` };
+  }
   if (!l4) return { key: `ip:${pair(ip.src, ip.dst)}`, kind: 'ip', label: `IP between ${ip.src} and ${ip.dst}` };
   if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return { key: `dhcp:${l4.payload.chaddr}`, kind: 'dhcp', label: `DHCP of ${l4.payload.chaddr}` };
   if (l4.kind === 'udp' && l4.payload?.kind === 'dns') return { key: `dns:${l4.payload.id}:${l4.payload.qname}`, kind: 'dns', label: `DNS query for ${l4.payload.qname}` };

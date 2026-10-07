@@ -30,6 +30,7 @@
   --l-tcp: #5B6B82;
   --l-stp: #B8920A;
   --l-rt: #B4532A;
+  --l-vpn: #0F766E;
 
   --font: "Cantarell", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
@@ -300,9 +301,9 @@ body.resizing.col { cursor: col-resize; } body.resizing.row { cursor: row-resize
 .layer td.h { color: var(--ink-3); font-size: .74rem; }
 .layer.inner { margin-left: 12px; }
 .lc-eth { --lc: var(--l-eth); } .lc-vlan { --lc: var(--l-vlan); } .lc-arp { --lc: var(--l-arp); } .lc-ip { --lc: var(--l-ip); }
-.lc-icmp { --lc: var(--l-icmp); } .lc-udp { --lc: var(--l-udp); } .lc-vxlan { --lc: var(--l-vxlan); } .lc-frag { --lc: var(--l-frag); } .lc-data { --lc: var(--l-data); } .lc-tcp { --lc: var(--l-tcp); } .lc-stp { --lc: var(--l-stp); } .lc-rt { --lc: var(--l-rt); } .lc-dns { --lc: var(--l-udp); }
+.lc-icmp { --lc: var(--l-icmp); } .lc-udp { --lc: var(--l-udp); } .lc-vxlan { --lc: var(--l-vxlan); } .lc-frag { --lc: var(--l-frag); } .lc-data { --lc: var(--l-data); } .lc-tcp { --lc: var(--l-tcp); } .lc-stp { --lc: var(--l-stp); } .lc-rt { --lc: var(--l-rt); } .lc-vpn { --lc: var(--l-vpn); } .lc-dns { --lc: var(--l-udp); }
 .bg-eth { background: var(--l-eth); } .bg-vlan { background: var(--l-vlan); } .bg-arp { background: var(--l-arp); } .bg-ip { background: var(--l-ip); }
-.bg-icmp { background: var(--l-icmp); } .bg-udp { background: var(--l-udp); } .bg-vxlan { background: var(--l-vxlan); } .bg-frag { background: var(--l-frag); } .bg-data { background: var(--l-data); } .bg-tcp { background: var(--l-tcp); } .bg-stp { background: var(--l-stp); } .bg-rt { background: var(--l-rt); }
+.bg-icmp { background: var(--l-icmp); } .bg-udp { background: var(--l-udp); } .bg-vxlan { background: var(--l-vxlan); } .bg-frag { background: var(--l-frag); } .bg-data { background: var(--l-data); } .bg-tcp { background: var(--l-tcp); } .bg-stp { background: var(--l-stp); } .bg-rt { background: var(--l-rt); } .bg-vpn { background: var(--l-vpn); }
 
 /* ---------- SVG network diagram ---------- */
 svg.net text { font-family: var(--font); fill: var(--ink); }

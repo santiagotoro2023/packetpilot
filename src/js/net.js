@@ -182,6 +182,7 @@ export function udpPayloadLen(udp) {
   if (p.kind === 'dns') return dnsLen(p);
   if (p.kind === 'dhcp') return DHCP_LEN;
   if (p.kind === 'bfd') return 24;
+  if (p.kind === 'wg') return p.type === 'init' ? 148 : p.type === 'resp' ? 92 : 32 + (p.inner ? Math.ceil(p.inner.totalLength / 16) * 16 : 0);
   return p.len || 0;
 }
 export function ipTotalLen(ip) { return (ip.v === 6 ? IP6_HDR : IP_HDR) + l4Len(ip); }

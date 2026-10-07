@@ -1,4 +1,5 @@
 // Building blocks for topologies and the example networks
+import { wgGenKey, wgPubKey } from './vpn.js';
 let LN = 1;
 export const host = (name, x, y, ip = '', prefix = 24, gw = '', vlan = null, type = 'pc') =>
   ({ id: name, type, name, x, y, ifaces: { eth1: { ip, prefix, vlan } }, gw });
@@ -88,6 +89,9 @@ export const PRESETS = [
   { id: 'ipv6', title: 'Dual stack: IPv4 and IPv6', topics: ['IPv6', 'SLAAC', 'NDP', 'Dual stack'],
     text: 'The PCs get their IPv6 address from the router advertisement of r1 (SLAAC) and their DNS server too. Try ping -6, ip -6 neigh and curl http://www.lab/: the name has an A and an AAAA record.',
     make: () => ipv6Topo() },
+  { id: 'vpn', title: 'Site-to-site VPN with WireGuard', topics: ['VPN', 'WireGuard', 'Tunnel'],
+    text: 'gwA and gwB join two private networks through a provider that only knows public addresses. Ping srvB from pcA and look at the outer and the inner packet. wg show on the gateways.',
+    make: () => vpnTopo() },
   { id: 'failover', title: 'Failover with gratuitous ARP', topics: ['ARP', 'GARP', 'Failover'],
     text: 'The service address 10.0.0.100 moves from srvA to srvB. Try it with and without gratuitous ARP.',
     make: () => failoverTopo() },
@@ -262,6 +266,26 @@ export function ipv6Topo({ ra = true, rdnss = true, routes6 = true, v4 = true } 
     [link('pc1', 'eth1', 'sw1', 'eth1'), link('pc2', 'eth1', 'sw1', 'eth2'), link('sw1', 'eth8', 'r1', 'eth1'), link('r1', 'eth2', 'r2', 'eth1'),
       link('r2', 'eth2', 'sw2', 'eth8'), link('web', 'eth1', 'sw2', 'eth1'), link('dns', 'eth1', 'sw2', 'eth2')],
     [{ x: 30, y: 50, w: 460, h: 380, label: 'LAN 2001:db8:1::/64, SLAAC', color: 'blue' }, { x: 690, y: 50, w: 300, h: 380, label: 'Servers 2001:db8:2::/64', color: 'green' }]);
+}
+/** Two sites joined by a WireGuard tunnel across a provider that only routes public addresses */
+export const WG_KEYS = { gwA: wgGenKey('gwA'), gwB: wgGenKey('gwB'), laptop: wgGenKey('laptop') };
+export function vpnTopo({ peerB = true, allowedB = '10.99.0.1/32, 10.1.0.0/24', allowedA = '10.99.0.2/32, 10.2.0.0/24' } = {}) {
+  const wg = (d, addr, peers) => {
+    d.ifaces.wg0 = { ip: addr, prefix: 24 };
+    d.wg = { enabled: true, listenPort: 51820, privateKey: WG_KEYS[d.id], mtu: 1420, peers };
+    return d;
+  };
+  const gwA = wg(router('gwA', 330, 230, { eth1: '10.1.0.1/24', eth2: '198.51.100.1/24' }, [['0.0.0.0/0', '198.51.100.254']]), '10.99.0.1',
+    [{ name: 'gwB', publicKey: wgPubKey(WG_KEYS.gwB), endpoint: '203.0.113.1:51820', allowedIps: allowedA, keepalive: 25 }]);
+  const gwB = wg(router('gwB', 730, 230, { eth1: '203.0.113.1/24', eth2: '10.2.0.1/24' }, [['0.0.0.0/0', '203.0.113.254']]), '10.99.0.2',
+    peerB ? [{ name: 'gwA', publicKey: wgPubKey(WG_KEYS.gwA), endpoint: '', allowedIps: allowedB, keepalive: 0 }] : []);
+  const srv = server('srvB', 900, 230, '10.2.0.10', 24, '10.2.0.1');
+  srv.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  return topo('Site-to-site VPN with WireGuard', [host('pcA', 80, 140, '10.1.0.10', 24, '10.1.0.1'), host('pcA2', 80, 330, '10.1.0.200', 24, '10.1.0.1'), sw('swA', 200, 230), gwA,
+    router('isp', 530, 230, { eth1: '198.51.100.254/24', eth2: '203.0.113.254/24' }), gwB, srv],
+  [link('pcA', 'eth1', 'swA', 'eth1'), link('pcA2', 'eth1', 'swA', 'eth2'), link('swA', 'eth8', 'gwA', 'eth1'), link('gwA', 'eth2', 'isp', 'eth1'), link('isp', 'eth2', 'gwB', 'eth1'), link('gwB', 'eth2', 'srvB', 'eth1')],
+  [{ x: 20, y: 60, w: 380, h: 340, label: 'Site A 10.1.0.0/24', color: 'blue' }, { x: 450, y: 120, w: 160, h: 200, label: 'Internet', color: 'gray' },
+    { x: 660, y: 60, w: 320, h: 340, label: 'Site B 10.2.0.0/24', color: 'green' }]);
 }
 export function failoverTopo() {
   const a = server('srvA', 600, 110, '10.0.0.100'), b = server('srvB', 600, 330, '10.0.0.12');

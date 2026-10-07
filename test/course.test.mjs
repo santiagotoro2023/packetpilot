@@ -120,6 +120,20 @@ const SOLUTIONS = {
     runT(sim, 'pc1', 'ping -6 -c 2 2001:db8:2::80', 4000);
     sim.dev('r1').cfg.ipv6.rdnss = '2001:db8:2::53'; sim.configChanged('r1'); sim.runFor(2000);
     runT(sim, 'pc1', 'curl http://www.lab/', 5000); } },
+  'm13-l3': { answers: [null, null, '203.0.113.1', null, '156'], act: (sim, ctx) => {
+    sim.runFor(1000); runT(sim, 'pcA', 'ping -c 1 10.2.0.10', 25000);
+    assert.ok(sim.log.some(e => e.dev === 'gwB' && e.tag === 'wg-unknown'), 'gwB ignores the unknown key');
+    const pubA = sim.dev('gwA').wg.pub;
+    sim.dev('gwB').cfg.wg.peers.push({ name: 'gwA', publicKey: pubA, endpoint: '', allowedIps: '10.1.0.0/24, 10.99.0.1/32', keepalive: 0 }); sim.configChanged('gwB');
+    runT(sim, 'pcA', 'ping -c 2 10.2.0.10', 8000);
+    const e = sim.log.find(x => x.dev === 'isp' && x.kind === 'send' && x.frame?.payload?.l4?.payload?.inner);
+    assert.equal(e.frame.payload.totalLength, 156);
+    ctx.inspected.push(e); } },
+  'm13-l4': { answers: [null, 'gwB', null, 'wg0'], act: sim => {
+    sim.runFor(1000); runT(sim, 'pcA', 'ping -c 1 10.2.0.10', 3000); runT(sim, 'pcA2', 'ping -c 1 10.2.0.10', 6000);
+    assert.ok(sim.log.some(e => e.dev === 'gwB' && e.tag === 'wg-notallowed'));
+    sim.dev('gwB').cfg.wg.peers[0].allowedIps = '10.99.0.1/32, 10.1.0.0/24'; sim.configChanged('gwB');
+    runT(sim, 'pcA2', 'ping -c 2 10.2.0.10', 8000); } },
   'm11-l2': { answers: [null, '198.41.0.4', '3', 'no', null, 'ns.partner.lab', 'REFUSED'], act: sim => {
     run(sim, 'client', 'dig www.firma.lab');
     assert.equal(sim.log.filter(e => e.dev === 'resolver' && e.tag === 'dns-iter').length, 3);

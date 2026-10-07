@@ -281,6 +281,7 @@ export const BUILD_BLOCKS = {
     ['135', '135 Neighbor Solicitation'], ['136', '136 Neighbor Advertisement'], ['1', '1 Destination Unreachable'], ['2', '2 Packet Too Big'], ['3', '3 Time Exceeded']]], ['target', 'Target address (NS/NA only)', 'ip6']] },
   udp: { name: 'UDP', kind: 'udp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num']] },
   tcp: { name: 'TCP', kind: 'tcp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num'], ['flags', 'Flags', [['SYN', 'SYN'], ['SYN,ACK', 'SYN, ACK'], ['ACK', 'ACK'], ['PSH,ACK', 'PSH, ACK'], ['FIN,ACK', 'FIN, ACK'], ['RST', 'RST'], ['RST,ACK', 'RST, ACK']]]] },
+  wg: { name: 'WireGuard', kind: 'vpn', fields: [['type', 'Message type', [['1', '1 Handshake initiation'], ['2', '2 Handshake response'], ['4', '4 Transport data']]]] },
   dns: { name: 'DNS', kind: 'udp', fields: [['qr', 'Kind', [['0', 'Query (QR 0)'], ['1', 'Response (QR 1)']]], ['name', 'Queried name', 'name'],
     ['qtype', 'Type', [['A', 'A (IPv4 address)'], ['AAAA', 'AAAA (IPv6 address)'], ['NS', 'NS (name server)'], ['CNAME', 'CNAME (alias)']]],
     ['rd', 'Recursion desired (RD)', [['1', '1: find the answer for me'], ['0', '0: only tell me what you know']]]] },

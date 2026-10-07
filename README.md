@@ -63,7 +63,7 @@ The logo for presentations and marketing is in [`assets/logo`](assets/logo): the
 
 ## What's inside
 
-**Course with twelve modules and 61 lessons**
+**Course with thirteen modules and 66 lessons**
 
 | Module | Contents |
 |---|---|
@@ -79,6 +79,7 @@ The logo for presentations and marketing is in [`assets/logo`](assets/logo): the
 | 10. Dynamic routing with OSPF | How link-state routing works (hellos, LSAs, SPF), turning OSPF on, failover and costs, neighbors that don't get along |
 | 11. VRRP | One gateway address shared by two routers, failover in the lab, configuring the second router (priority, preemption) |
 | 12. ECMP and BFD | Equal-cost multipath with per-flow hashing (layer 3 and layer 4 hash policy), maximum paths, failover of one path; BFD sessions (Down, Init, Up, discriminators, detection time), BFD for OSPF and static routes, measuring failover through a provider switch |
+| 13. VPN: WireGuard and IPsec | Tunnels and the packet inside the packet, site-to-site and remote access, what a VPN protects, overhead and the tunnel MTU, WireGuard keys, peers and cryptokey routing, handshake, roaming and keepalives behind NAT, a site-to-site tunnel and allowed IPs in the lab, IPsec with IKEv2, ESP, SAs and SPI, tunnel and transport mode, NAT traversal |
 
 Theory terms are underlined quietly: hovering, focusing or tapping one shows a short explanation from the glossary. Theory pages can be printed or saved as a PDF, one lesson or any selection of modules (print button on a lesson, or **Print theory** on the home page).
 
@@ -86,7 +87,7 @@ Exercise types: theory, quizzes with explanations, labeling headers by drag and 
 
 **Fix it: troubleshooting challenges**
 
-Nineteen broken networks in three levels, each with a symptom, goals, hints and a timer: wrong gateway, missing return route, broadcast storm, slow RSTP failover, VLAN trunk, DHCP relay, NAT, DNS, a broken DNS delegation (six causes), a web server move that nobody sees, PCs without an IPv6 address, IPv6 that stops at the router, a broken dual-stack web site, OSPF, an idle ECMP path, BFD that does not speed anything up, VRRP failover, a slow lossy link and the MTU blackhole. Every challenge has several variants with different causes, so it can be played more than once. Your best time is saved.
+Twenty broken networks in three levels, each with a symptom, goals, hints and a timer: wrong gateway, missing return route, broadcast storm, slow RSTP failover, VLAN trunk, DHCP relay, NAT, DNS, a broken DNS delegation (six causes), a web server move that nobody sees, PCs without an IPv6 address, IPv6 that stops at the router, a broken dual-stack web site, a WireGuard tunnel that stays dark (six causes), OSPF, an idle ECMP path, BFD that does not speed anything up, VRRP failover, a slow lossy link and the MTU blackhole. Every challenge has several variants with different causes, so it can be played more than once. Your best time is saved.
 
 **Subnets: subnetting trainer**
 
@@ -100,6 +101,7 @@ Endless random questions in five kinds (network and broadcast, prefix and mask, 
 - **DHCP** server and relay, clients with static or DHCP addresses; **NAT** with masquerading and port forwards; **OSPF** (single area, cost, passive interfaces, fast or standard timers); **VRRP** with priority and preemption; **ECMP** (per-flow hash over layer 3 or layer 4, maximum paths) for OSPF and static routes with several next hops, floating static routes with their own distance; **BFD** for OSPF neighbors and static routes
 - **Line quality per cable**: latency in milliseconds and packet loss in percent, with TCP retransmissions (exponential backoff, duplicate ACKs) you can watch
 - Services per server (TCP and UDP, freely chosen ports) and DNS records, DNS server per host
+- **WireGuard VPN** on PCs, servers and routers: key pairs, peers with endpoints and allowed IPs (cryptokey routing, routes like wg-quick), handshake over UDP, encrypted data packets with the inner packet visible in the inspector, keepalives, roaming endpoints, tunnel MTU, wg show / genkey / pubkey
 - **IPv6** next to IPv4: link-local, static and SLAAC addresses with duplicate address detection, Neighbor Discovery with solicited-node multicast and unreachability detection, router advertisements with prefixes and RDNSS, static IPv6 routes, forwarding with hop limit, Packet Too Big and fragmentation by the sender, ping -6 (also to ff02::1), traceroute -6, curl over IPv6, AAAA preferred like getaddrinfo, ip -6 addr/route/neigh, rdisc6
 - **DNS in depth**: authoritative zones with A, AAAA, NS and CNAME records and TTLs, delegation with glue, recursive resolvers with root hints and a cache (negative caching too), dig with +trace, +norec, +short and record types, unbound-control dump_cache and flush
 - Slow motion with a speed slider (remembered), pause, single step and fast-forward, BPDUs and hellos can be shown or hidden

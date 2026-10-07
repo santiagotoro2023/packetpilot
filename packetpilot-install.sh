@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.5.0
+#  PacketPilot 2.6.0
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -31,7 +31,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.5.0"
+PP_VERSION="2.6.0"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -139,6 +139,7 @@ write_files() {
   --l-tcp: #5B6B82;
   --l-stp: #B8920A;
   --l-rt: #B4532A;
+  --l-vpn: #0F766E;
 
   --font: "Cantarell", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
@@ -409,9 +410,9 @@ body.resizing.col { cursor: col-resize; } body.resizing.row { cursor: row-resize
 .layer td.h { color: var(--ink-3); font-size: .74rem; }
 .layer.inner { margin-left: 12px; }
 .lc-eth { --lc: var(--l-eth); } .lc-vlan { --lc: var(--l-vlan); } .lc-arp { --lc: var(--l-arp); } .lc-ip { --lc: var(--l-ip); }
-.lc-icmp { --lc: var(--l-icmp); } .lc-udp { --lc: var(--l-udp); } .lc-vxlan { --lc: var(--l-vxlan); } .lc-frag { --lc: var(--l-frag); } .lc-data { --lc: var(--l-data); } .lc-tcp { --lc: var(--l-tcp); } .lc-stp { --lc: var(--l-stp); } .lc-rt { --lc: var(--l-rt); } .lc-dns { --lc: var(--l-udp); }
+.lc-icmp { --lc: var(--l-icmp); } .lc-udp { --lc: var(--l-udp); } .lc-vxlan { --lc: var(--l-vxlan); } .lc-frag { --lc: var(--l-frag); } .lc-data { --lc: var(--l-data); } .lc-tcp { --lc: var(--l-tcp); } .lc-stp { --lc: var(--l-stp); } .lc-rt { --lc: var(--l-rt); } .lc-vpn { --lc: var(--l-vpn); } .lc-dns { --lc: var(--l-udp); }
 .bg-eth { background: var(--l-eth); } .bg-vlan { background: var(--l-vlan); } .bg-arp { background: var(--l-arp); } .bg-ip { background: var(--l-ip); }
-.bg-icmp { background: var(--l-icmp); } .bg-udp { background: var(--l-udp); } .bg-vxlan { background: var(--l-vxlan); } .bg-frag { background: var(--l-frag); } .bg-data { background: var(--l-data); } .bg-tcp { background: var(--l-tcp); } .bg-stp { background: var(--l-stp); } .bg-rt { background: var(--l-rt); }
+.bg-icmp { background: var(--l-icmp); } .bg-udp { background: var(--l-udp); } .bg-vxlan { background: var(--l-vxlan); } .bg-frag { background: var(--l-frag); } .bg-data { background: var(--l-data); } .bg-tcp { background: var(--l-tcp); } .bg-stp { background: var(--l-stp); } .bg-rt { background: var(--l-rt); } .bg-vpn { background: var(--l-vpn); }
 
 /* ---------- SVG network diagram ---------- */
 svg.net text { font-family: var(--font); fill: var(--ink); }
@@ -1147,8 +1148,9 @@ __PACKETPILOT_FILE_END__
   cat > "$W/js/challenges.js" <<'__PACKETPILOT_FILE_END__'
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo, ipv6Topo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo, ipv6Topo, vpnTopo } from './presets.js';
 import { macFor } from './net.js';
+import { wgPubKey, wgGenKey } from './vpn.js';
 
 const preset = id => PRESETS.find(p => p.id === id).make();
 const dev = (t, id) => t.devices.find(d => d.id === id);
@@ -1357,6 +1359,20 @@ export const CHALLENGES = [
     hints: ['dig www.lab AAAA and dig www.lab A on pc1: which addresses does DNS give out?', 'Does the web server answer ping -6 at that address? Look at its IPv6 configuration.'],
     presets: { pc1: ['curl http://www.lab/', 'curl -4 http://www.lab/', 'dig www.lab AAAA', 'ping -6 -c 2 2001:db8:2::80'], web: ['ip -6 addr', 'ip -6 route'] } },
 
+  { id: 'vpn', level: 2, title: 'The new tunnel stays dark', topics: ['VPN', 'WireGuard'],
+    symptom: '<p>Yesterday the two sites were connected with WireGuard between gwA and gwB. pcA still cannot reach the server srvB (10.2.0.10) at site B. Both gateways reach each other over the internet.</p>',
+    topo: () => vpnTopo(),
+    variants: [
+      { fault: t => { dev(t, 'gwB').wg.peers[0].publicKey = wgPubKey(wgGenKey('typo')); }, cause: 'gwB had a wrong public key for gwA. gwA\'s handshake carried a key gwB did not know, and WireGuard answers strangers with silence.' },
+      { fault: t => { dev(t, 'gwA').wg.peers[0].publicKey = wgPubKey(wgGenKey('old-gwB')); }, cause: 'gwA used an old public key for gwB. The handshake was encrypted for a key gwB does not have, so gwB could not read it and stayed silent.' },
+      { fault: t => { dev(t, 'gwA').wg.peers[0].endpoint = '203.0.113.1:51821'; }, cause: 'gwA sent its handshakes to port 51821, gwB listens on 51820. gwB answered with ICMP port unreachable.' },
+      { fault: t => { dev(t, 'gwB').wg.peers[0].allowedIps = '10.99.0.1/32'; }, cause: 'The allowed IPs of gwA on gwB only contained 10.99.0.1/32. gwB decrypted the pings but dropped them, because 10.1.0.10 was not allowed from that peer, and had no route back into the tunnel.' },
+      { fault: t => { dev(t, 'gwA').wg.peers[0].allowedIps = '10.99.0.2/32'; }, cause: 'gwA did not have 10.2.0.0/24 in the allowed IPs of gwB. Without a route into wg0, pcA\'s packets went unencrypted to the provider, which has no route to private networks.' },
+      { fault: t => { dev(t, 'isp').acl = [{ action: 'drop', proto: 'udp', port: 51820, src: 'any', dst: 'any' }]; }, cause: 'The provider dropped UDP port 51820. No handshake ever arrived. A different listen port, or a talk with the provider, helps.' }],
+    goals: [{ text: 'pcA pings srvB (10.2.0.10).', check: pingAfterStart('pcA', '10.2.0.10') }],
+    hints: ['wg show on both gateways: is there a latest handshake?', 'Read the log of the gateways: WireGuard drops silently, but the simulator tells you why.', 'Compare the keys: the public key gwA shows for itself must be the one gwB has for gwA, and the other way round.'],
+    presets: { pcA: ['ping -c 2 10.2.0.10', 'traceroute 10.2.0.10'], gwA: ['wg show', 'ip route'], gwB: ['wg show', 'ip route'], isp: ['ip route'] } },
+
   { id: 'ospf', level: 2, title: 'One site is missing from the map', topics: ['OSPF'],
     symptom: '<p>Three sites run OSPF. pc1 cannot reach the server srv3 at site 3.</p>',
     topo: () => ospfTopo(),
@@ -1416,6 +1432,7 @@ __PACKETPILOT_FILE_END__
 import { isIp, parseCidr, isIp6, isAnyIp, parseCidr6, norm6, isLinkLocal6 } from './net.js';
 import { PORTS } from './engine.js';
 import { resolverOf, fqdn } from './dns.js';
+import { wgPubKey, wgGenKey } from './vpn.js';
 
 const pad = (s, n) => String(s).padEnd(n);
 
@@ -1458,6 +1475,7 @@ export function helpFor(dev) {
   if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
   if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)', 'rdisc6 [eth1]         ask the routers for their advertisement (IPv6)');
   if (dev.type === 'router') l.push('show ipv6 route / show ipv6 neighbors   IPv6 state in FRR style');
+  if (dev.wg) l.push('wg show               WireGuard: keys, peers, endpoints, latest handshake', 'wg genkey / wg pubkey <key>   make a key pair');
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
   if (dev.type === 'switch') l.push('show spanning-tree    STP status: root, roles, states',
     'spanning-tree on|off  turn STP on or off',
@@ -1733,6 +1751,29 @@ export function runCommand(dev, line) {
       sim.record(dev, 'info', `IPv6 ${dev.cfg.ipv6.enabled ? 'turned on' : 'turned off'}`, { tag: 'v6-toggle' });
       sim.configChanged(dev.id);
       return say(p[1].replace('=', ' = '));
+    }
+    if (p[0] === 'wg' && dev.wg) {
+      const w = dev.cfg.wg;
+      if (p[1] === 'genkey') return say(wgGenKey(dev.id + sim.time + Math.random()));
+      if (p[1] === 'pubkey') return say(p[2] ? wgPubKey(p[2]) : 'Syntax: wg pubkey <private key>   (usually: wg genkey | wg pubkey)');
+      if (!w.enabled || !dev.cfg.ifaces?.wg0) return say('No WireGuard interface (Configuration, Add a feature, WireGuard VPN)');
+      if (p[1] === 'show' && p[3] === 'public-key') return say(wgPubKey(w.privateKey));
+      const ago = s => s === null ? null : s < 60 ? `${s} second${s === 1 ? '' : 's'} ago` : `${Math.floor(s / 60)} minute${s >= 120 ? 's' : ''}, ${s % 60} seconds ago`;
+      const kb = n => n < 1024 ? `${n} B` : `${(n / 1024).toFixed(2)} KiB`;
+      say('interface: wg0');
+      say(`  public key: ${wgPubKey(w.privateKey) || '(no private key!)'}`);
+      say('  private key: (hidden)');
+      say(`  listening port: ${w.listenPort || 51820}`);
+      for (const x of dev.wg.table()) {
+        say('');
+        say(`peer: ${x.publicKey}${x.name ? '   (' + x.name + ')' : ''}`);
+        say(`  endpoint: ${x.endpoint}`);
+        say(`  allowed ips: ${x.allowed || '(none)'}`);
+        if (x.handshake !== null) say(`  latest handshake: ${ago(x.handshake)}`);
+        if (x.rx || x.tx) say(`  transfer: ${kb(x.rx)} received, ${kb(x.tx)} sent`);
+        if (x.keepalive) say(`  persistent keepalive: every ${x.keepalive} seconds`);
+      }
+      return;
     }
     if (p[0] === 'ss' && dev.l3) {
       const f = p.slice(1).join('');
@@ -2046,11 +2087,11 @@ import m9 from './m9.js';
 import m10 from './m10.js';
 import m11 from './m11.js';
 import m12 from './m12.js';
+import m13 from './m13.js';
 
 // Display order: all of layer 2, then layer 3, VLAN/VXLAN, transport, then the network services
-export const MODULES = [m1, m4, m2, m12, m3, m5, m11, m6, m7, m8, m9, m10];
+export const MODULES = [m1, m4, m2, m12, m3, m5, m11, m6, m7, m8, m9, m10, m13];
 export const UPCOMING = [
-  { title: 'VPN', text: 'WireGuard and IPsec between sites, MTU with a double envelope.' },
   { title: 'BGP and EVPN', text: 'Routing between networks and a real control plane for VXLAN.' }
 ]
 export function findLesson(id) {
@@ -2693,6 +2734,141 @@ ${note('ICMPv6 must not be blocked wholesale. Without Neighbor Discovery nothing
         { q: 'A PC has 2001:db8:1::10 and a default route via fe80::1. The name has A and AAAA. Which one does it use first?', options: ['A', 'AAAA'], correct: 1 },
         { q: 'A firewall drops all ICMPv6. What breaks first?', options: ['Only ping', 'Neighbor Discovery on the LAN, and Path MTU Discovery across routers', 'Nothing', 'Only DNS'], correct: 1 },
         { q: 'What does DNS64 do?', options: ['Stores IPv6 addresses in 64 bits', 'Synthesizes an AAAA record for an IPv4-only server so that NAT64 can translate', 'Resolves names twice', 'Blocks IPv4'], correct: 1 }] }
+    ] }
+  ]
+};
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/course"
+  cat > "$W/js/course/m13.js" <<'__PACKETPILOT_FILE_END__'
+import { note, tag, inspected, pingOk } from './helpers.js';
+import { vpnTopo } from '../presets.js';
+import { macFor } from '../net.js';
+
+const M = (id, port = 'eth1') => macFor(id + '/' + port);
+const ADDR = {
+  mac: [[M('gwA', 'eth2'), 'gwA eth2 (internet side)'], [M('gwA'), 'gwA eth1 (LAN side)'], [M('isp'), 'isp eth1'], [M('pcA'), 'pcA'], [M('gwB'), 'gwB eth1']],
+  ip: [['10.1.0.10', 'pcA'], ['10.2.0.10', 'srvB'], ['198.51.100.1', 'gwA (public)'], ['203.0.113.1', 'gwB (public)'], ['198.51.100.254', 'isp'], ['10.99.0.1', 'gwA wg0'], ['10.99.0.2', 'gwB wg0']]
+};
+const isWgData = f => f.type === 'ipv4' && f.payload.l4?.payload?.kind === 'wg' && !!f.payload.l4.payload.inner;
+const failed = (from, to) => tag(from, 'ping-done', d => d.dst === to && d.received === 0);
+
+export default {
+  id: 'm13', title: 'VPN: WireGuard and IPsec', bands: ['ip', 'udp', 'vpn'],
+  text: 'Private networks across the internet: tunnels, keys, the packet inside the packet, and why the MTU shrinks.',
+  lessons: [
+    { id: 'm13-l1', title: 'A private network across the internet', minutes: 12, steps: [
+      { type: 'theory', title: 'The packet inside the packet', html: `
+<p>Two sites use private addresses (10.1.0.0/24 and 10.2.0.0/24). The internet does not route them, and anyone on the way could read along. A <b>VPN</b> solves both: the gateway packs the private packet, encrypted, into a new packet between the public addresses of the two gateways.</p>
+<pre>inner:  10.1.0.10  →  10.2.0.10       ICMP Echo Request    (encrypted)
+outer:  198.51.100.1 → 203.0.113.1   UDP 51820            (visible to everyone)</pre>
+<table><tr><th>Kind</th><th>Example</th></tr>
+<tr><td>Site-to-site</td><td>Two offices: the gateways hold the tunnel, the PCs notice nothing</td></tr>
+<tr><td>Remote access</td><td>A laptop in a hotel connects to the company network</td></tr></table>
+<h2>What a VPN protects</h2>
+<table><tr><th>Property</th><th>Meaning</th></tr>
+<tr><td>Confidentiality</td><td>nobody on the way can read the inner packet, not even its addresses</td></tr>
+<tr><td>Integrity</td><td>a changed byte is noticed, the packet is dropped</td></tr>
+<tr><td>Authenticity</td><td>only someone with the right key can send into the tunnel</td></tr></table>
+<h2>The cost: bytes</h2>
+<p>Every packet carries a second IP header, a UDP header and the VPN header with its authentication tag. With WireGuard over IPv4 that is up to 60 bytes, over IPv6 80 bytes. That is why the tunnel interface gets a smaller MTU, usually <b>1420</b>: a 1420-byte inner packet plus 80 bytes still fits into 1500.</p>
+${note('A VPN encrypts between the gateways. Inside each site the traffic is as readable as before; for end-to-end protection use TLS on top.')}
+<h2>The usual protocols</h2>
+<table><tr><th></th><th>WireGuard</th><th>IPsec (IKEv2 + ESP)</th><th>OpenVPN</th></tr>
+<tr><td>Transport</td><td>UDP, one port</td><td>IP protocol 50 (ESP), with NAT in UDP 4500</td><td>UDP or TCP</td></tr>
+<tr><td>Setup</td><td>keys only, one handshake</td><td>many proposals and phases</td><td>certificates, TLS</td></tr>
+<tr><td>Code size</td><td>about 4000 lines</td><td>large, but in every firewall</td><td>large</td></tr></table>` },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'Which addresses does a router on the internet see in a site-to-site VPN packet?', options: ['The private addresses of the PCs', 'The public addresses of the two gateways', 'Both', 'None'], correct: 1 },
+        { q: 'Why does a tunnel interface have an MTU of 1420 instead of 1500?', options: ['WireGuard is slower', 'The outer headers need room, otherwise the outer packet would not fit into 1500', 'It is a historical value', 'Encryption makes packets smaller'], correct: 1 },
+        { q: 'What does a VPN between two gateways not protect?', options: ['The inner addresses', 'The content on the internet', 'The traffic inside each site', 'Integrity'], correct: 2 }] }
+    ] },
+
+    { id: 'm13-l2', title: 'WireGuard', minutes: 16, steps: [
+      { type: 'theory', title: 'Keys, peers and allowed IPs', html: `
+<p>WireGuard needs no certificates and no negotiation. Every side has a <b>key pair</b> (Curve25519): the private key never leaves the device, the public key is given to the other side.</p>
+<pre>[Interface]                         # on gwA
+PrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=
+Address    = 10.99.0.1/24
+ListenPort = 51820
+
+[Peer]                              # gwB
+PublicKey  = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+Endpoint   = 203.0.113.1:51820
+AllowedIPs = 10.99.0.2/32, 10.2.0.0/24
+PersistentKeepalive = 25</pre>
+<h2>Cryptokey routing</h2>
+<p><b>AllowedIPs</b> work in both directions:</p>
+<ul><li><b>Sending</b>: a packet to 10.2.0.10 matches the allowed IPs of gwB, so it is encrypted with gwB's key and sent to gwB's endpoint. wg-quick also adds a route for every allowed IP into wg0.</li>
+<li><b>Receiving</b>: after decrypting, the source of the inner packet must be in the allowed IPs of the peer that sent it. Otherwise it is dropped. A key thus decides which addresses a peer may use.</li></ul>
+<h2>Handshake and silence</h2>
+<p>Before the first data packet, one round trip creates the session keys: <i>handshake initiation</i> (148 bytes) and <i>response</i> (92 bytes). They are renewed every two minutes. A WireGuard port never answers strangers: a wrong key gets no error, just silence. That makes WireGuard invisible to port scanners, and makes troubleshooting a little harder.</p>
+<h2>Roaming and NAT</h2>
+<p>The endpoint is updated with every valid packet. A laptop that changes from Wi-Fi to mobile keeps its tunnel. A device behind NAT sends a <b>keepalive</b> every 25 seconds, so the NAT entry stays open and the other side can reach it at any time.</p>
+${note('The packets on the wire show only UDP. In the packet inspector PacketPilot shows you the decrypted inner packet anyway, marked as encrypted.')}` },
+      { type: 'build', title: 'Build the tunnel packet', blocks: ['eth', 'ip', 'icmp', 'udp', 'tcp', 'wg', 'data'],
+        task: '<p>pcA (10.1.0.10) pings srvB (10.2.0.10). The handshake between gwA and gwB is done. Build the frame as gwA sends it on its internet side (eth2) to the provider router <b>isp</b>.</p>',
+        addresses: ADDR,
+        expected: [
+          { block: 'eth', fields: { dst: M('isp'), src: M('gwA', 'eth2'), type: '0x0800' } },
+          { block: 'ip', fields: { src: '198.51.100.1', dst: '203.0.113.1', proto: '17' } },
+          { block: 'udp', fields: { sport: '51820', dport: '51820' } },
+          { block: 'wg', fields: { type: '4' } },
+          { block: 'ip', fields: { src: '10.1.0.10', dst: '10.2.0.10', proto: '1', ttl: '63' } },
+          { block: 'icmp', fields: { type: '8' } }],
+        explain: 'Outside: the public addresses of the gateways and UDP 51820. Inside, encrypted: the original packet. Its TTL is already 63, because gwA routed it once before it went into the tunnel.' },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'gwB receives a valid packet from gwA. Inside it is a packet from 10.5.0.1. The allowed IPs of gwA on gwB are 10.1.0.0/24. What happens?', options: ['It is forwarded', 'It is dropped', 'gwB sends an error to gwA', 'The tunnel is closed'], correct: 1 },
+        { q: 'Someone sends a handshake with a wrong key to a WireGuard port. What does he get back?', options: ['An error message', 'ICMP Port Unreachable', 'Nothing at all', 'A new key'], correct: 2 },
+        { q: 'A laptop behind a home router (NAT) should always be reachable through the tunnel. What does it need?', options: ['A fixed endpoint', 'PersistentKeepalive', 'A larger MTU', 'Nothing'], correct: 1 }] }
+    ] },
+
+    { id: 'm13-l3', title: 'A site-to-site tunnel in the lab', minutes: 18, steps: [
+      { type: 'lab', title: 'Connect the two sites', topo: () => vpnTopo({ peerB: false }), edit: 'config',
+        intro: '<p>gwA is fully configured, with gwB as its peer. gwB has WireGuard turned on and its own keys, but it does not know gwA yet. The provider router isp only knows the public networks.</p>',
+        presets: { pcA: ['ping -c 3 10.2.0.10', 'traceroute 10.2.0.10'], gwA: ['wg show', 'ip route'], gwB: ['wg show', 'wg show wg0 public-key'], isp: ['ip route'] },
+        goals: [
+          { text: 'Ping srvB (10.2.0.10) from pcA. It does not work yet.', check: failed('pcA', '10.2.0.10') },
+          { text: 'In the log of gwB: what happens to the handshake of gwA? Which public key does gwA use? Copy it from <code>wg show</code> on gwA (or its configuration) and add gwA as a peer on gwB, with the allowed IPs 10.1.0.0/24 and 10.99.0.1/32. Then ping again.', check: pingOk('pcA', '10.2.0.10') },
+          { text: 'Which destination IP address does the isp router see in your ping packets from pcA?', ask: true, expect: () => ['203.0.113.1'] },
+          { text: 'Click an encrypted ping in the log and look at it in the packet inspector.', check: inspected(isWgData) },
+          { text: 'The ping is an 84-byte IP packet. How large is the outer IP packet the isp router forwards? (bytes)', ask: true, expect: () => ['156'], placeholder: 'bytes' }],
+        hints: ['gwB answers the handshake of a key it does not know with silence. Its log says so.', 'On gwB: Configuration, WireGuard VPN, Peer. The endpoint may stay empty: gwB learns it from gwA\'s handshake.', 'The inspector shows the byte count of every layer: IP 20, UDP 8, WireGuard header 16, the inner packet padded to a multiple of 16, the tag 16.'],
+        outro: '<p>The isp router only ever saw 198.51.100.1 and 203.0.113.1. The 84-byte ping grew to 156 bytes: 20 IP, 8 UDP, 16 WireGuard header, 96 bytes of padded, encrypted ping and a 16-byte tag. gwB did not even need gwA\'s address: it learned the endpoint from the handshake.</p>' }
+    ] },
+
+    { id: 'm13-l4', title: 'Allowed IPs decide', minutes: 14, steps: [
+      { type: 'lab', title: 'One PC gets through, the other one does not', topo: () => vpnTopo({ allowedB: '10.99.0.1/32, 10.1.0.0/25' }), edit: 'config',
+        intro: '<p>The tunnel is up. pcA (10.1.0.10) reaches srvB, but pcA2 (10.1.0.200) on the same LAN does not.</p>',
+        presets: { pcA: ['ping -c 2 10.2.0.10'], pcA2: ['ping -c 2 10.2.0.10'], gwA: ['wg show', 'ip route'], gwB: ['wg show'] },
+        goals: [
+          { text: 'Ping srvB from pcA and from pcA2.', check: sim => pingOk('pcA', '10.2.0.10')(sim) && failed('pcA2', '10.2.0.10')(sim) },
+          { text: 'Which device drops the packets of pcA2?', ask: true, expect: () => ['gwb'] },
+          { text: 'Fix it, so that pcA2 reaches srvB too.', check: pingOk('pcA2', '10.2.0.10') },
+          { text: 'On gwA, <code>ip route</code> shows how packets to 10.2.0.0/24 get into the tunnel. Which device (dev) does that route use?', ask: true, expect: () => ['wg0'] }],
+        hints: ['Filter the log to gwB and look for "not in its allowed IPs".', '10.1.0.0/25 covers 10.1.0.0 to 10.1.0.127.'],
+        outro: '<p>gwB decrypted the packet of pcA2 correctly, but its source 10.1.0.200 was not in the allowed IPs of gwA. The key of a peer only covers the addresses listed for it: that is cryptokey routing. On the sending side, the same list became the routes into wg0.</p>' }
+    ] },
+
+    { id: 'm13-l5', title: 'IPsec', minutes: 12, steps: [
+      { type: 'theory', title: 'The classic in every firewall', html: `
+<p>IPsec is older than WireGuard and part of almost every firewall and router. It has two parts:</p>
+<table><tr><th>Part</th><th>Job</th></tr>
+<tr><td><b>IKEv2</b> (UDP 500)</td><td>the peers authenticate each other (pre-shared key or certificates), agree on algorithms and create the keys</td></tr>
+<tr><td><b>ESP</b> (IP protocol 50)</td><td>carries the encrypted packets</td></tr></table>
+<p>The result of IKE is a pair of <b>security associations</b> (SA), one per direction, each with a number, the <b>SPI</b>. Every ESP packet carries the SPI, so the receiver knows which keys to use, just like the receiver index of WireGuard.</p>
+<h2>Tunnel or transport mode</h2>
+<table><tr><th>Mode</th><th>Packet</th><th>Use</th></tr>
+<tr><td>Tunnel</td><td>new IP header + ESP + the whole original packet</td><td>site-to-site between gateways</td></tr>
+<tr><td>Transport</td><td>original IP header + ESP + only the payload</td><td>end to end between two hosts</td></tr></table>
+<h2>NAT traversal</h2>
+<p>ESP has no ports, so a NAT router cannot translate it. When IKE notices a NAT on the way, both sides switch to <b>UDP 4500</b> and put ESP inside UDP (NAT-T). Firewalls for IPsec therefore have to allow UDP 500, UDP 4500 and protocol 50.</p>
+${note('The most common IPsec problem is a mismatch: one side proposes AES-256 with SHA-256 and DH group 14, the other only accepts group 19. IKE then fails with NO_PROPOSAL_CHOSEN, and the logs of both sides tell different halves of the story.', true)}
+<p>In the <b>Frames</b> page there is a template "Ping through IPsec" next to "Ping through WireGuard": compare the overhead.</p>` },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'Which protocol does IPsec use to agree on keys?', options: ['ESP', 'IKE', 'AH', 'TLS'], correct: 1 },
+        { q: 'Which ports and protocols does a firewall have to allow for IPsec with NAT traversal?', options: ['TCP 443', 'UDP 500, UDP 4500 and IP protocol 50', 'UDP 51820', 'Only ICMP'], correct: 1 },
+        { q: 'What is the SPI in an ESP packet for?', options: ['Encryption', 'It tells the receiver which security association (keys) to use', 'Routing', 'Compression'], correct: 1 },
+        { q: 'Two gateways connect two office networks. Which IPsec mode do they use?', options: ['Transport', 'Tunnel'], correct: 1 }] }
     ] }
   ]
 };
@@ -4135,6 +4311,7 @@ const ipCmp = (a, b) => (ipToInt(a) ?? 0) - (ipToInt(b) ?? 0);
 import { ethFrame, arpPacket, ipPacket, icmp, icmp6, udp, tcp, ipChecksum, summary, icmpName, fmtBid } from './packets.js';
 import { serveDns, rrText, fqdn, resolverOf } from './dns.js';
 import { Ip6, icmp6Name } from './ipv6.js';
+import { Wg, wgDataLen } from './vpn.js';
 import { dhcpOn67, natIn, natOut, Vrrp, Ospf, Bfd, BFD_PORT, DHCP_TIMING, vrrpMac } from './services.js';
 
 export const PORTS = {
@@ -4316,13 +4493,15 @@ export function flowHash(ip, policy = 'l3') {
 export function isHello(f) {
   if (f?.type === 'ipv6') return !!f.payload.l4?.periodic;
   const l4 = f?.type === 'ipv4' ? f.payload.l4 : null;
-  return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello') || (l4.kind === 'udp' && l4.payload?.kind === 'bfd'));
+  return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello') || (l4.kind === 'udp' && l4.payload?.kind === 'bfd')
+    || (l4.kind === 'udp' && l4.payload?.kind === 'wg' && l4.payload.type === 'data' && !l4.payload.inner));
 }
 export function traceOf(f) {
   if (f?.type === 'ipv6') return f.payload.trace;
   if (!f || f.type !== 'ipv4') return null;
   const l4 = f.payload.l4;
   if (l4?.kind === 'udp' && l4.payload?.kind === 'vxlan') return traceOf(l4.payload.frame) ?? f.payload.trace;
+  if (l4?.kind === 'udp' && l4.payload?.kind === 'wg' && l4.payload.inner) return l4.payload.inner.trace ?? f.payload.trace;
   return f.payload.trace;
 }
 
@@ -4340,6 +4519,7 @@ export function normalizeDevice(cfg) {
     cfg.recursion = { enabled: false, roots: '', ...(cfg.recursion || {}) };
     cfg.ipv6 = { enabled: false, slaac: true, gw: '', ...(cfg.ipv6 || {}) };
   }
+  if (t === 'pc' || t === 'server' || t === 'router') cfg.wg = { enabled: false, listenPort: 51820, privateKey: '', mtu: 1420, peers: [], ...(cfg.wg || {}) };
   if (t === 'router') {
     for (const p of PORTS.router) cfg.ifaces[p] ??= { ip: '', prefix: 24 };
     cfg.ifaces.lo ??= { ip: '', prefix: 32 };
@@ -4425,7 +4605,7 @@ class L3 {
     // An interface in DHCP mode uses the address from its lease, if there is one
     return Object.entries(this.cfg.ifaces || {})
       .map(([name, v]) => v?.dhcp ? [name, { ...v, ip: this.lease?.ifname === name ? this.lease.ip : '', prefix: this.lease?.prefix ?? 24 }] : [name, v])
-      .filter(([, v]) => v && isIp(v.ip))
+      .filter(([n, v]) => v && isIp(v.ip) && (n !== 'wg0' || !!this.cfg.wg?.enabled))
       .map(([name, v]) => ({ name, ip: v.ip, prefix: Number(v.prefix ?? 24), vlan: v.vlan ? Number(v.vlan) : null, phys: v.parent || name }));
   }
   gateway() { return isIp(this.cfg.gw) ? this.cfg.gw : this.lease?.router || ''; }
@@ -4440,8 +4620,8 @@ class L3 {
   }
   isOwn(ip) { if (String(ip).includes(':')) return this.v6.isOwn(ip); return this.ifaces().some(i => i.ip === ip) || !!this.dev.vrrp?.ownsIp(ip); }
   ifIp(ifname) { return this.ifaces().find(i => i.name === ifname)?.ip || null; }
-  mtu(ifname) { return ifname === 'lo' ? 65536 : this.sim.mtuOf(this.dev.id, this.phys(ifname)); }
-  linkUp(ifname) { if (ifname === 'lo') return true; const l = this.sim.linkAt(this.dev.id, this.phys(ifname)); return !!l && l.up; }
+  mtu(ifname) { return ifname === 'lo' ? 65536 : ifname === 'wg0' ? (this.dev.wg?.mtu() ?? 1420) : this.sim.mtuOf(this.dev.id, this.phys(ifname)); }
+  linkUp(ifname) { if (ifname === 'lo' || ifname === 'wg0') return true; const l = this.sim.linkAt(this.dev.id, this.phys(ifname)); return !!l && l.up; }
 
   routes() {
     const out = [];
@@ -4462,17 +4642,20 @@ class L3 {
         distance: Number(r.distance) > 0 ? Number(r.distance) : 1 });
     }
     for (const r of this.dev.ospf?.routes || []) out.push({ net: r.net, len: r.len, via: r.via, dev: r.dev, proto: 'O', metric: r.cost });
+    for (const r of this.dev.wg?.routes() || []) out.push(r);
     return out;
   }
   /** All equally good routes to dst: longest prefix, then the administrative distance
    *  (connected 0, static 1, OSPF 110), then the metric */
-  lookupAll(dst) {
-    // A static route can carry its own distance (a "floating" backup route, e.g. 200)
-    const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, O: 110 }[r.proto] ?? 255;
+  lookupAll(dst, skipDev = null) {
+    // A static route can carry its own distance (a "floating" backup route, e.g. 200). Routes
+    // into the WireGuard tunnel win like wg-quick's own routing table.
+    const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, W: 0, O: 110 }[r.proto] ?? 255;
     let best = [];
     const better = (a, b) => a.len !== b.len ? a.len > b.len : ad(a) !== ad(b) ? ad(a) < ad(b) : (a.metric || 0) < (b.metric || 0);
     for (const r of this.routes()) {
       if (r.proto === 'S' && !r.dev) continue;
+      if (skipDev && r.dev === skipDev) continue;
       if (!inNet(dst, r.net, r.len)) continue;
       if (!best.length || better(r, best[0])) best = [r];
       else if (!better(best[0], r) && !best.some(b => b.via === r.via && b.dev === r.dev)) best.push(r);
@@ -4483,7 +4666,8 @@ class L3 {
    *  one, so all packets of a flow take the same path */
   lookup(dst, pkt) {
     if (String(dst).includes(':')) return this.v6.lookup(dst, pkt);
-    const all = this.lookupAll(dst);
+    // The encrypted outer packets of WireGuard must not go back into the tunnel
+    const all = this.lookupAll(dst, pkt?.wgOuter ? 'wg0' : null);
     if (!all.length) return null;
     const max = Math.max(1, Number(this.cfg.maxPaths ?? 4));
     const cand = all.slice(0, max);
@@ -4521,10 +4705,15 @@ class L3 {
         return { ok: false, error: `message too long, mtu=${mtu}`, mtu };
       }
       const frags = this.fragment(pkt, mtu);
-      this.dev.record('info', `Packet (${pkt.totalLength} bytes) larger than MTU ${mtu}: split into ${frags.length} fragments`, { tag: 'fragmented', data: { count: frags.length, mtu } });
-      for (const f of frags) this.l2send(f, r.dev, r.via || pkt.dst);
+      this.dev.record('info', `Packet (${pkt.totalLength} bytes) larger than MTU ${mtu}${r.dev === 'wg0' ? ' of the tunnel wg0' : ''}: split into ${frags.length} fragments`, { tag: 'fragmented', data: { count: frags.length, mtu } });
+      for (const f of frags) this.via(f, r);
       return { ok: true };
     }
+    return this.via(pkt, r);
+  }
+  /** Out of an interface: into the WireGuard tunnel, or onto the wire after ARP */
+  via(pkt, r) {
+    if (r.dev === 'wg0' && this.dev.wg) return this.dev.wg.send(pkt);
     this.l2send(pkt, r.dev, r.via || pkt.dst);
     return { ok: true };
   }
@@ -4838,6 +5027,7 @@ class L3 {
     if (l4.kind === 'tcp') return this.onTcp(ip, frame);
     if (l4.kind === 'udp') {
       if (l4.dport === BFD_PORT && l4.payload?.kind === 'bfd') { this.dev.bfd?.onPacket(ip); return; }
+      if (l4.payload?.kind === 'wg' && this.dev.wg?.on && l4.dport === this.dev.wg.port() && this.dev.wg.onPacket(ip)) return;
       if (l4.dport === 67 && l4.payload?.kind === 'dhcp' && dhcpOn67(this, ip, ifname, frame)) return;
       if (this.dev.onUdp?.(ip, ifname, frame)) return;
       if (this.resolverSvc?.onUdp(ip)) return;
@@ -5446,7 +5636,7 @@ class UdpSend extends Session {
 
 // ---------------------------------------------------------------- Hosts and routers
 class Host extends Device {
-  constructor(sim, cfg) { super(sim, cfg); this.l3 = new L3(this); }
+  constructor(sim, cfg) { super(sim, cfg); this.l3 = new L3(this); this.wg = new Wg(this); }
   receive(ifname, frame) { this.l3.receive(ifname, frame); }
   ping(dst, o = {}) { const s = new PingSession(this.l3, dst, o); s.start(); return s; }
   traceroute(dst, o = {}) { const s = new TraceSession(this.l3, dst, o); s.start(); return s; }
@@ -5470,12 +5660,13 @@ class Host extends Device {
   }
   udpSend(dst, port, len = 32) { const s = new UdpSend(this.l3, dst, port, len); s.start(); return s; }
   rdisc6(ifname = 'eth1') { const s = new RdiscSession(this.l3, ifname); s.start(); return s; }
-  onConfig() { this.l3.v6.onConfig(); }
+  onConfig() { this.l3.v6.onConfig(); this.wg.onConfig(); }
   onLink(ifname, up) { this.l3.v6.onLink(ifname, up); }
-  stop() { this.l3.v6.stop(); }
+  stop() { this.l3.v6.stop(); this.wg.stop(); }
   // Interfaces in DHCP mode ask for an address shortly after the device starts
   start() {
     this.l3.v6.start();
+    this.wg.start();
     if (this.cfg.recursion?.enabled && this.cfg.recursion.seed?.length) resolverOf(this.l3).seed(this.cfg.recursion.seed);
     for (const [n, v] of Object.entries(this.cfg.ifaces || {})) {
       if (v?.dhcp) this.sim.schedule(600 + this.sim.random() * 600, () => { if (!this.l3.lease && !this.dhcpRunning(n)) this.dhclient(n, { boot: true }); });
@@ -6124,6 +6315,8 @@ const BLOCKS = {
   udp: { name: 'UDP', size: 8, kind: 'udp', note: 'Ports, length, checksum' },
   tcp: { name: 'TCP', size: 20, kind: 'tcp', note: 'Ports, sequence, flags (without options)' },
   vxlan: { name: 'VXLAN', size: 8, kind: 'vxlan', note: 'Flags, VNI' },
+  wg: { name: 'WireGuard', size: 32, kind: 'vpn', note: 'Type, receiver index, counter (16 B) and the authentication tag (16 B). The inner packet follows encrypted, padded to 16 bytes' },
+  esp: { name: 'IPsec ESP', size: 36, kind: 'vpn', note: 'SPI, sequence number, IV (16 B), padding, trailer and ICV (about 20 B). Protocol 50, the inner packet is encrypted' },
   // Protocols on top: where they may sit (in) and whether anything may follow (last)
   dhcp: { name: 'DHCP', size: 300, kind: 'data', in: ['udp'], last: true, note: 'Discover, Offer, Request, ACK on UDP 67/68' },
   dns: { name: 'DNS', size: 32, kind: 'data', in: ['udp', 'tcp'], last: true, note: 'Query or answer on port 53, usually UDP, TCP for large answers (size depends on the name)' },
@@ -6133,7 +6326,7 @@ const BLOCKS = {
   data: { name: 'Data', size: null, kind: 'data', note: 'Application payload' }
 };
 // Headings in the palette, so the growing list stays easy to scan
-const GROUP = { eth: 'Layer 2', vlan: 'Layer 2', arp: 'Layer 2', stp: 'Layer 2', ip: 'Layer 3', ipv6: 'Layer 3', icmp: 'Layer 3', icmp6: 'Layer 3', ndp: 'Layer 3', udp: 'Transport', tcp: 'Transport', vxlan: 'Tunnels' };
+const GROUP = { eth: 'Layer 2', vlan: 'Layer 2', arp: 'Layer 2', stp: 'Layer 2', ip: 'Layer 3', ipv6: 'Layer 3', icmp: 'Layer 3', icmp6: 'Layer 3', ndp: 'Layer 3', udp: 'Transport', tcp: 'Transport', vxlan: 'Tunnels', wg: 'Tunnels', esp: 'Tunnels' };
 const PRESETS = {
   'Ping': ['eth', 'ip', 'icmp', 'data'],
   'Ping over IPv6': ['eth', 'ipv6', 'icmp6', 'data'],
@@ -6150,7 +6343,9 @@ const PRESETS = {
   'OSPF Hello': ['eth', 'ip', 'ospf'],
   'VRRP': ['eth', 'ip', 'vrrp'],
   'BFD': ['eth', 'ip', 'udp', 'bfd'],
-  'Ping over VXLAN': ['eth', 'ip', 'udp', 'vxlan', 'eth', 'ip', 'icmp', 'data']
+  'Ping over VXLAN': ['eth', 'ip', 'udp', 'vxlan', 'eth', 'ip', 'icmp', 'data'],
+  'Ping through WireGuard': ['eth', 'ip', 'udp', 'wg', 'ip', 'icmp', 'data'],
+  'Ping through IPsec': ['eth', 'ip', 'esp', 'ip', 'icmp', 'data']
 };
 
 function validate(seq) {
@@ -6162,7 +6357,11 @@ function validate(seq) {
     const b = seq[i], prev = seq[i - 1], next = seq[i + 1];
     if (b === 'vlan' && prev !== 'eth') err(i, 'The 802.1Q tag follows directly after the Ethernet header (after the source MAC).');
     if (b === 'eth' && i > 0 && prev !== 'vxlan') err(i, 'A second Ethernet header only makes sense after a VXLAN header (inner frame).');
-    if ((b === 'ip' || b === 'ipv6' || b === 'arp') && !['eth', 'vlan'].includes(prev)) err(i, `${BLOCKS[b].name} belongs directly in the Ethernet frame (EtherType).`);
+    if (b === 'arp' && !['eth', 'vlan'].includes(prev)) err(i, 'ARP belongs directly in the Ethernet frame (EtherType).');
+    if ((b === 'ip' || b === 'ipv6') && !['eth', 'vlan', 'wg', 'esp'].includes(prev)) err(i, `${BLOCKS[b].name} belongs directly in the Ethernet frame (EtherType), or inside a VPN tunnel.`);
+    if (b === 'wg' && prev !== 'udp') err(i, 'WireGuard is carried in UDP (usually port 51820).');
+    if ((b === 'wg' || b === 'esp') && next && !['ip', 'ipv6'].includes(next)) err(i + 1, `The encrypted inner IP packet follows ${BLOCKS[b].name}.`);
+    if (b === 'esp' && !['ip', 'ipv6'].includes(prev)) err(i, 'ESP sits directly in IP (protocol 50).');
     if (b === 'icmp' && prev === 'ipv6') err(i, 'IPv6 uses ICMPv6 (next header 58), not ICMP.');
     if (b === 'icmp6' && prev !== 'ipv6') err(i, 'ICMPv6 is carried in IPv6 (next header 58).');
     if (b === 'arp' && next) err(i + 1, 'ARP has no further payload, nothing follows it.');
@@ -6348,6 +6547,18 @@ export const GLOSSARY = [
   ['dual stack', 'IPv4 and IPv6 running side by side on the same devices.'],
   ['Happy Eyeballs', 'Clients try IPv6 and IPv4 almost in parallel and use whichever connects first.'],
   ['Packet Too Big', 'ICMPv6 type 2: the packet does not fit through the next link. IPv6 routers never fragment, the sender has to send smaller packets.'],
+  ['VPN', 'Virtual private network: private packets travel encrypted inside packets between public addresses.', ['VPNs']],
+  ['WireGuard', 'A small, modern VPN: one UDP port, key pairs, cryptokey routing, one round trip to set up a session.'],
+  ['allowed IPs', 'WireGuard: the addresses a peer may use. Packets to them go into the tunnel to this peer; packets from this peer must come from them.', ['AllowedIPs', 'Allowed IPs']],
+  ['cryptokey routing', 'WireGuard ties addresses to public keys: the key decides which peer a packet goes to, and which source addresses a peer may use.'],
+  ['endpoint', 'The public address and port where a WireGuard peer is reached. It is updated with every valid packet (roaming).', ['endpoints']],
+  ['persistent keepalive', 'A small WireGuard packet every few seconds, so a NAT router keeps the way back open.', ['PersistentKeepalive', 'keepalive']],
+  ['IPsec', 'The classic VPN standard: IKE negotiates keys, ESP (IP protocol 50) carries the encrypted packets.'],
+  ['IKE', 'Internet Key Exchange (UDP 500): authenticates the IPsec peers and creates the security associations.', ['IKEv2']],
+  ['ESP', 'Encapsulating Security Payload: the IPsec header for encrypted packets, IP protocol 50.'],
+  ['SPI', 'Security Parameter Index: the number in every ESP packet that tells the receiver which keys to use.'],
+  ['security association', 'IPsec: one agreed set of keys and algorithms for one direction of a tunnel.', ['security associations', 'SA']],
+  ['NAT traversal', 'IPsec packed into UDP 4500, so that NAT routers can translate it.', ['NAT-T']],
   ['recursive resolver', 'A DNS server that finds any answer on behalf of its clients: it asks root, TLD and authoritative servers and caches the results.', ['resolver', 'resolvers', 'recursive resolvers']],
   ['stub resolver', 'The small DNS client in every operating system: it sends one question with RD set to a recursive resolver and waits.'],
   ['authoritative', 'A DNS server is authoritative for a zone it holds itself. Its answers carry the AA flag.', ['authoritatively', 'authoritative server', 'authoritative servers']],
@@ -6555,7 +6766,7 @@ export function renderInspector(el, entry, { onTrack } = {}) {
   if (onTrack) el.append(h('div', { class: 'row', style: { margin: '6px 0' } },
     h('button', { class: 'btn', onclick: onTrack, title: 'Show every message of this exchange in order, with the path through the network' }, 'Track this conversation')));
   for (const l of layers) {
-    const d = h('details', { class: `layer lc-${l.kind}${l.depth ? ' inner' : ''}`, open: l.depth === 0 && ['ip', 'arp', 'vxlan', 'icmp', 'rt'].includes(l.kind) ? true : null });
+    const d = h('details', { class: `layer lc-${l.kind}${l.depth ? ' inner' : ''}`, open: l.depth === 0 && ['ip', 'arp', 'vxlan', 'icmp', 'rt', 'vpn'].includes(l.kind) ? true : null });
     d.append(h('summary', {}, l.name, h('span', { class: 'b' }, `${l.bytes} bytes`)));
     const t = h('table');
     for (const [k, v, hint] of l.fields) t.append(h('tr', {}, h('td', {}, k), h('td', { class: 'v' }, v), h('td', { class: 'h' }, hint || '')));
@@ -7730,7 +7941,7 @@ export class Lab {
           h('li', {}, 'Ctrl+Z undoes a change, Ctrl+Y redoes it. Right-click on a device, cable, area or packet shows what you can do with it.'),
           h('li', {}, 'Clicking a packet takes it apart into its layers in the packet inspector.')),
         h('h4', {}, 'Layer colors'),
-        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4, IPv6'], ['icmp', 'ICMP, ICMPv6, NDP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'Routing (OSPF, VRRP, BFD)']]
+        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4, IPv6'], ['icmp', 'ICMP, ICMPv6, NDP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['vpn', 'VPN (WireGuard)'], ['rt', 'Routing (OSPF, VRRP, BFD)']]
           .map(([k, n]) => h('span', { class: 'chip' }, h('i', { class: `bg-${k}`, style: { width: '10px', height: '10px', borderRadius: '2px', display: 'inline-block' } }), n)))));
       return;
     }
@@ -8436,6 +8647,7 @@ export function udpPayloadLen(udp) {
   if (p.kind === 'dns') return dnsLen(p);
   if (p.kind === 'dhcp') return DHCP_LEN;
   if (p.kind === 'bfd') return 24;
+  if (p.kind === 'wg') return p.type === 'init' ? 148 : p.type === 'resp' ? 92 : 32 + (p.inner ? Math.ceil(p.inner.totalLength / 16) * 16 : 0);
   return p.len || 0;
 }
 export function ipTotalLen(ip) { return (ip.v === 6 ? IP6_HDR : IP_HDR) + l4Len(ip); }
@@ -8543,6 +8755,7 @@ export function shortLabel(f) {
   }
   if (l4.kind === 'icmp6') return { 128: 'Ping6', 129: 'Pong6', 133: 'RS', 134: 'RA', 135: 'NS', 136: 'NA', 1: 'Unreach', 2: 'MTU!', 3: 'HL!' }[l4.type] || 'ICMPv6';
   if (l4.kind === 'udp' && l4.payload?.kind === 'vxlan') return 'VXLAN';
+  if (l4.kind === 'udp' && l4.payload?.kind === 'wg') return { init: 'WG hello', resp: 'WG hello', data: l4.payload.inner ? 'WG' : 'WG keep' }[l4.payload.type] || 'WG';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dns') return 'DNS';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return 'DHCP ' + (DHCP_NAME[l4.payload.op] || '');
   if (l4.kind === 'udp' && l4.payload?.kind === 'bfd') return 'BFD';
@@ -8576,6 +8789,7 @@ export function layerKinds(f) {
     if (l4.kind === 'udp') {
       out.push('udp');
       if (l4.payload?.kind === 'vxlan') { out.push('vxlan'); cur = l4.payload.frame; continue; }
+      if (l4.payload?.kind === 'wg') { out.push('vpn'); if (l4.payload.inner) out.push('ip', l4.payload.inner.l4?.kind === 'tcp' ? 'tcp' : l4.payload.inner.l4?.kind === 'udp' ? 'udp' : 'icmp'); break; }
       out.push(l4.payload?.kind === 'bfd' ? 'rt' : 'data');
     }
     if (l4.kind === 'tcp') { out.push('tcp'); if (l4.dataLen) out.push('data'); }
@@ -8618,6 +8832,10 @@ export function summary(f) {
   } else if (l4.kind === 'icmp') {
     if (l4.type === 8 || l4.type === 0) s = `ICMP ${l4.type === 8 ? 'Echo Request' : 'Echo Reply'} ${base}, seq ${l4.seq}, TTL ${ip.ttl}, ${ip.totalLength} bytes`;
     else s = `ICMP ${icmpName(l4.type, l4.code)}${l4.mtu ? ` (MTU ${l4.mtu})` : ''} ${base}`;
+  } else if (l4.kind === 'udp' && l4.payload?.kind === 'wg') {
+    const w = l4.payload, ends = `${ip.src}:${l4.sport} > ${ip.dst}:${l4.dport}`;
+    s = w.type === 'init' ? `WireGuard handshake initiation ${ends}` : w.type === 'resp' ? `WireGuard handshake response ${ends}`
+      : w.inner ? `WireGuard data ${ends}, counter ${w.counter}  ⟶  encrypted inside: ${w.inner.src} > ${w.inner.dst}` : `WireGuard keepalive ${ends}`;
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'vxlan') {
     s = `VXLAN ${base}, VNI ${l4.payload.vni}, UDP ${l4.sport} > ${l4.dport}  ⟶  ${summary(l4.payload.frame)}`;
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') {
@@ -8827,6 +9045,21 @@ function l4Layers(f, ip, layers, depth, pre) {
       ['Question', `${d.qname || '.'} ${d.qtype || 'A'}`, ''], ...(d.qr ? [['Response code', d.rcode, { NOERROR: 'No error', NXDOMAIN: 'The name does not exist', REFUSED: 'The server refuses to answer', SERVFAIL: 'The resolver failed to find an answer' }[d.rcode] || ''],
         ...(d.answers || []).map(a => rrF('Answer', a)), ...(d.authority || []).map(a => rrF('Authority', a)), ...(d.additional || []).map(a => rrF('Additional', a))] : [])] });
   } else if (l4.kind === 'udp') {
+    if (l4.payload?.kind === 'wg') {
+      const w = l4.payload;
+      layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), 'Listen port of the sending peer'],
+        ['Destination port', String(l4.dport), l4.dport === 51820 ? 'WireGuard (usual port)' : 'Listen port of the peer'], ['Length', `${UDP_HDR + udpPayloadLen(l4)} bytes`, '']] });
+      const fields = [['Type', { init: '1 (handshake initiation)', resp: '2 (handshake response)', data: '4 (transport data)' }[w.type], '']];
+      if (w.type === 'init') fields.push(['Sender index', String(w.sender), 'Number the initiator uses for this session'], ['Ephemeral key, static key, timestamp', '116 bytes, encrypted', 'Encrypted with the public key of the receiver: only the right peer can read it'],
+        ['MAC1 / MAC2', '32 bytes', 'Protection against strangers and floods']);
+      if (w.type === 'resp') fields.push(['Sender / receiver index', `${w.sender} / ${w.receiver}`, 'Both sides now know each other\'s session number'], ['Ephemeral key, empty', '48 bytes, encrypted', 'Completes the key exchange']);
+      if (w.type === 'data') fields.push(['Receiver index', String(w.receiver), 'Tells the receiver which session (and key) to use'], ['Counter', String(w.counter), 'Nonce and protection against replays'],
+        ['Encrypted packet', w.inner ? `${Math.ceil(w.inner.totalLength / 16) * 16} bytes (padded to 16)` : '0 bytes: keepalive', 'ChaCha20: nobody on the way can read it'], ['Authentication tag', '16 bytes', 'Poly1305: any change is noticed']);
+      layers.push({ kind: 'vpn', depth, name: 'WireGuard', bytes: udpPayloadLen(l4) - (w.inner ? Math.ceil(w.inner.totalLength / 16) * 16 : 0), fields });
+      if (w.inner) layers.push(...dissect({ type: w.inner.v === 6 ? 'ipv6' : 'ipv4', payload: w.inner, src: '', dst: '' }, depth + 1).slice(1)
+        .map((l, i) => i === 0 ? { ...l, name: `${l.name} (encrypted, shown decrypted)` } : l));
+      return layers;
+    }
     const vx = l4.payload?.kind === 'vxlan';
     layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [
       ['Source port', String(l4.sport), vx ? 'Hash over the inner frame (distribution with ECMP)' : ''],
@@ -8872,6 +9105,10 @@ export function flowOf(f) {
     return { key: `icmp:${pair(ip.src, ip.dst)}:${l4.ident}`, kind: 'icmp', label: `Ping between ${ip.src} and ${ip.dst}` };
   }
   if (l4?.kind === 'udp' && l4.payload?.kind === 'vxlan') return flowOf(l4.payload.frame);
+  if (l4?.kind === 'udp' && l4.payload?.kind === 'wg') {
+    if (l4.payload.inner) return flowOf({ type: l4.payload.inner.v === 6 ? 'ipv6' : 'ipv4', payload: l4.payload.inner });
+    return { key: `wg:${pair(ip.src, ip.dst)}`, kind: 'wg', label: `WireGuard between ${ip.src} and ${ip.dst}` };
+  }
   if (!l4) return { key: `ip:${pair(ip.src, ip.dst)}`, kind: 'ip', label: `IP between ${ip.src} and ${ip.dst}` };
   if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return { key: `dhcp:${l4.payload.chaddr}`, kind: 'dhcp', label: `DHCP of ${l4.payload.chaddr}` };
   if (l4.kind === 'udp' && l4.payload?.kind === 'dns') return { key: `dns:${l4.payload.id}:${l4.payload.qname}`, kind: 'dns', label: `DNS query for ${l4.payload.qname}` };
@@ -8900,6 +9137,7 @@ import { h } from './ui.js';
 import { I } from './icons.js';
 import { isIp, parseCidr, isAnyIp, isIp6, parseCidr6, norm6 } from './net.js';
 import { staticAddrs } from './ipv6.js';
+import { wgPubKey, wgGenKey, isWgKey, shortKey } from './vpn.js';
 import { PORTS, STP_TEXT } from './engine.js';
 import { runCommand } from './cli.js';
 
@@ -9007,6 +9245,9 @@ export function configPanel(dev, ctx) {
       { id: 'ipv6', title: 'IPv6', desc: 'A second address family: link-local, addresses from router advertisements (SLAAC), static addresses',
         inUse: !!c.ipv6?.enabled, status: c.ipv6?.enabled ? plural(dev.l3.v6.allAddrs().filter(a => a.scope === 'global').length, 'global address') : 'off', render: () => ipv6HostEditor(dev, upd, rerender),
         onAdd: () => upd(() => { c.ipv6.enabled = true; }, `${dev.name}: IPv6 on`) },
+      { id: 'wg', title: 'WireGuard VPN', desc: 'An encrypted tunnel wg0 to other sites or devices, with keys and allowed IPs',
+        inUse: !!c.wg?.enabled, status: c.wg?.enabled ? `wg0 ${c.ifaces.wg0?.ip || ''}, ${plural((c.wg.peers || []).length, 'peer')}` : 'off', render: () => wgEditor(dev, upd, rerender),
+        onAdd: () => upd(() => { c.wg.enabled = true; c.wg.privateKey ||= wgGenKey(dev.id + Date.now()); c.ifaces.wg0 ??= { ip: '10.99.0.1', prefix: 24 }; }, `${dev.name}: WireGuard on`) },
       { id: 'vlan', title: 'VLAN tag', desc: 'Send every frame with an 802.1Q tag, like eth1.10 on Linux',
         inUse: !!i.vlan, status: i.vlan ? `VLAN ${i.vlan}` : '', render: () => h('div', {},
           h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } }, h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
@@ -9043,6 +9284,9 @@ export function configPanel(dev, ctx) {
         { id: 'ipv6', title: 'IPv6', desc: 'IPv6 addresses per interface, router advertisements for SLAAC, a DNS server for the clients (RDNSS)',
           inUse: !!c.ipv6?.enabled, status: c.ipv6?.enabled ? `on${(c.ipv6.ra || []).length ? ', RA on ' + c.ipv6.ra.join(', ') : ''}` : 'off', render: () => ipv6RouterEditor(dev, upd, sim, rerender),
           onAdd: () => upd(() => { c.ipv6.enabled = true; }, `${dev.name}: IPv6 on`) },
+        { id: 'wg', title: 'WireGuard VPN', desc: 'An encrypted tunnel wg0 to other sites or devices, with keys and allowed IPs',
+          inUse: !!c.wg?.enabled, status: c.wg?.enabled ? `wg0 ${c.ifaces.wg0?.ip || ''}, ${plural((c.wg.peers || []).length, 'peer')}` : 'off', render: () => wgEditor(dev, upd, rerender),
+          onAdd: () => upd(() => { c.wg.enabled = true; c.wg.privateKey ||= wgGenKey(dev.id + Date.now()); c.ifaces.wg0 ??= { ip: '10.99.0.1', prefix: 24 }; }, `${dev.name}: WireGuard on`) },
         { id: 'rules', title: 'Rules', desc: 'Allow, drop or reject forwarded packets (firewall)', inUse: c.acl.length > 0, status: plural(c.acl.length, 'rule'), render: () => aclEditor(dev, upd) },
         { id: 'nat', title: 'NAT', desc: 'Inside hosts share the outside address, port forwards', inUse: !!c.nat.outside, status: c.nat.outside ? `outside ${c.nat.outside}` : 'off', render: () => natEditor(dev, upd, rerender) },
         { id: 'dhcp', title: 'DHCP', desc: 'Hand out addresses, or relay requests to a DHCP server', inUse: c.dhcpServer.enabled || relay,
@@ -9575,6 +9819,45 @@ function ipv6RouterEditor(dev, upd, sim, rerender) {
     h('div', { style: { marginTop: '8px' } }, v6AddrTable(dev, dev.l3.v6.ifnames())));
 }
 
+function wgEditor(dev, upd, rerender) {
+  const c = dev.cfg, w = c.wg;
+  c.ifaces.wg0 ??= { ip: '', prefix: 24 };
+  const pub = wgPubKey(w.privateKey);
+  const keyIn = (val, onSet, ph) => {
+    const i = h('input', { class: 'input mono', value: val || '', placeholder: ph, spellcheck: 'false' });
+    i.addEventListener('change', () => { const v = i.value.trim(); if (v && !isWgKey(v)) { i.classList.add('bad'); return; } i.classList.remove('bad'); onSet(v); });
+    return i;
+  };
+  const list = h('div', { class: 'list' });
+  (w.peers || []).forEach((p, idx) => {
+    const field = (k, ph) => { const i = h('input', { class: 'input mono', value: p[k] ?? '', placeholder: ph, spellcheck: 'false' }); i.addEventListener('change', () => upd(() => p[k] = i.value.trim(), `${dev.name}: peer ${p.name || idx + 1} ${k}`)); return i; };
+    const st = dev.wg.table().find(x => x.publicKey === p.publicKey);
+    list.append(h('div', { class: 'item' },
+      h('div', { class: 'row' }, h('span', { class: 'grp grow' }, field('name', 'name, e.g. gwB'), h('span', { class: 'small muted' }, st?.up ? `handshake ${st.handshake} s ago` : 'no handshake yet')),
+        h('button', { class: 'btn icon ghost', title: 'Remove peer', html: I.trash, onclick: () => { upd(() => w.peers.splice(idx, 1), `${dev.name}: peer removed`); rerender?.(); } })),
+      h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '110px 1fr', marginTop: '4px' } },
+        h('span', {}, 'Public key'), keyIn(p.publicKey, v => upd(() => p.publicKey = v, `${dev.name}: peer ${p.name} key`), 'the public key of the peer'),
+        h('span', {}, 'Endpoint'), field('endpoint', 'ip:port, empty = wait for it'),
+        h('span', {}, 'Allowed IPs'), field('allowedIps', '10.2.0.0/24, 10.99.0.2/32'),
+        h('span', {}, 'Keepalive (s)'), field('keepalive', '0 = off, 25 behind NAT'))));
+  });
+  if (!(w.peers || []).length) list.append(h('div', { class: 'empty' }, 'No peers yet: nobody to talk to.'));
+  return h('div', {},
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: w.enabled ? true : null, onchange: e => { upd(() => w.enabled = e.target.checked, `${dev.name}: WireGuard ${e.target.checked ? 'on' : 'off'}`); rerender?.(); } }), 'Interface wg0 on'),
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '110px 1fr 70px', marginTop: '6px' } },
+      h('span', {}, 'Address wg0'), ipInput(c.ifaces.wg0.ip, v => upd(() => c.ifaces.wg0.ip = v, `${dev.name}: wg0 ${v}`), '10.99.0.1'), numInput(c.ifaces.wg0.prefix, 0, 32, v => upd(() => c.ifaces.wg0.prefix = v ?? 24, `${dev.name}: wg0 /${v}`)),
+      h('span', {}, 'Listen port'), numInput(w.listenPort, 1, 65535, v => upd(() => w.listenPort = v ?? 51820, `${dev.name}: WireGuard port ${v}`), '51820'), h('span'),
+      h('span', {}, 'MTU'), numInput(w.mtu, 576, 9000, v => upd(() => w.mtu = v ?? 1420, `${dev.name}: wg0 MTU ${v}`), '1420'), h('span')),
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '110px 1fr', marginTop: '6px' } },
+      h('span', {}, 'Private key'), h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, keyIn(w.privateKey, v => upd(() => w.privateKey = v, `${dev.name}: private key`), 'secret, never leaves this device'),
+        h('button', { class: 'btn', title: 'wg genkey', onclick: () => { upd(() => w.privateKey = wgGenKey(dev.id + Date.now()), `${dev.name}: new key pair`); rerender?.(); } }, 'New')),
+      h('span', {}, 'Public key'), h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('code', { class: 'small', style: { wordBreak: 'break-all' } }, pub || '(no private key)'),
+        pub ? h('button', { class: 'btn ghost', title: 'Copy the public key, to paste it at the peer', onclick: () => navigator.clipboard?.writeText(pub) }, 'Copy') : null)),
+    h('p', { class: 'small muted', style: { margin: '6px 0' } }, 'Give your public key to the peer and enter its public key here. Allowed IPs work both ways: packets to these networks go into the tunnel to this peer, and only packets from these addresses are accepted from it.'),
+    h('h4', {}, 'Peers'), list,
+    h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Peer', onclick: () => { upd(() => (w.peers ||= []).push({ name: '', publicKey: '', endpoint: '', allowedIps: '', keepalive: 0 }), `${dev.name}: new peer`); rerender?.(); } }));
+}
+
 export function tablesPanel(dev, sim) {
   const box = h('div');
   const tbl = (head, rows) => {
@@ -9600,6 +9883,7 @@ export function tablesPanel(dev, sim) {
     if (dev.vrrp?.groups.length) box.append(h('h4', {}, 'VRRP'), tbl(['Group', 'Port', 'Virtual IP', 'State', 'Prio'], dev.vrrp.table().map(g => [g.vrid, g.ifname, g.vip, g.state, g.prio])));
     if (dev.bfd?.table().length) box.append(h('h4', {}, 'BFD sessions'), tbl(['Peer', 'Port', 'State', 'For'], dev.bfd.table().map(x => [x.peer, x.ifname, x.state, x.clients.join(', ')])));
     if (dev.ospf?.enabled) box.append(h('h4', {}, 'OSPF neighbors'), tbl(['Router ID', 'Address', 'Port', 'State'], dev.ospf.neighborTable().map(n => [n.rid, n.ip, n.ifname, n.state])));
+    if (dev.wg?.on) box.append(h('h4', {}, 'WireGuard peers'), tbl(['Peer', 'Endpoint', 'Allowed IPs', 'Handshake'], dev.wg.table().map(x => [x.name || shortKey(x.publicKey), x.endpoint, x.allowed, x.handshake === null ? 'none' : `${x.handshake} s ago`])));
     if (dev.cfg.recursion?.enabled) box.append(h('h4', {}, 'DNS cache'), tbl(['Name', 'Type', 'Data', 'TTL left'], (dev.l3.resolverSvc?.dump() || []).map(e => [e.name || '.', e.type, e.data, `${e.ttl} s`])));
     if (dev.cfg.services?.length) box.append(h('h4', {}, 'Listening services'), tbl(['Proto', 'Port', 'Service'], dev.cfg.services.map(s => [s.proto.toUpperCase(), s.port, s.name || ''])));
   }
@@ -9881,6 +10165,7 @@ __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/presets.js" <<'__PACKETPILOT_FILE_END__'
 // Building blocks for topologies and the example networks
+import { wgGenKey, wgPubKey } from './vpn.js';
 let LN = 1;
 export const host = (name, x, y, ip = '', prefix = 24, gw = '', vlan = null, type = 'pc') =>
   ({ id: name, type, name, x, y, ifaces: { eth1: { ip, prefix, vlan } }, gw });
@@ -9970,6 +10255,9 @@ export const PRESETS = [
   { id: 'ipv6', title: 'Dual stack: IPv4 and IPv6', topics: ['IPv6', 'SLAAC', 'NDP', 'Dual stack'],
     text: 'The PCs get their IPv6 address from the router advertisement of r1 (SLAAC) and their DNS server too. Try ping -6, ip -6 neigh and curl http://www.lab/: the name has an A and an AAAA record.',
     make: () => ipv6Topo() },
+  { id: 'vpn', title: 'Site-to-site VPN with WireGuard', topics: ['VPN', 'WireGuard', 'Tunnel'],
+    text: 'gwA and gwB join two private networks through a provider that only knows public addresses. Ping srvB from pcA and look at the outer and the inner packet. wg show on the gateways.',
+    make: () => vpnTopo() },
   { id: 'failover', title: 'Failover with gratuitous ARP', topics: ['ARP', 'GARP', 'Failover'],
     text: 'The service address 10.0.0.100 moves from srvA to srvB. Try it with and without gratuitous ARP.',
     make: () => failoverTopo() },
@@ -10144,6 +10432,26 @@ export function ipv6Topo({ ra = true, rdnss = true, routes6 = true, v4 = true } 
     [link('pc1', 'eth1', 'sw1', 'eth1'), link('pc2', 'eth1', 'sw1', 'eth2'), link('sw1', 'eth8', 'r1', 'eth1'), link('r1', 'eth2', 'r2', 'eth1'),
       link('r2', 'eth2', 'sw2', 'eth8'), link('web', 'eth1', 'sw2', 'eth1'), link('dns', 'eth1', 'sw2', 'eth2')],
     [{ x: 30, y: 50, w: 460, h: 380, label: 'LAN 2001:db8:1::/64, SLAAC', color: 'blue' }, { x: 690, y: 50, w: 300, h: 380, label: 'Servers 2001:db8:2::/64', color: 'green' }]);
+}
+/** Two sites joined by a WireGuard tunnel across a provider that only routes public addresses */
+export const WG_KEYS = { gwA: wgGenKey('gwA'), gwB: wgGenKey('gwB'), laptop: wgGenKey('laptop') };
+export function vpnTopo({ peerB = true, allowedB = '10.99.0.1/32, 10.1.0.0/24', allowedA = '10.99.0.2/32, 10.2.0.0/24' } = {}) {
+  const wg = (d, addr, peers) => {
+    d.ifaces.wg0 = { ip: addr, prefix: 24 };
+    d.wg = { enabled: true, listenPort: 51820, privateKey: WG_KEYS[d.id], mtu: 1420, peers };
+    return d;
+  };
+  const gwA = wg(router('gwA', 330, 230, { eth1: '10.1.0.1/24', eth2: '198.51.100.1/24' }, [['0.0.0.0/0', '198.51.100.254']]), '10.99.0.1',
+    [{ name: 'gwB', publicKey: wgPubKey(WG_KEYS.gwB), endpoint: '203.0.113.1:51820', allowedIps: allowedA, keepalive: 25 }]);
+  const gwB = wg(router('gwB', 730, 230, { eth1: '203.0.113.1/24', eth2: '10.2.0.1/24' }, [['0.0.0.0/0', '203.0.113.254']]), '10.99.0.2',
+    peerB ? [{ name: 'gwA', publicKey: wgPubKey(WG_KEYS.gwA), endpoint: '', allowedIps: allowedB, keepalive: 0 }] : []);
+  const srv = server('srvB', 900, 230, '10.2.0.10', 24, '10.2.0.1');
+  srv.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  return topo('Site-to-site VPN with WireGuard', [host('pcA', 80, 140, '10.1.0.10', 24, '10.1.0.1'), host('pcA2', 80, 330, '10.1.0.200', 24, '10.1.0.1'), sw('swA', 200, 230), gwA,
+    router('isp', 530, 230, { eth1: '198.51.100.254/24', eth2: '203.0.113.254/24' }), gwB, srv],
+  [link('pcA', 'eth1', 'swA', 'eth1'), link('pcA2', 'eth1', 'swA', 'eth2'), link('swA', 'eth8', 'gwA', 'eth1'), link('gwA', 'eth2', 'isp', 'eth1'), link('isp', 'eth2', 'gwB', 'eth1'), link('gwB', 'eth2', 'srvB', 'eth1')],
+  [{ x: 20, y: 60, w: 380, h: 340, label: 'Site A 10.1.0.0/24', color: 'blue' }, { x: 450, y: 120, w: 160, h: 200, label: 'Internet', color: 'gray' },
+    { x: 660, y: 60, w: 320, h: 340, label: 'Site B 10.2.0.0/24', color: 'green' }]);
 }
 export function failoverTopo() {
   const a = server('srvA', 600, 110, '10.0.0.100'), b = server('srvB', 600, 330, '10.0.0.12');
@@ -11251,6 +11559,210 @@ if (typeof window !== 'undefined') {
 }
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
+  cat > "$W/js/vpn.js" <<'__PACKETPILOT_FILE_END__'
+// WireGuard: an interface wg0 with keys, peers with allowed IPs (cryptokey routing),
+// the handshake over UDP, encrypted data packets with the inner IP packet, keepalives and
+// roaming endpoints. The cryptography itself is not simulated, only its effects.
+import { PROTO, isIp, parseCidr, inNet, clone } from './net.js';
+import { ipPacket, udp } from './packets.js';
+
+export const WG_PORT = 51820;
+export const WG_T = { rekeyTimeout: 5000, tries: 4, rejectAfter: 180000, rekeyAfter: 120000 };
+export const WG_SIZE = { init: 148, resp: 92, keepalive: 32 };
+/** Length of a data message: 16 header + inner packet padded to 16 bytes + 16 authentication tag */
+export const wgDataLen = innerLen => 32 + Math.ceil(innerLen / 16) * 16;
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const toB64 = bytes => {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0);
+    s += B64[(n >> 18) & 63] + B64[(n >> 12) & 63] + (i + 1 < bytes.length ? B64[(n >> 6) & 63] : '=') + (i + 2 < bytes.length ? B64[n & 63] : '=');
+  }
+  return s;
+};
+const bytesFrom = (seed, n = 32) => {
+  const out = [];
+  let h = 2166136261;
+  for (let i = 0; i < n; i++) {
+    for (const c of seed + i) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
+    out.push((h >>> 0) & 255);
+  }
+  return out;
+};
+/** A private key looks like one (32 bytes, base64); the public key is derived from it, so a typo shows */
+export const wgGenKey = seed => toB64(bytesFrom('priv:' + seed));
+export const wgPubKey = priv => (priv ? toB64(bytesFrom('pub:' + String(priv).trim())) : '');
+export const isWgKey = k => /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/.test(String(k || '').trim());
+export const shortKey = k => (k ? String(k).slice(0, 8) + '…' : '(none)');
+
+const cidrs = s => String(s || '').split(/[\s,]+/).map(x => parseCidr(x.includes('/') ? x : x + '/32')).filter(Boolean);
+const endpointOf = s => { const m = String(s || '').trim().match(/^(\d+\.\d+\.\d+\.\d+):(\d+)$/); return m && isIp(m[1]) ? { ip: m[1], port: Number(m[2]) } : null; };
+
+export class Wg {
+  constructor(dev) { this.dev = dev; this.sim = dev.sim; this.l3 = dev.l3; this.peers = new Map(); this.timers = []; this.idx = 1; }
+  get cfg() { return this.dev.cfg.wg; }
+  get on() { return !!this.cfg?.enabled && !!this.dev.cfg.ifaces?.wg0; }
+  get pub() { return wgPubKey(this.cfg?.privateKey); }
+  port() { return Number(this.cfg?.listenPort) || WG_PORT; }
+  later(ms, fn) { const ev = this.sim.schedule(ms, () => { this.timers = this.timers.filter(x => x !== ev); fn(); }); this.timers.push(ev); return ev; }
+  rec(kind, text, extra) { return this.dev.record(kind, text, extra); }
+  /** Runtime state per configured peer, keyed by its public key */
+  state(p) {
+    const k = String(p.publicKey || '').trim();
+    if (!this.peers.has(k)) this.peers.set(k, { session: null, pending: null, queue: [], endpoint: endpointOf(p.endpoint), rx: 0, tx: 0, last: null, tries: 0 });
+    const s = this.peers.get(k);
+    if (!s.learned) s.endpoint = endpointOf(p.endpoint) || s.endpoint;
+    return s;
+  }
+  list() { return (this.cfg?.peers || []).filter(p => p.publicKey); }
+  /** Routes like wg-quick adds them: every allowed IP of every peer points into the tunnel */
+  routes() {
+    if (!this.on) return [];
+    const out = [];
+    for (const p of this.list()) for (const c of cidrs(p.allowedIps)) if (!out.some(r => r.net === c.net && r.len === c.len)) out.push({ net: c.net, len: c.len, via: null, dev: 'wg0', proto: 'W', peer: p.name });
+    return out;
+  }
+  /** Cryptokey routing: the peer whose allowed IPs contain the address (longest match) */
+  peerFor(ip) {
+    let best = null;
+    for (const p of this.list()) for (const c of cidrs(p.allowedIps)) if (inNet(ip, c.net, c.len) && (!best || c.len > best.len)) best = { p, len: c.len };
+    return best?.p || null;
+  }
+  mtu() { return Number(this.cfg?.mtu) || 1420; }
+
+  // ---- Sending
+  send(pkt, ctx = {}) {
+    const p = this.peerFor(pkt.dst);
+    if (!p) {
+      this.rec('drop', `wg0: no peer has ${pkt.dst} in its allowed IPs, the packet is dropped (Required key not available)`, { tag: 'wg-nokey', data: { dst: pkt.dst } });
+      return { ok: false, error: 'sendmsg: Required key not available' };
+    }
+    const st = this.state(p);
+    if (st.session && this.sim.time - st.session.t < WG_T.rejectAfter) { this.data(p, st, pkt); return { ok: true }; }
+    if (!st.endpoint) {
+      this.rec('drop', `wg0: peer ${p.name || shortKey(p.publicKey)} has no known endpoint: nobody to send the handshake to`, { tag: 'wg-noendpoint' });
+      return { ok: false, error: 'sendmsg: Destination address required' };
+    }
+    st.queue.push(pkt);
+    if (st.queue.length > 32) st.queue.shift();
+    if (!st.pending) { st.tries = 0; this.initiate(p, st); }
+    return { ok: true };
+  }
+  outer(st, payload, trace) {
+    const pkt = ipPacket({ src: this.l3.srcFor(st.endpoint.ip), dst: st.endpoint.ip, proto: PROTO.UDP, trace, l4: udp(this.port(), st.endpoint.port, payload) });
+    pkt.wgOuter = true;
+    return this.l3.output(pkt, {});
+  }
+  initiate(p, st, force = false) {
+    if (!force && st.session && this.sim.time - st.session.t < WG_T.rejectAfter) return;
+    if (st.tries >= WG_T.tries) {
+      this.rec('err', `wg0: no handshake response from ${st.endpoint.ip}:${st.endpoint.port} after ${st.tries} attempts, ${st.queue.length} queued packets dropped`, { tag: 'wg-giveup', data: { peer: p.name } });
+      st.queue = []; st.pending = null;
+      return;
+    }
+    st.tries++;
+    const sender = this.idx++;
+    st.pending = { sender, t: this.sim.time };
+    this.rec('info', `wg0: starts a handshake with ${p.name || 'peer'} at ${st.endpoint.ip}:${st.endpoint.port} (handshake initiation${st.tries > 1 ? ', attempt ' + st.tries : ''})`, { tag: 'wg-init-sent', data: { peer: p.name } });
+    this.outer(st, { kind: 'wg', type: 'init', sender, from: this.pub, to: String(p.publicKey).trim() });
+    this.later(WG_T.rekeyTimeout, () => { if (st.pending?.sender === sender) this.initiate(p, st, true); });
+  }
+  data(p, st, pkt, keepalive = false) {
+    // Sending for 15 seconds without hearing anything back: the peer may have lost the session
+    if (!keepalive && this.sim.time - (st.last ?? 0) > 15000 && !st.pending) { st.tries = 0; this.rec('info', `wg0: nothing received from ${p.name || 'peer'} for 15 s, starts a new handshake`, { tag: 'wg-rekey' }); this.initiate(p, st, true); }
+    st.session.counter = (st.session.counter || 0) + 1;
+    st.tx += keepalive ? 32 : wgDataLen(pkt.totalLength);
+    const res = this.outer(st, { kind: 'wg', type: 'data', receiver: st.session.peerIdx, counter: st.session.counter, inner: keepalive ? null : clone(pkt) }, pkt?.trace);
+    if (!keepalive) this.rec('fwd', `wg0: encrypts ${pkt.src} > ${pkt.dst} for ${p.name || 'peer'} and sends it in UDP to ${st.endpoint.ip}:${st.endpoint.port}`, { tag: 'wg-encrypt', data: { peer: p.name, dst: pkt.dst } });
+    return res;
+  }
+  keepalive(p, st) {
+    const iv = Number(p.keepalive) || 0;
+    if (!iv || st.kaTimer) return;
+    st.kaTimer = this.later(iv * 1000, () => {
+      st.kaTimer = null;
+      if (!this.on || !st.session) return;
+      if (this.sim.time - st.session.t >= WG_T.rejectAfter) { st.tries = 0; return this.initiate(p, st); }
+      this.data(p, st, null, true);
+      this.keepalive(p, st);
+    });
+  }
+
+  // ---- Receiving
+  onPacket(ip) {
+    if (!this.on) return false;
+    const m = ip.l4.payload, from = { ip: ip.src, port: ip.l4.sport };
+    if (m.type === 'init') {
+      // The initiation is encrypted with the public key of the receiver: a wrong key makes it unreadable
+      if (m.to !== this.pub) { this.rec('drop', `wg0: handshake initiation from ${ip.src} cannot be decrypted (it was made for another public key), silently ignored`, { tag: 'wg-badkey', data: { from: ip.src } }); return true; }
+      const p = this.list().find(x => String(x.publicKey).trim() === m.from);
+      if (!p) { this.rec('drop', `wg0: handshake from ${ip.src} with the unknown public key ${shortKey(m.from)}: no such peer, silently ignored`, { tag: 'wg-unknown', data: { from: ip.src } }); return true; }
+      const st = this.state(p);
+      st.endpoint = from; st.learned = true;
+      const sender = this.idx++;
+      st.session = { t: this.sim.time, myIdx: sender, peerIdx: m.sender, counter: 0 };
+      st.last = this.sim.time; st.pending = null;
+      this.rec('ok', `wg0: handshake from ${p.name || 'peer'} (${ip.src}:${ip.l4.sport}) accepted, answers it. The session keys are ready`, { tag: 'wg-handshake', data: { peer: p.name, from: ip.src } });
+      this.outer(st, { kind: 'wg', type: 'resp', sender, receiver: m.sender });
+      this.keepalive(p, st);
+      this.flush(p, st);
+      return true;
+    }
+    if (m.type === 'resp') {
+      for (const p of this.list()) {
+        const st = this.state(p);
+        if (st.pending?.sender !== m.receiver) continue;
+        st.session = { t: this.sim.time, myIdx: m.receiver, peerIdx: m.sender, counter: 0 };
+        st.pending = null; st.last = this.sim.time;
+        this.rec('ok', `wg0: handshake with ${p.name || 'peer'} complete, ${st.queue.length} queued packet${st.queue.length === 1 ? '' : 's'} can go`, { tag: 'wg-handshake', data: { peer: p.name, from: ip.src } });
+        this.keepalive(p, st);
+        this.flush(p, st);
+        return true;
+      }
+      return true;
+    }
+    if (m.type === 'data') {
+      const p = this.list().find(x => this.state(x).session?.myIdx === m.receiver);
+      if (!p) { this.rec('drop', `wg0: data packet from ${ip.src} for an unknown session, dropped`, { tag: 'wg-nosession' }); return true; }
+      const st = this.state(p);
+      // Roaming: the latest authenticated packet tells where the peer is now
+      if (st.endpoint?.ip !== from.ip || st.endpoint?.port !== from.port) { st.endpoint = from; st.learned = true; this.rec('learn', `wg0: ${p.name || 'peer'} is now at ${from.ip}:${from.port} (endpoint updated)`, { tag: 'wg-roam' }); }
+      st.last = this.sim.time;
+      if (!m.inner) { st.rx += 32; return true; }
+      st.rx += wgDataLen(m.inner.totalLength);
+      const inner = clone(m.inner);
+      const ok = cidrs(p.allowedIps).some(c => inNet(inner.src, c.net, c.len));
+      if (!ok) { this.rec('drop', `wg0: decrypted a packet from ${p.name || 'peer'} with source ${inner.src}, which is not in its allowed IPs: dropped (cryptokey routing)`, { tag: 'wg-notallowed', data: { src: inner.src, peer: p.name } }); return true; }
+      this.rec('info', `wg0: decrypts a packet from ${p.name || 'peer'}: ${inner.src} > ${inner.dst}`, { tag: 'wg-decrypt', data: { src: inner.src, dst: inner.dst, peer: p.name } });
+      this.sim.schedule(0.01, () => this.l3.rxIp('wg0', inner, null));
+      return true;
+    }
+    return true;
+  }
+  flush(p, st) { const q = st.queue; st.queue = []; for (const pkt of q) this.data(p, st, pkt); }
+  table() {
+    return this.list().map(p => {
+      const st = this.state(p);
+      return { name: p.name || '', publicKey: p.publicKey, endpoint: st.endpoint ? `${st.endpoint.ip}:${st.endpoint.port}` : '(none)', allowed: cidrs(p.allowedIps).map(c => `${c.net}/${c.len}`).join(', '),
+        handshake: st.last === null ? null : Math.round((this.sim.time - st.last) / 1000), rx: st.rx, tx: st.tx, up: !!st.session && this.sim.time - st.session.t < WG_T.rejectAfter, keepalive: Number(p.keepalive) || 0 };
+    });
+  }
+  stop() { for (const t of this.timers) this.sim.cancel(t); this.timers = []; this.peers.clear(); }
+  start() { this.stop(); this.snap = JSON.stringify(this.cfg); this.base = this.baseSnap(); }
+  baseSnap() { return JSON.stringify([this.cfg?.enabled, this.cfg?.privateKey, this.cfg?.listenPort]); }
+  /** Like "wg set": new allowed IPs or endpoints keep the sessions, a new key or port starts over */
+  onConfig() {
+    const s = JSON.stringify(this.cfg);
+    if (s === this.snap) return;
+    this.snap = s;
+    if (this.baseSnap() !== this.base) return this.start();
+    const keys = new Set(this.list().map(p => String(p.publicKey).trim()));
+    for (const k of [...this.peers.keys()]) if (!keys.has(k)) this.peers.delete(k);
+  }
+}
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js"
   cat > "$W/js/widgets.js" <<'__PACKETPILOT_FILE_END__'
 // Interactive exercises for the lessons
 import { h, esc } from './ui.js';
@@ -11535,6 +12047,7 @@ export const BUILD_BLOCKS = {
     ['135', '135 Neighbor Solicitation'], ['136', '136 Neighbor Advertisement'], ['1', '1 Destination Unreachable'], ['2', '2 Packet Too Big'], ['3', '3 Time Exceeded']]], ['target', 'Target address (NS/NA only)', 'ip6']] },
   udp: { name: 'UDP', kind: 'udp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num']] },
   tcp: { name: 'TCP', kind: 'tcp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num'], ['flags', 'Flags', [['SYN', 'SYN'], ['SYN,ACK', 'SYN, ACK'], ['ACK', 'ACK'], ['PSH,ACK', 'PSH, ACK'], ['FIN,ACK', 'FIN, ACK'], ['RST', 'RST'], ['RST,ACK', 'RST, ACK']]]] },
+  wg: { name: 'WireGuard', kind: 'vpn', fields: [['type', 'Message type', [['1', '1 Handshake initiation'], ['2', '2 Handshake response'], ['4', '4 Transport data']]]] },
   dns: { name: 'DNS', kind: 'udp', fields: [['qr', 'Kind', [['0', 'Query (QR 0)'], ['1', 'Response (QR 1)']]], ['name', 'Queried name', 'name'],
     ['qtype', 'Type', [['A', 'A (IPv4 address)'], ['AAAA', 'AAAA (IPv6 address)'], ['NS', 'NS (name server)'], ['CNAME', 'CNAME (alias)']]],
     ['rd', 'Recursion desired (RD)', [['1', '1: find the answer for me'], ['0', '0: only tell me what you know']]]] },

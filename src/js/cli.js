@@ -2,6 +2,7 @@
 import { isIp, parseCidr, isIp6, isAnyIp, parseCidr6, norm6, isLinkLocal6 } from './net.js';
 import { PORTS } from './engine.js';
 import { resolverOf, fqdn } from './dns.js';
+import { wgPubKey, wgGenKey } from './vpn.js';
 
 const pad = (s, n) => String(s).padEnd(n);
 
@@ -44,6 +45,7 @@ export function helpFor(dev) {
   if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
   if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)', 'rdisc6 [eth1]         ask the routers for their advertisement (IPv6)');
   if (dev.type === 'router') l.push('show ipv6 route / show ipv6 neighbors   IPv6 state in FRR style');
+  if (dev.wg) l.push('wg show               WireGuard: keys, peers, endpoints, latest handshake', 'wg genkey / wg pubkey <key>   make a key pair');
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
   if (dev.type === 'switch') l.push('show spanning-tree    STP status: root, roles, states',
     'spanning-tree on|off  turn STP on or off',
@@ -319,6 +321,29 @@ export function runCommand(dev, line) {
       sim.record(dev, 'info', `IPv6 ${dev.cfg.ipv6.enabled ? 'turned on' : 'turned off'}`, { tag: 'v6-toggle' });
       sim.configChanged(dev.id);
       return say(p[1].replace('=', ' = '));
+    }
+    if (p[0] === 'wg' && dev.wg) {
+      const w = dev.cfg.wg;
+      if (p[1] === 'genkey') return say(wgGenKey(dev.id + sim.time + Math.random()));
+      if (p[1] === 'pubkey') return say(p[2] ? wgPubKey(p[2]) : 'Syntax: wg pubkey <private key>   (usually: wg genkey | wg pubkey)');
+      if (!w.enabled || !dev.cfg.ifaces?.wg0) return say('No WireGuard interface (Configuration, Add a feature, WireGuard VPN)');
+      if (p[1] === 'show' && p[3] === 'public-key') return say(wgPubKey(w.privateKey));
+      const ago = s => s === null ? null : s < 60 ? `${s} second${s === 1 ? '' : 's'} ago` : `${Math.floor(s / 60)} minute${s >= 120 ? 's' : ''}, ${s % 60} seconds ago`;
+      const kb = n => n < 1024 ? `${n} B` : `${(n / 1024).toFixed(2)} KiB`;
+      say('interface: wg0');
+      say(`  public key: ${wgPubKey(w.privateKey) || '(no private key!)'}`);
+      say('  private key: (hidden)');
+      say(`  listening port: ${w.listenPort || 51820}`);
+      for (const x of dev.wg.table()) {
+        say('');
+        say(`peer: ${x.publicKey}${x.name ? '   (' + x.name + ')' : ''}`);
+        say(`  endpoint: ${x.endpoint}`);
+        say(`  allowed ips: ${x.allowed || '(none)'}`);
+        if (x.handshake !== null) say(`  latest handshake: ${ago(x.handshake)}`);
+        if (x.rx || x.tx) say(`  transfer: ${kb(x.rx)} received, ${kb(x.tx)} sent`);
+        if (x.keepalive) say(`  persistent keepalive: every ${x.keepalive} seconds`);
+      }
+      return;
     }
     if (p[0] === 'ss' && dev.l3) {
       const f = p.slice(1).join('');

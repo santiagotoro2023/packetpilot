@@ -3,6 +3,7 @@ import { h } from './ui.js';
 import { I } from './icons.js';
 import { isIp, parseCidr, isAnyIp, isIp6, parseCidr6, norm6 } from './net.js';
 import { staticAddrs } from './ipv6.js';
+import { wgPubKey, wgGenKey, isWgKey, shortKey } from './vpn.js';
 import { PORTS, STP_TEXT } from './engine.js';
 import { runCommand } from './cli.js';
 
@@ -110,6 +111,9 @@ export function configPanel(dev, ctx) {
       { id: 'ipv6', title: 'IPv6', desc: 'A second address family: link-local, addresses from router advertisements (SLAAC), static addresses',
         inUse: !!c.ipv6?.enabled, status: c.ipv6?.enabled ? plural(dev.l3.v6.allAddrs().filter(a => a.scope === 'global').length, 'global address') : 'off', render: () => ipv6HostEditor(dev, upd, rerender),
         onAdd: () => upd(() => { c.ipv6.enabled = true; }, `${dev.name}: IPv6 on`) },
+      { id: 'wg', title: 'WireGuard VPN', desc: 'An encrypted tunnel wg0 to other sites or devices, with keys and allowed IPs',
+        inUse: !!c.wg?.enabled, status: c.wg?.enabled ? `wg0 ${c.ifaces.wg0?.ip || ''}, ${plural((c.wg.peers || []).length, 'peer')}` : 'off', render: () => wgEditor(dev, upd, rerender),
+        onAdd: () => upd(() => { c.wg.enabled = true; c.wg.privateKey ||= wgGenKey(dev.id + Date.now()); c.ifaces.wg0 ??= { ip: '10.99.0.1', prefix: 24 }; }, `${dev.name}: WireGuard on`) },
       { id: 'vlan', title: 'VLAN tag', desc: 'Send every frame with an 802.1Q tag, like eth1.10 on Linux',
         inUse: !!i.vlan, status: i.vlan ? `VLAN ${i.vlan}` : '', render: () => h('div', {},
           h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } }, h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
@@ -146,6 +150,9 @@ export function configPanel(dev, ctx) {
         { id: 'ipv6', title: 'IPv6', desc: 'IPv6 addresses per interface, router advertisements for SLAAC, a DNS server for the clients (RDNSS)',
           inUse: !!c.ipv6?.enabled, status: c.ipv6?.enabled ? `on${(c.ipv6.ra || []).length ? ', RA on ' + c.ipv6.ra.join(', ') : ''}` : 'off', render: () => ipv6RouterEditor(dev, upd, sim, rerender),
           onAdd: () => upd(() => { c.ipv6.enabled = true; }, `${dev.name}: IPv6 on`) },
+        { id: 'wg', title: 'WireGuard VPN', desc: 'An encrypted tunnel wg0 to other sites or devices, with keys and allowed IPs',
+          inUse: !!c.wg?.enabled, status: c.wg?.enabled ? `wg0 ${c.ifaces.wg0?.ip || ''}, ${plural((c.wg.peers || []).length, 'peer')}` : 'off', render: () => wgEditor(dev, upd, rerender),
+          onAdd: () => upd(() => { c.wg.enabled = true; c.wg.privateKey ||= wgGenKey(dev.id + Date.now()); c.ifaces.wg0 ??= { ip: '10.99.0.1', prefix: 24 }; }, `${dev.name}: WireGuard on`) },
         { id: 'rules', title: 'Rules', desc: 'Allow, drop or reject forwarded packets (firewall)', inUse: c.acl.length > 0, status: plural(c.acl.length, 'rule'), render: () => aclEditor(dev, upd) },
         { id: 'nat', title: 'NAT', desc: 'Inside hosts share the outside address, port forwards', inUse: !!c.nat.outside, status: c.nat.outside ? `outside ${c.nat.outside}` : 'off', render: () => natEditor(dev, upd, rerender) },
         { id: 'dhcp', title: 'DHCP', desc: 'Hand out addresses, or relay requests to a DHCP server', inUse: c.dhcpServer.enabled || relay,
@@ -678,6 +685,45 @@ function ipv6RouterEditor(dev, upd, sim, rerender) {
     h('div', { style: { marginTop: '8px' } }, v6AddrTable(dev, dev.l3.v6.ifnames())));
 }
 
+function wgEditor(dev, upd, rerender) {
+  const c = dev.cfg, w = c.wg;
+  c.ifaces.wg0 ??= { ip: '', prefix: 24 };
+  const pub = wgPubKey(w.privateKey);
+  const keyIn = (val, onSet, ph) => {
+    const i = h('input', { class: 'input mono', value: val || '', placeholder: ph, spellcheck: 'false' });
+    i.addEventListener('change', () => { const v = i.value.trim(); if (v && !isWgKey(v)) { i.classList.add('bad'); return; } i.classList.remove('bad'); onSet(v); });
+    return i;
+  };
+  const list = h('div', { class: 'list' });
+  (w.peers || []).forEach((p, idx) => {
+    const field = (k, ph) => { const i = h('input', { class: 'input mono', value: p[k] ?? '', placeholder: ph, spellcheck: 'false' }); i.addEventListener('change', () => upd(() => p[k] = i.value.trim(), `${dev.name}: peer ${p.name || idx + 1} ${k}`)); return i; };
+    const st = dev.wg.table().find(x => x.publicKey === p.publicKey);
+    list.append(h('div', { class: 'item' },
+      h('div', { class: 'row' }, h('span', { class: 'grp grow' }, field('name', 'name, e.g. gwB'), h('span', { class: 'small muted' }, st?.up ? `handshake ${st.handshake} s ago` : 'no handshake yet')),
+        h('button', { class: 'btn icon ghost', title: 'Remove peer', html: I.trash, onclick: () => { upd(() => w.peers.splice(idx, 1), `${dev.name}: peer removed`); rerender?.(); } })),
+      h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '110px 1fr', marginTop: '4px' } },
+        h('span', {}, 'Public key'), keyIn(p.publicKey, v => upd(() => p.publicKey = v, `${dev.name}: peer ${p.name} key`), 'the public key of the peer'),
+        h('span', {}, 'Endpoint'), field('endpoint', 'ip:port, empty = wait for it'),
+        h('span', {}, 'Allowed IPs'), field('allowedIps', '10.2.0.0/24, 10.99.0.2/32'),
+        h('span', {}, 'Keepalive (s)'), field('keepalive', '0 = off, 25 behind NAT'))));
+  });
+  if (!(w.peers || []).length) list.append(h('div', { class: 'empty' }, 'No peers yet: nobody to talk to.'));
+  return h('div', {},
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: w.enabled ? true : null, onchange: e => { upd(() => w.enabled = e.target.checked, `${dev.name}: WireGuard ${e.target.checked ? 'on' : 'off'}`); rerender?.(); } }), 'Interface wg0 on'),
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '110px 1fr 70px', marginTop: '6px' } },
+      h('span', {}, 'Address wg0'), ipInput(c.ifaces.wg0.ip, v => upd(() => c.ifaces.wg0.ip = v, `${dev.name}: wg0 ${v}`), '10.99.0.1'), numInput(c.ifaces.wg0.prefix, 0, 32, v => upd(() => c.ifaces.wg0.prefix = v ?? 24, `${dev.name}: wg0 /${v}`)),
+      h('span', {}, 'Listen port'), numInput(w.listenPort, 1, 65535, v => upd(() => w.listenPort = v ?? 51820, `${dev.name}: WireGuard port ${v}`), '51820'), h('span'),
+      h('span', {}, 'MTU'), numInput(w.mtu, 576, 9000, v => upd(() => w.mtu = v ?? 1420, `${dev.name}: wg0 MTU ${v}`), '1420'), h('span')),
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '110px 1fr', marginTop: '6px' } },
+      h('span', {}, 'Private key'), h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, keyIn(w.privateKey, v => upd(() => w.privateKey = v, `${dev.name}: private key`), 'secret, never leaves this device'),
+        h('button', { class: 'btn', title: 'wg genkey', onclick: () => { upd(() => w.privateKey = wgGenKey(dev.id + Date.now()), `${dev.name}: new key pair`); rerender?.(); } }, 'New')),
+      h('span', {}, 'Public key'), h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('code', { class: 'small', style: { wordBreak: 'break-all' } }, pub || '(no private key)'),
+        pub ? h('button', { class: 'btn ghost', title: 'Copy the public key, to paste it at the peer', onclick: () => navigator.clipboard?.writeText(pub) }, 'Copy') : null)),
+    h('p', { class: 'small muted', style: { margin: '6px 0' } }, 'Give your public key to the peer and enter its public key here. Allowed IPs work both ways: packets to these networks go into the tunnel to this peer, and only packets from these addresses are accepted from it.'),
+    h('h4', {}, 'Peers'), list,
+    h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Peer', onclick: () => { upd(() => (w.peers ||= []).push({ name: '', publicKey: '', endpoint: '', allowedIps: '', keepalive: 0 }), `${dev.name}: new peer`); rerender?.(); } }));
+}
+
 export function tablesPanel(dev, sim) {
   const box = h('div');
   const tbl = (head, rows) => {
@@ -703,6 +749,7 @@ export function tablesPanel(dev, sim) {
     if (dev.vrrp?.groups.length) box.append(h('h4', {}, 'VRRP'), tbl(['Group', 'Port', 'Virtual IP', 'State', 'Prio'], dev.vrrp.table().map(g => [g.vrid, g.ifname, g.vip, g.state, g.prio])));
     if (dev.bfd?.table().length) box.append(h('h4', {}, 'BFD sessions'), tbl(['Peer', 'Port', 'State', 'For'], dev.bfd.table().map(x => [x.peer, x.ifname, x.state, x.clients.join(', ')])));
     if (dev.ospf?.enabled) box.append(h('h4', {}, 'OSPF neighbors'), tbl(['Router ID', 'Address', 'Port', 'State'], dev.ospf.neighborTable().map(n => [n.rid, n.ip, n.ifname, n.state])));
+    if (dev.wg?.on) box.append(h('h4', {}, 'WireGuard peers'), tbl(['Peer', 'Endpoint', 'Allowed IPs', 'Handshake'], dev.wg.table().map(x => [x.name || shortKey(x.publicKey), x.endpoint, x.allowed, x.handshake === null ? 'none' : `${x.handshake} s ago`])));
     if (dev.cfg.recursion?.enabled) box.append(h('h4', {}, 'DNS cache'), tbl(['Name', 'Type', 'Data', 'TTL left'], (dev.l3.resolverSvc?.dump() || []).map(e => [e.name || '.', e.type, e.data, `${e.ttl} s`])));
     if (dev.cfg.services?.length) box.append(h('h4', {}, 'Listening services'), tbl(['Proto', 'Port', 'Service'], dev.cfg.services.map(s => [s.proto.toUpperCase(), s.port, s.name || ''])));
   }

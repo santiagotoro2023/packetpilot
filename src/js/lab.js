@@ -678,7 +678,7 @@ export class Lab {
           h('li', {}, 'Ctrl+Z undoes a change, Ctrl+Y redoes it. Right-click on a device, cable, area or packet shows what you can do with it.'),
           h('li', {}, 'Clicking a packet takes it apart into its layers in the packet inspector.')),
         h('h4', {}, 'Layer colors'),
-        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4, IPv6'], ['icmp', 'ICMP, ICMPv6, NDP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'Routing (OSPF, VRRP, BFD)']]
+        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4, IPv6'], ['icmp', 'ICMP, ICMPv6, NDP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['vpn', 'VPN (WireGuard)'], ['rt', 'Routing (OSPF, VRRP, BFD)']]
           .map(([k, n]) => h('span', { class: 'chip' }, h('i', { class: `bg-${k}`, style: { width: '10px', height: '10px', borderRadius: '2px', display: 'inline-block' } }), n)))));
       return;
     }
