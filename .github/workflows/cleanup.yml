@@ -1,0 +1,28 @@
+# One-off: runs once on the push that adds it, and is removed again right after.
+name: Cleanup
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/cleanup.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Delete every branch but main (only when main has all its commits)
+        run: |
+          for b in $(gh api "repos/$REPO/branches" --paginate --jq '.[].name'); do
+            [ "$b" = main ] && continue
+            ahead="$(gh api "repos/$REPO/compare/main...$b" --jq .ahead_by)"
+            if [ "$ahead" != 0 ]; then echo "::error::$b has $ahead commit(s) that are not in main; kept"; exit 1; fi
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$b"
+            echo "Deleted $b"
+          done
+          gh api "repos/$REPO/branches" --jq '.[].name'
