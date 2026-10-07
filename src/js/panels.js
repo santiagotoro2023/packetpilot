@@ -71,10 +71,10 @@ export function configPanel(dev, ctx) {
         h('span', {}, 'Address'), mode, ...addrRows,
         h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
       i.dhcp ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('button', { class: 'btn', onclick: () => { dev.dhclient('eth1'); } }, 'Ask again (dhclient)'),
-        lease ? h('button', { class: 'btn ghost', onclick: () => { dev.dhcpRelease('eth1'); rerender?.(); } }, 'Release') : null) : null,
+        lease ? h('button', { class: 'btn ghost', onclick: () => { dev.dhcpRelease('eth1'); rerender?.(); } }, 'Release') : null) : '',
       h('dl', { class: 'kv', style: { marginTop: '10px' } }, h('dt', {}, 'MAC'), h('dd', {}, dev.mac('eth1'))),
       h('p', { class: 'small muted', style: { marginTop: '8px' } }, 'A VLAN tag sends all frames with an 802.1Q tag, like a subinterface eth1.10 on Linux. Without a tag the host fits on an access port.'),
-      i.dhcp ? null : h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr', marginTop: '8px' } },
+      i.dhcp ? '' : h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr', marginTop: '8px' } },
         h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for curl/ping with names')));
     box.append(servicesEditor(dev, upd), dnsEditor(dev, upd));
     if (c.type === 'server') box.append(section(dev, 'DHCP server', c.dhcpServer.enabled ? `on, ${dev.l3.dhcpLeases.size} lease${dev.l3.dhcpLeases.size === 1 ? '' : 's'}` : 'off', c.dhcpServer.enabled, dhcpServerEditor(dev, upd)));
@@ -394,8 +394,11 @@ function natEditor(dev, upd, rerender) {
       const to = ipInput(f.to, v => upd(() => f.to = v, `${dev.name}: forward to ${v}`), 'inside IP');
       const toPort = numInput(f.toPort, 1, 65535, v => upd(() => f.toPort = v, `${dev.name}: forward to port ${v}`), 'port'); toPort.style.width = '76px';
       proto.style.width = '70px';
-      list.append(h('div', { class: 'item' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, proto, port, small('→'), to, toPort,
-        h('button', { class: 'btn icon ghost', title: 'Remove port forward', html: I.trash, onclick: () => { upd(() => n.forwards.splice(idx, 1), `${dev.name}: forward removed`); draw(); } }))));
+      // Two halves (outside → inside) that stay together when the panel is narrow
+      list.append(h('div', { class: 'item' }, h('div', { class: 'row' },
+        h('span', { class: 'grp' }, proto, port, small('→')),
+        h('span', { class: 'grp grow' }, to, toPort,
+          h('button', { class: 'btn icon ghost', title: 'Remove port forward', html: I.trash, onclick: () => { upd(() => n.forwards.splice(idx, 1), `${dev.name}: forward removed`); draw(); } })))));
     });
     if (!n.forwards.length) list.append(h('div', { class: 'empty' }, 'None. Connections from outside only reach inside hosts through a port forward.'));
     wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Port forward', onclick: () => { n.forwards.push({ proto: 'tcp', port: 8080, to: '', toPort: 80 }); draw(); } }),

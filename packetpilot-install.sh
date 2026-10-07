@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.1.1
+#  PacketPilot 2.1.2
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -31,7 +31,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.1.1"
+PP_VERSION="2.1.2"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -300,9 +300,9 @@ p { margin: 0 0 .8em; }
 .feedback.ok { color: var(--ok); } .feedback.bad { color: var(--err); }
 
 /* ---------- Lab ---------- */
-.lab { position: relative; display: grid; grid-template-columns: 58px minmax(0, 1fr) var(--side-w, 340px); grid-template-rows: minmax(0, 1fr) var(--dock-h, 230px); height: 100%; min-height: 0; }
-.lab.compact { grid-template-columns: 52px minmax(0, 1fr) var(--side-w, 300px); grid-template-rows: minmax(0, 1fr) var(--dock-h, 210px); }
-.lab.no-palette { grid-template-columns: 0 minmax(0, 1fr) var(--side-w, 320px); }
+.lab { position: relative; display: grid; grid-template-columns: 58px minmax(0, 1fr) var(--side-w, clamp(420px, 30vw, 580px)); grid-template-rows: minmax(0, 1fr) var(--dock-h, 230px); height: 100%; min-height: 0; }
+.lab.compact { grid-template-columns: 52px minmax(0, 1fr) var(--side-w, clamp(400px, 30vw, 560px)); grid-template-rows: minmax(0, 1fr) var(--dock-h, 210px); }
+.lab.no-palette { grid-template-columns: 0 minmax(0, 1fr) var(--side-w, clamp(400px, 30vw, 560px)); }
 /* Drag handles between the panels; double-click restores the default size */
 .rz { position: absolute; z-index: 6; touch-action: none; }
 .rz::after { content: ""; position: absolute; background: var(--l-eth); opacity: 0; transition: opacity .12s; border-radius: 2px; }
@@ -350,6 +350,18 @@ body.resizing.col { cursor: col-resize; } body.resizing.row { cursor: row-resize
 .cfg-grid.vx { grid-template-columns: 1fr 1fr; }
 .list { display: grid; gap: 6px; }
 .list .item { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--panel-2); }
+/* Rows in the configuration (routes, rules, NAT, …) wrap instead of squeezing the fields */
+.side .list .item .row { flex-wrap: wrap !important; gap: 6px; }
+.side .list .item .row > input.input:not([type=number]) { flex: 1 1 110px; min-width: 96px; }
+.side .list .item .row > input.input[type=number] { flex: 0 0 auto; width: 70px !important; }
+.side .list .item .row > .btn.icon:last-child { margin-left: auto; }
+.side .list .item .row > .grp { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.side .list .item .row > .grp.grow { flex: 1 1 230px; }
+.side .list .item .row > .grp > input.input:not([type=number]) { flex: 1 1 110px; min-width: 96px; }
+.side .list .item .row > .grp > input.input[type=number] { width: 70px !important; flex: none; }
+.side label.row { flex-wrap: nowrap; align-items: flex-start; }
+.side label.row > input[type=checkbox] { flex: none; margin-top: 3px; }
+.side .list .item label.row { flex-wrap: nowrap !important; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: .85rem; }
 .kv dt { color: var(--ink-2); } .kv dd { margin: 0; font-family: var(--mono); font-size: .82rem; }
 .tbl { width: 100%; border-collapse: collapse; font-size: .78rem; font-family: var(--mono); }
@@ -507,7 +519,7 @@ svg.net .dev .stpbadge { font-size: 10px; fill: var(--l-stp); font-weight: 650; 
 .fb-stats span { font-size: .8rem; color: var(--ink-2); }
 
 @media (max-width: 1100px) {
-  .lab { grid-template-columns: 52px minmax(0, 1fr) var(--side-w, 290px); }
+  .lab { grid-template-columns: 52px minmax(0, 1fr) var(--side-w, 320px); }
   .lesson-body.is-lab { grid-template-columns: var(--goal-w, 290px) minmax(0, 1fr); }
   .hero { grid-template-columns: 1fr; }
 }
@@ -5378,7 +5390,7 @@ export class Lab {
     const reset = prop => () => { delete this.layout[prop]; after(); save(); };
     this.rzSide = resizer('col', { onEnd: save, onReset: reset('sideW'), onMove: e => {
       const r = this.el.getBoundingClientRect();
-      this.layout.sideW = clamp(r.right - e.clientX, 240, Math.min(760, r.width - this.palette.offsetWidth - 320)); after();
+      this.layout.sideW = clamp(r.right - e.clientX, 260, Math.min(960, r.width - this.palette.offsetWidth - 320)); after();
     } });
     this.rzDock = resizer('row', { onEnd: save, onReset: reset('dockH'), onMove: e => {
       const r = this.el.getBoundingClientRect();
@@ -6626,10 +6638,10 @@ export function configPanel(dev, ctx) {
         h('span', {}, 'Address'), mode, ...addrRows,
         h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
       i.dhcp ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('button', { class: 'btn', onclick: () => { dev.dhclient('eth1'); } }, 'Ask again (dhclient)'),
-        lease ? h('button', { class: 'btn ghost', onclick: () => { dev.dhcpRelease('eth1'); rerender?.(); } }, 'Release') : null) : null,
+        lease ? h('button', { class: 'btn ghost', onclick: () => { dev.dhcpRelease('eth1'); rerender?.(); } }, 'Release') : null) : '',
       h('dl', { class: 'kv', style: { marginTop: '10px' } }, h('dt', {}, 'MAC'), h('dd', {}, dev.mac('eth1'))),
       h('p', { class: 'small muted', style: { marginTop: '8px' } }, 'A VLAN tag sends all frames with an 802.1Q tag, like a subinterface eth1.10 on Linux. Without a tag the host fits on an access port.'),
-      i.dhcp ? null : h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr', marginTop: '8px' } },
+      i.dhcp ? '' : h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr', marginTop: '8px' } },
         h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for curl/ping with names')));
     box.append(servicesEditor(dev, upd), dnsEditor(dev, upd));
     if (c.type === 'server') box.append(section(dev, 'DHCP server', c.dhcpServer.enabled ? `on, ${dev.l3.dhcpLeases.size} lease${dev.l3.dhcpLeases.size === 1 ? '' : 's'}` : 'off', c.dhcpServer.enabled, dhcpServerEditor(dev, upd)));
@@ -6949,8 +6961,11 @@ function natEditor(dev, upd, rerender) {
       const to = ipInput(f.to, v => upd(() => f.to = v, `${dev.name}: forward to ${v}`), 'inside IP');
       const toPort = numInput(f.toPort, 1, 65535, v => upd(() => f.toPort = v, `${dev.name}: forward to port ${v}`), 'port'); toPort.style.width = '76px';
       proto.style.width = '70px';
-      list.append(h('div', { class: 'item' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, proto, port, small('→'), to, toPort,
-        h('button', { class: 'btn icon ghost', title: 'Remove port forward', html: I.trash, onclick: () => { upd(() => n.forwards.splice(idx, 1), `${dev.name}: forward removed`); draw(); } }))));
+      // Two halves (outside → inside) that stay together when the panel is narrow
+      list.append(h('div', { class: 'item' }, h('div', { class: 'row' },
+        h('span', { class: 'grp' }, proto, port, small('→')),
+        h('span', { class: 'grp grow' }, to, toPort,
+          h('button', { class: 'btn icon ghost', title: 'Remove port forward', html: I.trash, onclick: () => { upd(() => n.forwards.splice(idx, 1), `${dev.name}: forward removed`); draw(); } })))));
     });
     if (!n.forwards.length) list.append(h('div', { class: 'empty' }, 'None. Connections from outside only reach inside hosts through a port forward.'));
     wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Port forward', onclick: () => { n.forwards.push({ proto: 'tcp', port: 8080, to: '', toPort: 80 }); draw(); } }),

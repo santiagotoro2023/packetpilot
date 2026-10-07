@@ -136,7 +136,7 @@ export class Lab {
     const reset = prop => () => { delete this.layout[prop]; after(); save(); };
     this.rzSide = resizer('col', { onEnd: save, onReset: reset('sideW'), onMove: e => {
       const r = this.el.getBoundingClientRect();
-      this.layout.sideW = clamp(r.right - e.clientX, 240, Math.min(760, r.width - this.palette.offsetWidth - 320)); after();
+      this.layout.sideW = clamp(r.right - e.clientX, 260, Math.min(960, r.width - this.palette.offsetWidth - 320)); after();
     } });
     this.rzDock = resizer('row', { onEnd: save, onReset: reset('dockH'), onMove: e => {
       const r = this.el.getBoundingClientRect();
