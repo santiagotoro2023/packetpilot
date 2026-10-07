@@ -310,3 +310,39 @@ export function dissect(f, depth = 0) {
 export function frameStats(f) {
   return { len: frameLen(f), wire: frameWireLen(f), fcs: FCS };
 }
+
+/** The conversation a frame belongs to (all DHCP messages of one client, one TCP
+ *  connection, one ping, one ARP exchange …), for tracking it across the network.
+ *  kind also selects the log entries without a frame that belong to it. */
+export function flowOf(f) {
+  if (!f) return null;
+  const pair = (a, b) => [a, b].sort().join('|');
+  if (f.type === 'stp') return { key: 'stp', kind: 'stp', label: 'Spanning tree BPDUs' };
+  if (f.type === 'arp') {
+    const a = f.payload;
+    if (a.spa === a.tpa || a.spa === '0.0.0.0') return { key: `arp:${a.tpa}`, kind: 'arp', label: `ARP for ${a.tpa}` };
+    return { key: `arp:${pair(a.spa, a.tpa)}`, kind: 'arp', label: `ARP between ${a.spa} and ${a.tpa}` };
+  }
+  if (f.type !== 'ipv4') return null;
+  const ip = f.payload, l4 = ip.l4;
+  if (l4?.kind === 'udp' && l4.payload?.kind === 'vxlan') return flowOf(l4.payload.frame);
+  if (!l4) return { key: `ip:${pair(ip.src, ip.dst)}`, kind: 'ip', label: `IP between ${ip.src} and ${ip.dst}` };
+  if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return { key: `dhcp:${l4.payload.chaddr}`, kind: 'dhcp', label: `DHCP of ${l4.payload.chaddr}` };
+  if (l4.kind === 'udp' && l4.payload?.kind === 'dns') return { key: `dns:${l4.payload.id}:${l4.payload.qname}`, kind: 'dns', label: `DNS query for ${l4.payload.qname}` };
+  if (l4.kind === 'icmp') {
+    // Error messages belong to the conversation of the packet they report on
+    const o = l4.orig;
+    if (o) {
+      if (o.proto === PROTO.ICMP) return { key: `icmp:${pair(o.src, o.dst)}:${o.ident}`, kind: 'icmp', label: `Ping between ${o.src} and ${o.dst}` };
+      const p = o.proto === PROTO.TCP ? 'tcp' : 'udp';
+      return { key: `${p}:${pair(`${o.src}:${o.sport}`, `${o.dst}:${o.dport}`)}`, kind: p, label: `${p.toUpperCase()} ${o.src}:${o.sport} ↔ ${o.dst}:${o.dport}` };
+    }
+    return { key: `icmp:${pair(ip.src, ip.dst)}:${l4.ident}`, kind: 'icmp', label: `Ping between ${ip.src} and ${ip.dst}` };
+  }
+  if (l4.kind === 'tcp' || l4.kind === 'udp') {
+    const [a, b] = [`${ip.src}:${l4.sport}`, `${ip.dst}:${l4.dport}`];
+    const label = l4.dport < l4.sport ? `${l4.kind.toUpperCase()} ${a} → ${b}` : `${l4.kind.toUpperCase()} ${b} → ${a}`;
+    return { key: `${l4.kind}:${pair(a, b)}`, kind: l4.kind, label };
+  }
+  return { key: `${l4.kind}:${ip.src}`, kind: l4.kind, label: `${l4.kind.toUpperCase()} from ${ip.src}` };
+}

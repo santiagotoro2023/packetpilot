@@ -3,9 +3,9 @@ import { Sim, PORTS, TYPE_NAMES, TIMING, newId, normalizeDevice, traceOf, STP_TE
 
 // BPDUs, VRRP advertisements and OSPF hellos repeat all the time and can be hidden together
 const isCtl = f => f.type === 'stp' || isHello(f);
-import { layerKinds, shortLabel } from './packets.js';
+import { layerKinds, shortLabel, flowOf, summary } from './packets.js';
 import { isIp } from './net.js';
-import { h, svgEl, toast, iconBtn, resizer } from './ui.js';
+import { h, svgEl, toast, iconBtn, resizer, contextMenu } from './ui.js';
 import { store } from './store.js';
 import { I, DEV_ICON } from './icons.js';
 import { renderInspector } from './inspector.js';
@@ -16,6 +16,11 @@ const NAME_PREFIX = { pc: 'pc', server: 'srv', router: 'r', switch: 'sw', vtep: 
 export const ZONE_COLORS = [['blue', 'Blue'], ['violet', 'Violet'], ['green', 'Green'], ['orange', 'Orange'], ['pink', 'Pink'], ['yellow', 'Yellow'], ['gray', 'Gray']];
 const KIND_COLOR = { vlan: 'violet', overlay: 'pink', underlay: 'blue' };
 export const zoneColor = z => z.color || KIND_COLOR[z.kind] || 'gray';
+
+// Kinds of changes the learner makes, they can be undone
+const EDITS = ['config', 'added', 'deleted', 'linked', 'moved', 'renamed'];
+// Log entries without a frame that belong to a tracked conversation (results, state changes)
+const TRACK_TAGS = { dhcp: /^dhcp/, dns: /^dns/, tcp: /^(tcp|http|curl)/, udp: /^udp/, icmp: /^(ping|echo|trace|pmtu)/, arp: /^(arp|neigh)/ };
 
 export class Lab {
   /**
@@ -29,7 +34,7 @@ export class Lab {
     if (opts.onEvent) this.listeners.add(opts.onEvent);
     this.sel = null; this.connectFrom = null; this.connectMode = false;
     this.playing = true; this.msPerHop = opts.msPerHop || Number(store.prefs.speed) || 550; this.lastTs = 0; this.idleUntil = 0;
-    this.traceId = null; this.logFilter = 'all'; this.selectedLog = null; this.showBpdu = true;
+    this.track = null; this.flowSel = null; this.trackRaw = false; this.logFilter = 'all'; this.selectedLog = null; this.showBpdu = true;
     this.view = { x: 0, y: 0, w: 900, h: 520 };
     this.pktEls = new Map();
     this.tab = 'config';
@@ -44,7 +49,74 @@ export class Lab {
     this.ro.observe(this.canvasWrap);
     this.ro.observe(this.el);
   }
-  emit(type, data) { for (const fn of this.listeners) fn(type, data, this); }
+  emit(type, data) {
+    if (EDITS.includes(type)) this.noteEdit();
+    for (const fn of this.listeners) fn(type, data, this);
+  }
+
+  // ------------------------------------------------------------ Undo and redo (Ctrl+Z, Ctrl+Y)
+  // After every edit the network is stored as a snapshot. Undo puts the previous snapshot
+  // back into the running simulation: devices, cables, areas and configuration.
+  snapTopo() { return JSON.stringify(this.sim.topo); }
+  resetHistory() { clearTimeout(this.histTimer); this.histTimer = null; this.undoStack = [this.snapTopo()]; this.redoStack = []; }
+  noteEdit() {
+    if (this.restoring || !this.undoStack) return;
+    clearTimeout(this.histTimer);
+    this.histTimer = setTimeout(() => this.captureEdit(), 250);
+  }
+  captureEdit() {
+    clearTimeout(this.histTimer); this.histTimer = null;
+    const snap = this.snapTopo();
+    if (snap === this.undoStack[this.undoStack.length - 1]) return;
+    this.undoStack.push(snap);
+    if (this.undoStack.length > 100) this.undoStack.shift();
+    this.redoStack = [];
+  }
+  undo() {
+    if (!this.canConfig && !this.canEditTopo) return;
+    if (this.histTimer) this.captureEdit();
+    if (this.undoStack.length < 2) return toast('Nothing to undo');
+    this.redoStack.push(this.undoStack.pop());
+    this.applyTopo(JSON.parse(this.undoStack[this.undoStack.length - 1]));
+    toast('Undone (Ctrl+Y redoes it)');
+  }
+  redo() {
+    if (!this.redoStack?.length) return toast('Nothing to redo');
+    const snap = this.redoStack.pop();
+    this.undoStack.push(snap);
+    this.applyTopo(JSON.parse(snap));
+    toast('Redone');
+  }
+  applyTopo(t) {
+    const sim = this.sim, cur = sim.topo;
+    this.restoring = true;
+    try {
+      for (const l of [...cur.links]) if (!t.links.some(x => x.id === l.id)) sim.removeLink(l.id);
+      for (const d of [...cur.devices]) if (!t.devices.some(x => x.id === d.id)) sim.removeDevice(d.id);
+      for (const td of t.devices) {
+        const d = cur.devices.find(x => x.id === td.id);
+        if (!d) { sim.addDevice(normalizeDevice(td)); continue; }
+        if (JSON.stringify(d) === JSON.stringify(td)) continue;
+        for (const k of Object.keys(d)) if (!(k in td)) delete d[k];
+        Object.assign(d, td);
+        sim.configChanged(d.id);
+      }
+      for (const tl of t.links) {
+        const l = cur.links.find(x => x.id === tl.id);
+        if (!l) { sim.addLink(tl); continue; }
+        const wasUp = l.up;
+        Object.assign(l, tl, { up: wasUp });
+        if (wasUp !== tl.up) sim.setLinkUp(l, tl.up);
+      }
+      cur.zones = t.zones || [];
+      cur.name = t.name;
+      sim.emit('config', null);
+    } finally { this.restoring = false; }
+    const exists = this.sel && (this.sel.kind === 'dev' ? cur.devices.some(d => d.id === this.sel.id) : this.sel.kind === 'link' ? cur.links.some(l => l.id === this.sel.id) : (cur.zones || []).some(z => z.id === this.sel.id));
+    if (!exists) this.select(null); else this.renderSide();
+    this.render();
+    for (const fn of this.listeners) fn('config', { msg: 'undo' }, this);
+  }
   destroy() {
     cancelAnimationFrame(this.raf);
     window.removeEventListener('keydown', this.keyHandler);
@@ -85,8 +157,9 @@ export class Lab {
     // Canvas
     this.canvasWrap = h('div', { class: 'canvas-wrap' });
     this.svg = svgEl('svg', { class: `net${this.canEditTopo ? '' : ' ro'}`, role: 'img', 'aria-label': 'Network diagram' });
-    this.gZones = svgEl('g'); this.gLinks = svgEl('g'); this.gDevs = svgEl('g'); this.gPkts = svgEl('g');
-    this.svg.append(this.gZones, this.gLinks, this.gDevs, this.gPkts);
+    // Labels of cables (interface names, MTU, STP dots) lie above all cables, so no cable crosses a name
+    this.gZones = svgEl('g'); this.gLinks = svgEl('g'); this.gLinkLbl = svgEl('g', { class: 'lnk-lbls' }); this.gDevs = svgEl('g'); this.gPkts = svgEl('g');
+    this.svg.append(this.gZones, this.gLinks, this.gLinkLbl, this.gDevs, this.gPkts);
     this.canvasWrap.append(this.svg);
     this.bindCanvas();
     // Player
@@ -118,7 +191,7 @@ export class Lab {
     // Dock
     this.logEl = h('div', { class: 'log', role: 'log' });
     this.filterSel = h('select', { class: 'input', 'aria-label': 'Filter log' });
-    this.filterSel.addEventListener('change', () => { this.logFilter = this.filterSel.value; if (this.logFilter !== 'trace') this.setTrace(null); this.renderLog(); });
+    this.filterSel.addEventListener('change', () => { this.logFilter = this.filterSel.value; if (this.logFilter !== 'track') this.stopTrack(); this.renderLog(); });
     this.inspEl = h('div', { class: 'inspector' });
     this.dock = h('div', { class: 'dock' },
       h('div', { class: 'dock-col' }, h('div', { class: 'dock-head' }, 'Events', h('span', { class: 'grow' }), this.filterSel,
@@ -184,10 +257,11 @@ export class Lab {
     topo.zones.forEach(z => { z.id ??= newId('z'); });
     this.sim = new Sim(topo);
     this.unsub = this.sim.on((type, data) => this.onSim(type, data));
-    this.sel = null; this.traceId = null; this.selectedLog = null;
+    this.sel = null; this.track = null; this.flowSel = null; this.selectedLog = null;
     this.pktEls.forEach(e => e.remove()); this.pktEls.clear();
     this.render();
     this.fit(true);
+    this.resetHistory();
     this.updateBpduBar();
     this.showStorm(null);
     this.renderSide();
@@ -198,7 +272,7 @@ export class Lab {
   resetState() {
     this.sim.reset();
     this.pktEls.forEach(e => e.remove()); this.pktEls.clear();
-    this.setTrace(null);
+    this.stopTrack();
     this.renderLog(); this.renderSide(); renderInspector(this.inspEl, null);
     this.showStorm(null); this.render();
     toast('State reset: ARP and MAC tables are empty');
@@ -211,8 +285,8 @@ export class Lab {
     }
     if (type === 'halted') this.showStorm(data);
     if (type === 'console' && this.sel?.kind === 'dev' && this.sel.id === data.devId && this.tab === 'console') this.consoleEl?.refresh();
-    if (type === 'config') { this.render(); this.refreshSideSoon(); this.updateBpduBar(); }
-    if (type === 'topology') this.render();
+    if (type === 'config') { this.render(); this.refreshSideSoon(); this.updateBpduBar(); this.noteEdit(); }
+    if (type === 'topology') { this.render(); this.noteEdit(); }
     this.emit('sim', { type, data });
   }
 
@@ -220,16 +294,19 @@ export class Lab {
   devPos(d) { return { x: d.x ?? 0, y: d.y ?? 0 }; }
   render() {
     const topo = this.sim.topo;
-    this.gLinks.innerHTML = ''; this.gDevs.innerHTML = ''; this.gZones.innerHTML = '';
+    const hl = this.trackHighlight();
+    this.gLinks.innerHTML = ''; this.gLinkLbl.innerHTML = ''; this.gDevs.innerHTML = ''; this.gZones.innerHTML = '';
     for (const z of topo.zones || []) this.gZones.append(this.zoneEl(z));
     const byId = new Map(topo.devices.map(d => [d.id, d]));
     for (const l of topo.links) {
       const A = byId.get(l.a.dev), B = byId.get(l.b.dev);
       if (!A || !B) continue;
-      const g = svgEl('g', { class: `lnk-g${this.sel?.kind === 'link' && this.sel.id === l.id ? ' sel' : ''}`, 'data-id': l.id });
+      const onPath = hl && (hl.edges.has(l.a.dev + '|' + l.b.dev) || hl.edges.has(l.b.dev + '|' + l.a.dev));
+      const g = svgEl('g', { class: `lnk-g${this.sel?.kind === 'link' && this.sel.id === l.id ? ' sel' : ''}${onPath ? ' trace' : ''}`, 'data-id': l.id });
       const line = svgEl('line', { class: `lnk${l.up ? '' : ' down'}${l.mtu > 1500 ? ' jumbo' : ''}`, x1: A.x, y1: A.y, x2: B.x, y2: B.y });
       const hit = svgEl('line', { class: 'lnk-hit', x1: A.x, y1: A.y, x2: B.x, y2: B.y });
-      hit.addEventListener('pointerdown', e => { e.stopPropagation(); this.select({ kind: 'link', id: l.id }); });
+      hit.addEventListener('pointerdown', e => { if (e.button === 2) return; e.stopPropagation(); this.select({ kind: 'link', id: l.id }); });
+      hit.addEventListener('contextmenu', e => this.linkMenu(e, l));
       g.append(line, hit);
       const lbl = (P, Q, name) => {
         const dx = Q.x - P.x, dy = Q.y - P.y, len = Math.hypot(dx, dy) || 1;
@@ -239,7 +316,8 @@ export class Lab {
         const t = svgEl('text', { class: 'iflbl', x: P.x + dx / len * off + (-dy / len) * 9, y: P.y + dy / len * off + (dx / len) * 9 + 3, 'text-anchor': 'middle' });
         t.textContent = name; return t;
       };
-      g.append(lbl(A, B, l.a.if), lbl(B, A, l.b.if));
+      const lg = svgEl('g');
+      lg.append(lbl(A, B, l.a.if), lbl(B, A, l.b.if));
       for (const [P, Q, end] of [[A, B, l.a], [B, A, l.b]]) {
         const br = this.sim.dev(end.dev)?.bridge;
         if (!br?.stp || P.type !== 'switch') continue;
@@ -250,16 +328,17 @@ export class Lab {
         const tt = svgEl('title'); tt.textContent = `${P.name} ${end.if}: ${STP_TEXT.ROLE[ps.role]}, ${STP_TEXT.STATE[ps.state]}${ps.edge ? ', edge port' : ''}${br.stp.rstp && ps.legacy ? ', neighbor speaks only classic STP' : ''}`;
         const letter = svgEl('text', { 'text-anchor': 'middle', y: 2.7 }); letter.textContent = { root: 'R', designated: 'D', alternate: 'A', backup: 'B', disabled: '' }[ps.role];
         dot.append(tt, svgEl('circle', { r: 6 }), letter);
-        g.append(dot);
+        lg.append(dot);
       }
       const props = [l.mtu !== 1500 ? `MTU ${l.mtu}` : '', Number(l.delay) > 0 ? `${l.delay} ms` : '', Number(l.loss) > 0 ? `${l.loss} % loss` : ''].filter(Boolean);
       if (props.length) {
         const t = svgEl('text', { class: 'mtulbl', x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 - 7, 'text-anchor': 'middle' });
-        t.textContent = props.join(' · '); g.append(t);
+        t.textContent = props.join(' · '); lg.append(t);
       }
       this.gLinks.append(g);
+      this.gLinkLbl.append(lg);
     }
-    const traceDevs = this.traceId ? new Set(this.sim.log.filter(e => e.trace === this.traceId).map(e => e.devId)) : null;
+    const traceDevs = hl?.devs;
     for (const d of topo.devices) {
       const sel = this.sel?.kind === 'dev' && this.sel.id === d.id;
       const g = svgEl('g', { class: `dev t-${d.type}${sel ? ' sel' : ''}${this.connectFrom === d.id ? ' pend' : ''}${traceDevs?.has(d.id) ? ' trace' : ''}`,
@@ -275,7 +354,8 @@ export class Lab {
       if (badge) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 + lines.length * 12 }); t.textContent = badge; g.append(t); }
       const st = d.type === 'switch' ? this.sim.dev(d.id)?.bridge?.stpTable() : null;
       if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); const proto = st.mode === 'rstp' ? 'RSTP' : 'STP'; t.textContent = st.isRoot ? `Root bridge (${proto}), prio ${d.stp.priority}` : `${proto}, prio ${d.stp.priority}`; g.append(t); }
-      g.addEventListener('pointerdown', e => this.devPointerDown(e, d));
+      g.addEventListener('pointerdown', e => { if (e.button !== 2) this.devPointerDown(e, d); });
+      g.addEventListener('contextmenu', e => this.devMenu(e, d));
       g.addEventListener('dblclick', () => { this.select({ kind: 'dev', id: d.id }); this.setTab('console'); });
       g.addEventListener('keydown', e => { if (e.key === 'Enter') this.select({ kind: 'dev', id: d.id }); });
       this.gDevs.append(g);
@@ -351,7 +431,7 @@ export class Lab {
   // ------------------------------------------------------------ Interaction
   bindCanvas() {
     this.svg.addEventListener('pointerdown', e => {
-      if (e.target !== this.svg) return;
+      if (e.target !== this.svg || e.button === 2) return;
       this.select(null);
       if (this.connectMode) { this.connectFrom = null; this.render(); }
       const start = { x: e.clientX, y: e.clientY, vx: this.view.x, vy: this.view.y };
@@ -364,6 +444,7 @@ export class Lab {
       const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
       window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
     });
+    this.svg.addEventListener('contextmenu', e => { if (e.target === this.svg || e.target.closest('.zone-g')) this.canvasMenu(e); });
     this.svg.addEventListener('wheel', e => {
       e.preventDefault();
       const p = this.toSvg(e);
@@ -453,7 +534,8 @@ export class Lab {
     const t = svgEl('text', { class: 'zone-t', x: z.x + 17, y: z.y + 22 }); t.textContent = label;
     g.append(tab, t);
     if (this.canEditTopo) {
-      tab.addEventListener('pointerdown', e => this.zonePointer(e, z, 'move'));
+      tab.addEventListener('pointerdown', e => { if (e.button !== 2) this.zonePointer(e, z, 'move'); });
+      tab.addEventListener('contextmenu', e => this.zoneMenu(e, z));
       tab.addEventListener('dblclick', () => { this.select({ kind: 'zone', id: z.id }); setTimeout(() => this.side.querySelector('input')?.focus(), 30); });
       const rs = svgEl('rect', { class: 'zone-rs', x: z.x + z.w - 13, y: z.y + z.h - 13, width: 11, height: 11, rx: 3 });
       rs.addEventListener('pointerdown', e => this.zonePointer(e, z, 'resize'));
@@ -534,6 +616,8 @@ export class Lab {
     if (!this.root.isConnected) return;
     const tag = (e.target.tagName || '').toLowerCase();
     if (['input', 'textarea', 'select'].includes(tag)) return;
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); return e.shiftKey ? this.redo() : this.undo(); }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); return this.redo(); }
     if (e.key === ' ') { e.preventDefault(); this.setPlaying(!this.playing); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); this.stepOnce(); }
     else if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel) { e.preventDefault(); this.deleteSelected(); }
@@ -588,6 +672,7 @@ export class Lab {
           h('li', {}, 'Click a device: configuration, tables and console appear here. Double-click opens the console directly.'),
           h('li', {}, 'Type e.g. ping 10.0.0.2 in the console and watch the packets travel.'),
           h('li', {}, 'Space pauses time, the right arrow advances one event. The speed slider sets the slow motion. F switches to fullscreen.'),
+          h('li', {}, 'Ctrl+Z undoes a change, Ctrl+Y redoes it. Right-click on a device, cable, area or packet shows what you can do with it.'),
           h('li', {}, 'Clicking a packet takes it apart into its layers in the packet inspector.')),
         h('h4', {}, 'Layer colors'),
         h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'VRRP, OSPF']]
@@ -667,14 +752,19 @@ export class Lab {
     if (this.logFilter === 'bpdu') return true;
     if (this.logFilter === 'stp') return e.stp && e.tag !== 'bpdu-sent' || e.tag === 'loop-detected' || e.tag === 'storm' || e.tag === 'mac-flap';
     if (this.logFilter === 'nosend') return e.kind !== 'send';
-    if (this.logFilter === 'trace') return e.trace === this.traceId;
+    if (this.logFilter === 'track') return !!this.track?.seqs.has(e.seq);
     if (this.logFilter.startsWith('dev:')) return e.devId === this.logFilter.slice(4);
     return true;
   }
   logRow(e) {
     const row = h('div', { class: `e k-${e.kind}${e.frame ? ' has-frame' : ''}${this.selectedLog === e.seq ? ' sel' : ''}`, 'data-seq': e.seq },
       h('span', { class: 't' }, (e.t / 1000).toFixed(4)), h('span', { class: 'd', title: e.dev }, e.dev), h('span', { class: 'x' }, e.text));
-    if (e.frame) row.addEventListener('click', () => this.inspect(e));
+    if (e.frame) {
+      row.addEventListener('click', () => this.inspect(e));
+      row.addEventListener('contextmenu', ev => contextMenu(ev, [
+        { label: 'Take apart in the inspector', icon: I.eye, onClick: () => this.inspect(e) },
+        flowOf(e.frame) ? { label: 'Track this conversation', icon: I.route, onClick: () => this.trackFrom(e) } : null]));
+    }
     return row;
   }
   renderLog() {
@@ -682,17 +772,21 @@ export class Lab {
     const stp = this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled), hellos = this.hasHellos();
     if (stp || this.logFilter === 'stp') opts.push(['stp', 'Spanning tree only']);
     if (stp || hellos || this.logFilter === 'bpdu') opts.push(['bpdu', `Everything, including ${stp && hellos ? 'BPDUs and hellos' : stp ? 'BPDUs' : 'hellos'}`]);
-    if (this.traceId) opts.push(['trace', 'Traced packet']);
+    if (this.track) opts.push(['track', `Conversation: ${this.track.label}`]);
     for (const d of this.sim.topo.devices) opts.push(['dev:' + d.id, `Only ${d.name}`]);
     this.filterSel.innerHTML = '';
     for (const [v, t] of opts) this.filterSel.append(h('option', { value: v, selected: v === this.logFilter ? true : null }, t));
     this.logEl.innerHTML = '';
+    if (this.track) this.updateTrack();
+    if (this.logFilter === 'track' && !this.trackRaw) return this.renderFlow();
+    if (this.logFilter === 'track') this.logEl.append(this.flowBar());
     const list = this.sim.log.filter(e => this.logVisible(e)).slice(-600);
     if (!list.length) this.logEl.append(h('div', { class: 'empty', style: { padding: '10px' } }, 'Nothing has happened yet. Open the console of a device and send a ping.'));
     for (const e of list) this.logEl.append(this.logRow(e));
     this.logEl.scrollTop = this.logEl.scrollHeight;
   }
   appendLog(entries) {
+    if (this.logFilter === 'track') { clearTimeout(this.flowTimer); this.flowTimer = setTimeout(() => { this.renderLog(); this.render(); }, 120); return; }
     const atBottom = this.logEl.scrollTop + this.logEl.clientHeight >= this.logEl.scrollHeight - 30;
     if (this.logEl.querySelector('.empty')) this.logEl.innerHTML = '';
     for (const e of entries) if (this.logVisible(e)) this.logEl.append(this.logRow(e));
@@ -703,14 +797,170 @@ export class Lab {
     this.selectedLog = e.seq;
     this.logEl.querySelectorAll('.e.sel').forEach(x => x.classList.remove('sel'));
     this.logEl.querySelector(`[data-seq="${e.seq}"]`)?.classList.add('sel');
-    renderInspector(this.inspEl, e, { onTrace: t => this.setTrace(t) });
+    renderInspector(this.inspEl, e, { onTrack: flowOf(e.frame) ? () => this.trackFrom(e) : null });
     this.emit('inspect', e);
   }
-  setTrace(t) {
-    this.traceId = t;
-    if (t) { this.logFilter = 'trace'; toast('The log now shows only this packet, the devices involved are highlighted'); }
-    else if (this.logFilter === 'trace') this.logFilter = 'all';
-    this.render(); this.renderLog();
+  // ------------------------------------------------------------ Tracking a conversation
+  // Follows everything that belongs together (a DHCP exchange, a TCP connection, a ping …)
+  // and shows it as a list of messages: who sent what to whom, over which devices.
+  trackFrom(e) {
+    const f = flowOf(e.frame);
+    if (!f) return toast('This frame does not belong to a conversation that can be tracked');
+    this.track = { keys: new Set([f.key]), traces: new Set(e.trace ? [e.trace] : []), devs: new Set(), label: f.label, kind: f.kind, seqs: new Set(), upTo: 0 };
+    this.flowSel = null; this.trackRaw = false; this.logFilter = 'track';
+    this.renderLog(); this.render();
+    toast('Tracking the conversation: every message in order, the path is highlighted in the diagram');
+  }
+  stopTrack() {
+    if (!this.track) return;
+    this.track = null; this.flowSel = null;
+    if (this.logFilter === 'track') this.logFilter = 'all';
+    this.renderLog(); this.render();
+  }
+  updateTrack() {
+    const t = this.track, tags = TRACK_TAGS[t.kind];
+    for (const e of this.sim.log) {
+      if (e.seq <= t.upTo) continue;
+      t.upTo = e.seq;
+      if (e.frame) {
+        const f = flowOf(e.frame);
+        // Same conversation, or the same packet after NAT or a relay changed its addresses
+        if ((f && t.keys.has(f.key)) || (e.trace && t.traces.has(e.trace))) {
+          if (f) t.keys.add(f.key);
+          if (e.trace) t.traces.add(e.trace);
+          t.seqs.add(e.seq); t.devs.add(e.devId); if (e.data?.toId) t.devs.add(e.data.toId);
+        }
+      } else if (tags?.test(e.tag || '') && t.devs.has(e.devId)) t.seqs.add(e.seq);
+    }
+  }
+  /** Messages of the tracked conversation: one per packet on its way, with the hops */
+  flowMessages() {
+    const msgs = new Map();
+    for (const e of this.sim.log) {
+      if (e.kind !== 'send' || !this.track.seqs.has(e.seq)) continue;
+      // One message is one packet on its way (also when a relay or NAT passes it on); an
+      // answer is a new message even when it carries the same trace id
+      const id = (e.trace ?? 'f' + e.frame.id) + '|' + shortLabel(e.frame);
+      if (!msgs.has(id)) msgs.set(id, { id, first: e, edges: [] });
+      msgs.get(id).edges.push([e.dev, e.data?.to, e.devId, e.data?.toId]);
+    }
+    return [...msgs.values()];
+  }
+  pathText(edges) {
+    // A tree from the sender: a → b → {c, d → e}. Floods branch, a relay continues the line.
+    const kids = new Map();
+    for (const [from, to] of edges) {
+      if (!to) continue;
+      if (!kids.has(from)) kids.set(from, []);
+      if (!kids.get(from).includes(to)) kids.get(from).push(to);
+    }
+    const seen = new Set();
+    const walk = n => {
+      seen.add(n);
+      const next = (kids.get(n) || []).filter(x => !seen.has(x));
+      next.forEach(x => seen.add(x));
+      if (!next.length) return n;
+      const parts = next.map(walk);
+      return `${n} → ${parts.length === 1 ? parts[0] : `{${parts.join(', ')}}`}`;
+    };
+    return edges.length ? walk(edges[0][0]) : '';
+  }
+  flowBar() {
+    const t = this.track;
+    return h('div', { class: 'flowbar' }, h('b', {}, t.label), h('span', { class: 'grow' }),
+      h('button', { class: 'tog' + (this.trackRaw ? '' : ' on'), onclick: () => { this.trackRaw = false; this.renderLog(); } }, 'Messages'),
+      h('button', { class: 'tog' + (this.trackRaw ? ' on' : ''), onclick: () => { this.trackRaw = true; this.renderLog(); } }, 'All events'),
+      h('button', { class: 'btn ghost small', onclick: () => this.stopTrack() }, 'Stop'));
+  }
+  renderFlow() {
+    const msgs = this.flowMessages();
+    this.logEl.append(this.flowBar());
+    if (!msgs.length) this.logEl.append(h('div', { class: 'empty', style: { padding: '10px' } }, 'No messages of this conversation yet.'));
+    msgs.forEach((m, i) => {
+      const row = h('div', { class: `flow-row${this.flowSel === m.id ? ' sel' : ''}`, title: summary(m.first.frame) },
+        h('span', { class: 'n' }, String(i + 1)),
+        h('span', { class: 't' }, (m.first.t / 1000).toFixed(4)),
+        h('span', { class: 'what' }, summary(m.first.frame)),
+        h('span', { class: 'path mono' }, this.pathText(m.edges)));
+      row.addEventListener('click', () => { this.flowSel = this.flowSel === m.id ? null : m.id; this.inspect(m.first); this.renderLog(); this.render(); });
+      this.logEl.append(row);
+    });
+    this.logEl.scrollTop = this.logEl.scrollHeight;
+  }
+  trackHighlight() {
+    if (!this.track) return null;
+    const devs = new Set(), edges = new Set();
+    for (const m of this.flowMessages()) {
+      if (this.flowSel && m.id !== this.flowSel) continue;
+      for (const [, , a, b] of m.edges) { devs.add(a); if (b) { devs.add(b); edges.add(a + '|' + b); } }
+    }
+    return { devs, edges };
+  }
+  /** Clicking a packet on a cable: its entry in the event log, and the layers in the inspector */
+  showInLog(f) {
+    const e = this.sim.log.find(x => x.seq === f.logSeq);
+    if (!e) return this.inspect({ seq: -1, t: this.sim.time, dev: '', frame: f.frame, trace: traceOf(f.frame) });
+    if (!this.logVisible(e)) { if (this.logFilter === 'track') this.stopTrack(); this.logFilter = e.tag === 'bpdu-sent' || e.tag === 'hello-sent' ? 'bpdu' : 'all'; this.renderLog(); }
+    else if (this.logFilter === 'track' && !this.trackRaw) { this.trackRaw = true; this.renderLog(); }
+    this.inspect(e);
+    this.logEl.querySelector(`[data-seq="${e.seq}"]`)?.scrollIntoView({ block: 'center' });
+  }
+
+  // ------------------------------------------------------------ Right-click menus
+  devMenu(e, d) {
+    const edit = this.canEditTopo;
+    contextMenu(e, [
+      { label: 'Console', icon: I.terminal, onClick: () => { this.select({ kind: 'dev', id: d.id }); this.setTab('console'); } },
+      { label: 'Configuration', icon: I.sliders, onClick: () => { this.select({ kind: 'dev', id: d.id }); this.setTab('config'); } },
+      { label: 'Tables', icon: I.table, onClick: () => { this.select({ kind: 'dev', id: d.id }); this.setTab('tables'); } },
+      '-',
+      edit ? { label: 'Connect a cable from here', icon: I.cable, hint: 'K', onClick: () => { this.setConnect(true); this.connectFrom = d.id; this.render(); toast('Now click the device on the other end'); } } : null,
+      edit ? { label: 'Rename', onClick: () => { this.select({ kind: 'dev', id: d.id }); setTimeout(() => { const i = this.side.querySelector('.side-head .name'); i?.focus(); i?.select(); }, 30); } } : null,
+      '-',
+      edit ? { label: 'Delete', icon: I.trash, danger: true, hint: 'Del', onClick: () => { this.select({ kind: 'dev', id: d.id }); this.deleteSelected(); } } : null
+    ], d.name);
+  }
+  linkMenu(e, l) {
+    const name = id => this.sim.dev(id)?.name;
+    contextMenu(e, [
+      { label: 'Cable settings', icon: I.sliders, onClick: () => this.select({ kind: 'link', id: l.id }) },
+      this.canConfig ? { label: l.up ? 'Disconnect (link down)' : 'Reconnect (link up)', onClick: () => { this.sim.setLinkUp(l, !l.up); this.render(); this.renderSide(); this.emit('config', { link: l.id, msg: l.up ? 'Link on' : 'Link off' }); } } : null,
+      '-',
+      this.canEditTopo ? { label: 'Delete cable', icon: I.trash, danger: true, onClick: () => { this.select({ kind: 'link', id: l.id }); this.deleteSelected(); } } : null
+    ], `${name(l.a.dev)} ${l.a.if} ↔ ${name(l.b.dev)} ${l.b.if}`);
+  }
+  zoneMenu(e, z) {
+    if (!this.canEditTopo) return;
+    contextMenu(e, [
+      { label: 'Rename and color', icon: I.sliders, onClick: () => { this.select({ kind: 'zone', id: z.id }); setTimeout(() => this.side.querySelector('input')?.focus(), 30); } },
+      '-',
+      { label: 'Delete area', icon: I.trash, danger: true, onClick: () => { this.select({ kind: 'zone', id: z.id }); this.deleteSelected(); } }
+    ], z.label || 'Area');
+  }
+  packetMenu(e, f) {
+    contextMenu(e, [
+      { label: 'Show in the event log', icon: I.eye, onClick: () => this.showInLog(f) },
+      flowOf(f.frame) ? { label: 'Track this conversation', icon: I.route, onClick: () => { const le = this.sim.log.find(x => x.seq === f.logSeq); this.trackFrom(le || { frame: f.frame, trace: traceOf(f.frame) }); } } : null
+    ], shortLabel(f.frame));
+  }
+  canvasMenu(e) {
+    const p = this.toSvg(e), snap = v => Math.round(v / 12) * 12;
+    const zone = (this.sim.topo.zones || []).find(z => p.x >= z.x && p.x <= z.x + z.w && p.y >= z.y && p.y <= z.y + z.h);
+    const types = this.canEditTopo ? this.opts.palette : [];
+    contextMenu(e, [
+      ...types.map(t => ({ label: `Add ${/^[A-Z]+$/.test(TYPE_NAMES[t]) ? TYPE_NAMES[t] : TYPE_NAMES[t].toLowerCase()} here`, icon: `<svg viewBox="0 0 40 40" width="16" height="16">${DEV_ICON[t]}</svg>`, onClick: () => this.addDevice(t, snap(p.x), snap(p.y)) })),
+      this.canEditTopo ? { label: 'Add area here', icon: I.area, onClick: () => this.addZone(snap(p.x), snap(p.y)) } : null,
+      zone && this.canEditTopo ? '-' : null,
+      zone && this.canEditTopo ? { label: `Rename area "${zone.label || 'Area'}"`, icon: I.sliders, onClick: () => { this.select({ kind: 'zone', id: zone.id }); setTimeout(() => this.side.querySelector('input')?.focus(), 30); } } : null,
+      zone && this.canEditTopo ? { label: 'Delete area', icon: I.trash, danger: true, onClick: () => { this.select({ kind: 'zone', id: zone.id }); this.deleteSelected(); } } : null,
+      '-',
+      (this.canEditTopo || this.canConfig) ? { label: 'Undo', icon: I.reset, hint: 'Ctrl+Z', disabled: !(this.undoStack?.length > 1 || this.histTimer), onClick: () => this.undo() } : null,
+      (this.canEditTopo || this.canConfig) ? { label: 'Redo', hint: 'Ctrl+Y', disabled: !this.redoStack?.length, onClick: () => this.redo() } : null,
+      '-',
+      { label: 'Fit the network into the view', icon: I.fit, onClick: () => this.fit(true) },
+      { label: this.isFull() ? 'Leave fullscreen' : 'Fullscreen', icon: this.isFull() ? I.unfull : I.full, hint: 'F', onClick: () => this.toggleFull() },
+      this.track ? { label: 'Stop tracking the conversation', onClick: () => this.stopTrack() } : null
+    ]);
   }
 
   // ------------------------------------------------------------ Time and animation
@@ -754,36 +1004,69 @@ export class Lab {
   drawPackets() {
     const sim = this.sim, seen = new Set();
     const byId = new Map(sim.topo.devices.map(d => [d.id, d]));
+    // Group the packets per cable and direction
     const groups = new Map();
     for (const f of sim.inflight) {
       if (!this.showBpdu && isCtl(f.frame)) continue;
-      const key = f.link.id + (f.from === f.link.a.dev ? 'a' : 'b');
-      groups.set(key, (groups.get(key) || 0) + 1);
-      const idx = groups.get(key) - 1;
       const A = byId.get(f.from), B = byId.get(f.to);
       if (!A || !B) continue;
-      const p = Math.min(1, Math.max(0, (sim.time - f.t0) / (f.t1 - f.t0)));
-      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1;
-      const x = A.x + dx * p + (-dy / len) * (8 + idx * 4), y = A.y + dy * p + (dx / len) * (8 + idx * 4);
-      let g = this.pktEls.get(f.id);
-      if (!g) {
-        g = svgEl('g', { class: 'pkt', role: 'button', 'aria-label': shortLabel(f.frame) });
-        const kinds = layerKinds(f.frame);
-        const W = 12 + kinds.length * 7, H = 19;
-        g.append(svgEl('rect', { class: 'box', x: -W / 2, y: -H / 2, width: W, height: H, rx: 3, fill: 'var(--panel)' }));
-        kinds.forEach((k, i) => g.append(svgEl('rect', { x: -W / 2 + 3.5 + i * 7, y: -H / 2 + 3, width: 6, height: H - 6, rx: 1, fill: `var(--l-${k})` })));
-        const t = svgEl('text', { x: 0, y: H / 2 + 12 }); t.textContent = shortLabel(f.frame);
-        g.append(t);
-        g.addEventListener('pointerdown', e => {
-          e.stopPropagation();
-          this.setPlaying(false);
-          this.inspect({ seq: -1, t: sim.time, dev: `${byId.get(f.from)?.name} → ${byId.get(f.to)?.name}`, frame: f.frame, trace: traceOf(f.frame) });
-        });
-        this.gPkts.append(g);
-        this.pktEls.set(f.id, g);
+      const key = f.link.id + (f.from === f.link.a.dev ? 'a' : 'b');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ f, A, B, p: Math.min(1, Math.max(0, (sim.time - f.t0) / (f.t1 - f.t0))) });
+    }
+    for (const items of groups.values()) {
+      // Packets that travel together (a TCP burst) form a small tower beside the cable:
+      // every envelope stays visible, they just get smaller the more there are
+      const { A, B } = items[0];
+      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1, ux = dx / len, uy = dy / len;
+      // Stay on the free part of the cable, not on top of the device cards at its ends
+      const m = Math.min(46, len / 2);
+      items.forEach(it => { it.s = m + it.p * (len - 2 * m); });
+      items.sort((a, b) => a.s - b.s);
+      const towers = [];
+      for (const it of items) {
+        const t = towers[towers.length - 1];
+        if (t && it.s - t[0].s < 26) t.push(it); else towers.push([it]);
       }
-      g.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)})`);
-      seen.add(f.id);
+      for (const tower of towers) {
+        const n = tower.length, scale = n === 1 ? 1 : Math.max(0.5, 1 - 0.09 * (n - 1));
+        const s0 = tower.reduce((a, it) => a + it.s, 0) / n;
+        tower.forEach((it, k) => {
+          const { f } = it;
+          const off = 9 + (n === 1 ? 0 : 6 * scale) + k * 21 * scale;
+          const sAt = n === 1 ? it.s : s0;
+          const x = A.x + ux * sAt - uy * off, y = A.y + uy * sAt + ux * off;
+          let g = this.pktEls.get(f.id);
+          if (!g) {
+            g = svgEl('g', { class: 'pkt', role: 'button', 'aria-label': shortLabel(f.frame) });
+            const kinds = layerKinds(f.frame);
+            const W = 12 + kinds.length * 7, H = 19;
+            g.append(svgEl('rect', { class: 'box', x: -W / 2, y: -H / 2, width: W, height: H, rx: 3, fill: 'var(--panel)' }));
+            kinds.forEach((kd, i) => g.append(svgEl('rect', { x: -W / 2 + 3.5 + i * 7, y: -H / 2 + 3, width: 6, height: H - 6, rx: 1, fill: `var(--l-${kd})` })));
+            const t = svgEl('text', { x: 0, y: H / 2 + 12 }); t.textContent = shortLabel(f.frame);
+            g.W = W; g.H = H; g.text = t;
+            g.append(t);
+            g.addEventListener('pointerdown', e => {
+              e.stopPropagation();
+              if (e.button === 2) return;
+              this.setPlaying(false);
+              this.showInLog(f);
+            });
+            g.addEventListener('contextmenu', e => { this.setPlaying(false); this.packetMenu(e, f); });
+            this.gPkts.append(g);
+            this.pktEls.set(f.id, g);
+          }
+          // Alone: label below. In a tower: label beside each envelope, so none covers another
+          const side = n > 1 ? 'side' : 'below';
+          if (g.labelPos !== side) {
+            g.labelPos = side;
+            if (side === 'side') { g.text.setAttribute('x', g.W / 2 + 4); g.text.setAttribute('y', 3.5); g.text.setAttribute('class', 'side'); }
+            else { g.text.setAttribute('x', 0); g.text.setAttribute('y', g.H / 2 + 12); g.text.removeAttribute('class'); }
+          }
+          g.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)})${scale < 1 ? ` scale(${scale.toFixed(2)})` : ''}`);
+          seen.add(f.id);
+        });
+      }
     }
     for (const [id, g] of this.pktEls) if (!seen.has(id)) { g.remove(); this.pktEls.delete(id); }
   }

@@ -141,7 +141,9 @@ export class Sim {
     const lost = Number(link.loss) > 0 && this.random() * 100 < Number(link.loss);
     const fl = { id: f.id + ':' + this.seq, frame: f, link, from: dev.id, fromIf: ifname, to: peer.dev, toIf: peer.if, t0: this.time, t1: this.time + delay, lost };
     this.inflight.push(fl);
-    this.record(dev, 'send', `sends via ${ifname}: ${summary(f)}`, { frame: f, tag: frame.type === 'stp' ? 'bpdu-sent' : hello ? 'hello-sent' : null });
+    const toDev = this.devices.get(peer.dev);
+    fl.logSeq = this.record(dev, 'send', `sends via ${ifname}: ${summary(f)}`, { frame: f, tag: frame.type === 'stp' ? 'bpdu-sent' : hello ? 'hello-sent' : null,
+      data: { to: toDev?.name || peer.dev, toId: peer.dev, toIf: peer.if, fromIf: ifname } }).seq;
     this.schedule(delay, () => {
       this.inflight = this.inflight.filter(x => x !== fl);
       const target = this.devices.get(peer.dev);
@@ -158,6 +160,7 @@ export class Sim {
     this.log.push(e);
     if (this.log.length > 5000) this.log.splice(0, this.log.length - 5000);
     this.emit('log', e);
+    return e;
     return e;
   }
   print(dev, text) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.1.3
+#  PacketPilot 2.2.0
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -31,7 +31,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.1.3"
+PP_VERSION="2.2.0"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -420,8 +420,8 @@ svg.net .lnk.down { stroke-dasharray: 6 5; stroke: var(--err); }
 svg.net .lnk.jumbo { stroke-width: 4.5; }
 svg.net .lnk-hit { stroke: transparent; stroke-width: 14; cursor: pointer; }
 svg.net .lnk-g.sel .lnk { stroke: var(--select); }
-svg.net .iflbl { font-family: var(--mono); font-size: 10px; fill: var(--ink-2); }
-svg.net .mtulbl { font-family: var(--mono); font-size: 9.5px; fill: var(--ink-3); }
+svg.net .iflbl { font-family: var(--mono); font-size: 10px; fill: var(--ink-2); paint-order: stroke; stroke: var(--paper); stroke-width: 3.5px; stroke-linejoin: round; }
+svg.net .mtulbl { font-family: var(--mono); font-size: 9.5px; fill: var(--ink-3); paint-order: stroke; stroke: var(--paper); stroke-width: 3.5px; stroke-linejoin: round; }
 svg.net .dev { cursor: pointer; outline: none; }
 svg.net .dev:focus-visible .card { stroke: var(--focus); stroke-width: 2.5; }
 svg.net .dev .card { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
@@ -620,6 +620,51 @@ abbr.gl:hover, abbr.gl:focus-visible { border-bottom-color: var(--ink); outline:
 .lesson-body:fullscreen, .lesson-body.pseudo-full, .lab-root:fullscreen { background: var(--paper); height: 100vh; }
 .pseudo-full { position: fixed !important; inset: 0; z-index: 45; background: var(--paper); height: 100vh !important; }
 .btn.icon.on { color: var(--accent, var(--ink)); }
+
+/* Optional features of a device: a quiet "add" button with a small menu */
+.features { margin-top: 14px; display: grid; gap: 8px; }
+.btn.addfeat { width: 100%; max-width: 100%; box-sizing: border-box; white-space: normal; justify-content: flex-start; border-style: dashed; background: transparent; flex-wrap: wrap; text-align: left; line-height: 1.35; }
+.btn.addfeat .small { font-weight: 400; }
+.featmenu { display: grid; gap: 2px; border: 1px solid var(--line); border-radius: var(--r-s); padding: 4px; background: var(--panel); box-shadow: var(--shadow); }
+.featmenu.hidden { display: none; }
+.featitem { display: grid; gap: 1px; text-align: left; border: 0; background: none; padding: 7px 9px; border-radius: 6px; cursor: pointer; color: var(--ink); }
+.featitem:hover, .featitem:focus-visible { background: var(--panel-2); outline: none; }
+.featitem b { font-size: .88rem; }
+.featitem span { font-size: .8rem; color: var(--ink-2); }
+.linkbtn { border: 0; background: none; padding: 4px 0; color: var(--ink-2); cursor: pointer; text-decoration: underline dotted; }
+.linkbtn:hover { color: var(--ink); }
+svg.net .lnk-lbls { pointer-events: none; }
+svg.net .lnk-lbls .stp-dot { pointer-events: auto; }
+
+/* Right-click menus */
+.ctxmenu { position: fixed; z-index: 70; min-width: 210px; max-width: 300px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-s); box-shadow: var(--shadow); padding: 4px; display: grid; }
+.ctx-title { font-size: .76rem; font-weight: 650; color: var(--ink-3); padding: 4px 9px 3px; text-transform: none; }
+.ctx-item { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: center; border: 0; background: none; text-align: left; padding: 6px 9px; border-radius: 5px; color: var(--ink); cursor: pointer; font-size: .87rem; }
+.ctx-item svg { width: 16px; height: 16px; }
+.ctx-item:hover, .ctx-item:focus-visible { background: var(--panel-2); outline: none; }
+.ctx-item[disabled] { opacity: .45; cursor: default; }
+.ctx-item.danger { color: var(--err); }
+.ctx-item kbd { font-family: var(--mono); font-size: .72rem; color: var(--ink-3); }
+.ctx-sep { height: 1px; background: var(--line); margin: 4px 2px; }
+
+/* Tracked conversation: messages in order with their path */
+svg.net .lnk-g.trace .lnk { stroke: var(--l-vxlan); stroke-width: 3.2; }
+.flowbar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: var(--panel-2); border-bottom: 1px solid var(--line); font-size: .84rem; }
+.flowbar b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.flowbar .btn.small { padding: 2px 8px; font-size: .8rem; }
+.flow-row { display: grid; grid-template-columns: 22px 58px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 6px; padding: 5px 10px; border-bottom: 1px solid var(--grid); cursor: pointer; font-size: .84rem; }
+.flow-row:hover { background: var(--panel-2); }
+.flow-row.sel { background: color-mix(in srgb, var(--l-vxlan) 12%, var(--panel)); }
+.flow-row .n { grid-row: 1 / 3; width: 20px; height: 20px; border-radius: 50%; background: var(--l-vxlan); color: #fff; font-size: .72rem; font-weight: 700; display: grid; place-items: center; }
+.flow-row .t { font-family: var(--mono); font-size: .76rem; color: var(--ink-3); padding-top: 2px; }
+.flow-row .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-row .path { grid-column: 2 / 4; font-size: .78rem; color: var(--ink-2); overflow-wrap: anywhere; }
+.ctx-item svg .dv-fill { fill: color-mix(in srgb, var(--ink) 8%, var(--panel)); stroke: var(--ink); stroke-width: 2.4; }
+.ctx-item svg .dv-line, .ctx-item svg .dv-tunnel { stroke: var(--ink); stroke-width: 2.4; fill: none; }
+.ctx-item svg .dv-dot { fill: var(--ink); }
+.ctx-item svg .dv-screen { fill: color-mix(in srgb, var(--l-eth) 18%, var(--panel)); }
+.ctx-item svg .dv-led { fill: var(--l-ip); }
+svg.net .pkt text.side { text-anchor: start; }
 __PACKETPILOT_FILE_END__
   cat > "$W/index.html" <<'__PACKETPILOT_FILE_END__'
 <!doctype html>
@@ -2183,7 +2228,7 @@ sw1 → b1      untagged, access port in VLAN 20</pre>
 ${note('All subinterfaces share the MAC address of the physical interface. That is no problem because each VLAN is its own segment.')}
 ${note('Every routed packet crosses the same cable twice. With a lot of traffic between VLANs this link becomes a bottleneck. Larger networks therefore route directly in the switch (layer 3 switch with one SVI per VLAN).', true)}` },
       { type: 'lab', title: 'Set up the subinterfaces', topo: () => stickTopo(false), edit: 'config',
-        intro: '<p>sw1 is fully configured: a1 and a2 in VLAN 10, b1 and b2 in VLAN 20, eth8 as a trunk to r1. On r1 everything is missing. Create the two subinterfaces, under Configuration or in the console.</p>',
+        intro: '<p>sw1 is fully configured: a1 and a2 in VLAN 10, b1 and b2 in VLAN 20, eth8 as a trunk to r1. On r1 everything is missing. Create the two subinterfaces, under Configuration (Add a feature, Subinterfaces) or in the console.</p>',
         presets: { r1: ['ip link add link eth1 name eth1.10 type vlan id 10', 'ip link add link eth1 name eth1.20 type vlan id 20', 'ip addr add 10.10.0.1/24 dev eth1.10', 'ip addr add 10.20.0.1/24 dev eth1.20', 'ip -br a'], a1: ['ping -c 2 10.20.0.11'] },
         goals: [
           { text: 'r1 has a subinterface for VLAN 10 with 10.10.0.1/24.', check: sim => subif(sim, 10, '10.10.0.1') },
@@ -2327,7 +2372,7 @@ ${note('A cable that accidentally connects two wall sockets in the same office i
         goals: [
           { text: 'Ping pc2 (10.0.0.2) from pc1 and trigger the storm.', check: tag(null, 'storm') },
           { text: 'What kind of frame is circling in the loop?', ask: true, expect: () => ['arp', 'arp request', 'arp-request', 'broadcast', 'arp broadcast'], placeholder: 'e.g. ICMP' },
-          { text: 'Reset the state and turn on spanning tree on sw1, sw2 and sw3 under Configuration.', check: stpOn(TRI) },
+          { text: 'Reset the state and turn on spanning tree on sw1, sw2 and sw3 under Configuration (Add a feature, Spanning tree).', check: stpOn(TRI) },
           { text: 'Wait until the dots on the ports are green or red, and ping again. Now the reply arrives.', check: pingOk('pc1', '10.0.0.2') }],
         hints: ['The button with the circular arrow at the top left resets the state.', 'The timers are set to "fast": a port needs 8 seconds to reach Forwarding. With the fast-forward button it happens immediately.'],
         outro: '<p>A red dot shows a blocked port. It keeps receiving BPDUs but does not forward a single frame. This way the cable stays plugged in as a spare without forming a loop.</p>' },
@@ -2752,7 +2797,7 @@ ${note('Typical places for this are VPN tunnels, PPPoE (MTU 1492) and VXLAN with
           { text: 'Fetch http://10.0.2.80/. The connection is up, but the data does not arrive.', check: tag('client', 'tcp-stalled') },
           { text: 'Was the three-way handshake completed? (yes or no)', ask: true, expect: () => ['yes'] },
           { text: 'Set up MSS clamping on r1 so that the segments fit through the narrow spot, and fetch the page again.', check: tcpDoneAfter('tcp-stalled') }],
-        hints: ['You will find MSS clamping on r1 under Configuration, below IP forwarding.', 'MTU 1400 minus 40 bytes for IP and TCP.'],
+        hints: ['You will find MSS clamping on r1 under Configuration, Add a feature, Advanced.', 'MTU 1400 minus 40 bytes for IP and TCP.'],
         outro: '<p>With MSS clamping, the client only announces 1360 in the SYN, and the SYN/ACK from web is also adjusted on the way back. Neither side sends a segment that is too large any more, ICMP is not needed at all.</p>' }
     ] }
   ]
@@ -3229,7 +3274,9 @@ export class Sim {
     const lost = Number(link.loss) > 0 && this.random() * 100 < Number(link.loss);
     const fl = { id: f.id + ':' + this.seq, frame: f, link, from: dev.id, fromIf: ifname, to: peer.dev, toIf: peer.if, t0: this.time, t1: this.time + delay, lost };
     this.inflight.push(fl);
-    this.record(dev, 'send', `sends via ${ifname}: ${summary(f)}`, { frame: f, tag: frame.type === 'stp' ? 'bpdu-sent' : hello ? 'hello-sent' : null });
+    const toDev = this.devices.get(peer.dev);
+    fl.logSeq = this.record(dev, 'send', `sends via ${ifname}: ${summary(f)}`, { frame: f, tag: frame.type === 'stp' ? 'bpdu-sent' : hello ? 'hello-sent' : null,
+      data: { to: toDev?.name || peer.dev, toId: peer.dev, toIf: peer.if, fromIf: ifname } }).seq;
     this.schedule(delay, () => {
       this.inflight = this.inflight.filter(x => x !== fl);
       const target = this.devices.get(peer.dev);
@@ -3246,6 +3293,7 @@ export class Sim {
     this.log.push(e);
     if (this.log.length > 5000) this.log.splice(0, this.log.length - 5000);
     this.emit('log', e);
+    return e;
     return e;
   }
   print(dev, text) {
@@ -5229,7 +5277,7 @@ import { dissect, summary } from './packets.js';
 import { frameLen, frameWireLen } from './net.js';
 import { h, esc } from './ui.js';
 
-export function renderInspector(el, entry, { onTrace } = {}) {
+export function renderInspector(el, entry, { onTrack } = {}) {
   el.innerHTML = '';
   if (!entry || !entry.frame) {
     el.append(h('div', { class: 'empty' }, 'Click a packet in the network diagram or a row in the log to take it apart layer by layer.'));
@@ -5244,8 +5292,8 @@ export function renderInspector(el, entry, { onTrace } = {}) {
   const bar = h('div', { class: 'bytebar', title: 'Share of each layer in the frame size' });
   for (const l of layers) bar.append(h('i', { class: `bg-${l.kind}`, style: { flex: `${Math.max(l.bytes, 1)} 0 0` }, title: `${l.name}: ${l.bytes} bytes` }));
   el.append(bar, h('div', { class: 'bytelegend' }, h('span', {}, '0'), h('span', {}, `${total} bytes`)));
-  if (entry.trace && onTrace) el.append(h('div', { class: 'row', style: { margin: '6px 0' } },
-    h('button', { class: 'btn', onclick: () => onTrace(entry.trace) }, 'Trace this packet\'s path')));
+  if (onTrack) el.append(h('div', { class: 'row', style: { margin: '6px 0' } },
+    h('button', { class: 'btn', onclick: onTrack, title: 'Show every message of this exchange in order, with the path through the network' }, 'Track this conversation')));
   for (const l of layers) {
     const d = h('details', { class: `layer lc-${l.kind}${l.depth ? ' inner' : ''}`, open: l.depth === 0 && ['ip', 'arp', 'vxlan', 'icmp', 'rt'].includes(l.kind) ? true : null });
     d.append(h('summary', {}, l.name, h('span', { class: 'b' }, `${l.bytes} bytes`)));
@@ -5264,9 +5312,9 @@ import { Sim, PORTS, TYPE_NAMES, TIMING, newId, normalizeDevice, traceOf, STP_TE
 
 // BPDUs, VRRP advertisements and OSPF hellos repeat all the time and can be hidden together
 const isCtl = f => f.type === 'stp' || isHello(f);
-import { layerKinds, shortLabel } from './packets.js';
+import { layerKinds, shortLabel, flowOf, summary } from './packets.js';
 import { isIp } from './net.js';
-import { h, svgEl, toast, iconBtn, resizer } from './ui.js';
+import { h, svgEl, toast, iconBtn, resizer, contextMenu } from './ui.js';
 import { store } from './store.js';
 import { I, DEV_ICON } from './icons.js';
 import { renderInspector } from './inspector.js';
@@ -5277,6 +5325,11 @@ const NAME_PREFIX = { pc: 'pc', server: 'srv', router: 'r', switch: 'sw', vtep: 
 export const ZONE_COLORS = [['blue', 'Blue'], ['violet', 'Violet'], ['green', 'Green'], ['orange', 'Orange'], ['pink', 'Pink'], ['yellow', 'Yellow'], ['gray', 'Gray']];
 const KIND_COLOR = { vlan: 'violet', overlay: 'pink', underlay: 'blue' };
 export const zoneColor = z => z.color || KIND_COLOR[z.kind] || 'gray';
+
+// Kinds of changes the learner makes, they can be undone
+const EDITS = ['config', 'added', 'deleted', 'linked', 'moved', 'renamed'];
+// Log entries without a frame that belong to a tracked conversation (results, state changes)
+const TRACK_TAGS = { dhcp: /^dhcp/, dns: /^dns/, tcp: /^(tcp|http|curl)/, udp: /^udp/, icmp: /^(ping|echo|trace|pmtu)/, arp: /^(arp|neigh)/ };
 
 export class Lab {
   /**
@@ -5290,7 +5343,7 @@ export class Lab {
     if (opts.onEvent) this.listeners.add(opts.onEvent);
     this.sel = null; this.connectFrom = null; this.connectMode = false;
     this.playing = true; this.msPerHop = opts.msPerHop || Number(store.prefs.speed) || 550; this.lastTs = 0; this.idleUntil = 0;
-    this.traceId = null; this.logFilter = 'all'; this.selectedLog = null; this.showBpdu = true;
+    this.track = null; this.flowSel = null; this.trackRaw = false; this.logFilter = 'all'; this.selectedLog = null; this.showBpdu = true;
     this.view = { x: 0, y: 0, w: 900, h: 520 };
     this.pktEls = new Map();
     this.tab = 'config';
@@ -5305,7 +5358,74 @@ export class Lab {
     this.ro.observe(this.canvasWrap);
     this.ro.observe(this.el);
   }
-  emit(type, data) { for (const fn of this.listeners) fn(type, data, this); }
+  emit(type, data) {
+    if (EDITS.includes(type)) this.noteEdit();
+    for (const fn of this.listeners) fn(type, data, this);
+  }
+
+  // ------------------------------------------------------------ Undo and redo (Ctrl+Z, Ctrl+Y)
+  // After every edit the network is stored as a snapshot. Undo puts the previous snapshot
+  // back into the running simulation: devices, cables, areas and configuration.
+  snapTopo() { return JSON.stringify(this.sim.topo); }
+  resetHistory() { clearTimeout(this.histTimer); this.histTimer = null; this.undoStack = [this.snapTopo()]; this.redoStack = []; }
+  noteEdit() {
+    if (this.restoring || !this.undoStack) return;
+    clearTimeout(this.histTimer);
+    this.histTimer = setTimeout(() => this.captureEdit(), 250);
+  }
+  captureEdit() {
+    clearTimeout(this.histTimer); this.histTimer = null;
+    const snap = this.snapTopo();
+    if (snap === this.undoStack[this.undoStack.length - 1]) return;
+    this.undoStack.push(snap);
+    if (this.undoStack.length > 100) this.undoStack.shift();
+    this.redoStack = [];
+  }
+  undo() {
+    if (!this.canConfig && !this.canEditTopo) return;
+    if (this.histTimer) this.captureEdit();
+    if (this.undoStack.length < 2) return toast('Nothing to undo');
+    this.redoStack.push(this.undoStack.pop());
+    this.applyTopo(JSON.parse(this.undoStack[this.undoStack.length - 1]));
+    toast('Undone (Ctrl+Y redoes it)');
+  }
+  redo() {
+    if (!this.redoStack?.length) return toast('Nothing to redo');
+    const snap = this.redoStack.pop();
+    this.undoStack.push(snap);
+    this.applyTopo(JSON.parse(snap));
+    toast('Redone');
+  }
+  applyTopo(t) {
+    const sim = this.sim, cur = sim.topo;
+    this.restoring = true;
+    try {
+      for (const l of [...cur.links]) if (!t.links.some(x => x.id === l.id)) sim.removeLink(l.id);
+      for (const d of [...cur.devices]) if (!t.devices.some(x => x.id === d.id)) sim.removeDevice(d.id);
+      for (const td of t.devices) {
+        const d = cur.devices.find(x => x.id === td.id);
+        if (!d) { sim.addDevice(normalizeDevice(td)); continue; }
+        if (JSON.stringify(d) === JSON.stringify(td)) continue;
+        for (const k of Object.keys(d)) if (!(k in td)) delete d[k];
+        Object.assign(d, td);
+        sim.configChanged(d.id);
+      }
+      for (const tl of t.links) {
+        const l = cur.links.find(x => x.id === tl.id);
+        if (!l) { sim.addLink(tl); continue; }
+        const wasUp = l.up;
+        Object.assign(l, tl, { up: wasUp });
+        if (wasUp !== tl.up) sim.setLinkUp(l, tl.up);
+      }
+      cur.zones = t.zones || [];
+      cur.name = t.name;
+      sim.emit('config', null);
+    } finally { this.restoring = false; }
+    const exists = this.sel && (this.sel.kind === 'dev' ? cur.devices.some(d => d.id === this.sel.id) : this.sel.kind === 'link' ? cur.links.some(l => l.id === this.sel.id) : (cur.zones || []).some(z => z.id === this.sel.id));
+    if (!exists) this.select(null); else this.renderSide();
+    this.render();
+    for (const fn of this.listeners) fn('config', { msg: 'undo' }, this);
+  }
   destroy() {
     cancelAnimationFrame(this.raf);
     window.removeEventListener('keydown', this.keyHandler);
@@ -5346,8 +5466,9 @@ export class Lab {
     // Canvas
     this.canvasWrap = h('div', { class: 'canvas-wrap' });
     this.svg = svgEl('svg', { class: `net${this.canEditTopo ? '' : ' ro'}`, role: 'img', 'aria-label': 'Network diagram' });
-    this.gZones = svgEl('g'); this.gLinks = svgEl('g'); this.gDevs = svgEl('g'); this.gPkts = svgEl('g');
-    this.svg.append(this.gZones, this.gLinks, this.gDevs, this.gPkts);
+    // Labels of cables (interface names, MTU, STP dots) lie above all cables, so no cable crosses a name
+    this.gZones = svgEl('g'); this.gLinks = svgEl('g'); this.gLinkLbl = svgEl('g', { class: 'lnk-lbls' }); this.gDevs = svgEl('g'); this.gPkts = svgEl('g');
+    this.svg.append(this.gZones, this.gLinks, this.gLinkLbl, this.gDevs, this.gPkts);
     this.canvasWrap.append(this.svg);
     this.bindCanvas();
     // Player
@@ -5379,7 +5500,7 @@ export class Lab {
     // Dock
     this.logEl = h('div', { class: 'log', role: 'log' });
     this.filterSel = h('select', { class: 'input', 'aria-label': 'Filter log' });
-    this.filterSel.addEventListener('change', () => { this.logFilter = this.filterSel.value; if (this.logFilter !== 'trace') this.setTrace(null); this.renderLog(); });
+    this.filterSel.addEventListener('change', () => { this.logFilter = this.filterSel.value; if (this.logFilter !== 'track') this.stopTrack(); this.renderLog(); });
     this.inspEl = h('div', { class: 'inspector' });
     this.dock = h('div', { class: 'dock' },
       h('div', { class: 'dock-col' }, h('div', { class: 'dock-head' }, 'Events', h('span', { class: 'grow' }), this.filterSel,
@@ -5445,10 +5566,11 @@ export class Lab {
     topo.zones.forEach(z => { z.id ??= newId('z'); });
     this.sim = new Sim(topo);
     this.unsub = this.sim.on((type, data) => this.onSim(type, data));
-    this.sel = null; this.traceId = null; this.selectedLog = null;
+    this.sel = null; this.track = null; this.flowSel = null; this.selectedLog = null;
     this.pktEls.forEach(e => e.remove()); this.pktEls.clear();
     this.render();
     this.fit(true);
+    this.resetHistory();
     this.updateBpduBar();
     this.showStorm(null);
     this.renderSide();
@@ -5459,7 +5581,7 @@ export class Lab {
   resetState() {
     this.sim.reset();
     this.pktEls.forEach(e => e.remove()); this.pktEls.clear();
-    this.setTrace(null);
+    this.stopTrack();
     this.renderLog(); this.renderSide(); renderInspector(this.inspEl, null);
     this.showStorm(null); this.render();
     toast('State reset: ARP and MAC tables are empty');
@@ -5472,8 +5594,8 @@ export class Lab {
     }
     if (type === 'halted') this.showStorm(data);
     if (type === 'console' && this.sel?.kind === 'dev' && this.sel.id === data.devId && this.tab === 'console') this.consoleEl?.refresh();
-    if (type === 'config') { this.render(); this.refreshSideSoon(); this.updateBpduBar(); }
-    if (type === 'topology') this.render();
+    if (type === 'config') { this.render(); this.refreshSideSoon(); this.updateBpduBar(); this.noteEdit(); }
+    if (type === 'topology') { this.render(); this.noteEdit(); }
     this.emit('sim', { type, data });
   }
 
@@ -5481,16 +5603,19 @@ export class Lab {
   devPos(d) { return { x: d.x ?? 0, y: d.y ?? 0 }; }
   render() {
     const topo = this.sim.topo;
-    this.gLinks.innerHTML = ''; this.gDevs.innerHTML = ''; this.gZones.innerHTML = '';
+    const hl = this.trackHighlight();
+    this.gLinks.innerHTML = ''; this.gLinkLbl.innerHTML = ''; this.gDevs.innerHTML = ''; this.gZones.innerHTML = '';
     for (const z of topo.zones || []) this.gZones.append(this.zoneEl(z));
     const byId = new Map(topo.devices.map(d => [d.id, d]));
     for (const l of topo.links) {
       const A = byId.get(l.a.dev), B = byId.get(l.b.dev);
       if (!A || !B) continue;
-      const g = svgEl('g', { class: `lnk-g${this.sel?.kind === 'link' && this.sel.id === l.id ? ' sel' : ''}`, 'data-id': l.id });
+      const onPath = hl && (hl.edges.has(l.a.dev + '|' + l.b.dev) || hl.edges.has(l.b.dev + '|' + l.a.dev));
+      const g = svgEl('g', { class: `lnk-g${this.sel?.kind === 'link' && this.sel.id === l.id ? ' sel' : ''}${onPath ? ' trace' : ''}`, 'data-id': l.id });
       const line = svgEl('line', { class: `lnk${l.up ? '' : ' down'}${l.mtu > 1500 ? ' jumbo' : ''}`, x1: A.x, y1: A.y, x2: B.x, y2: B.y });
       const hit = svgEl('line', { class: 'lnk-hit', x1: A.x, y1: A.y, x2: B.x, y2: B.y });
-      hit.addEventListener('pointerdown', e => { e.stopPropagation(); this.select({ kind: 'link', id: l.id }); });
+      hit.addEventListener('pointerdown', e => { if (e.button === 2) return; e.stopPropagation(); this.select({ kind: 'link', id: l.id }); });
+      hit.addEventListener('contextmenu', e => this.linkMenu(e, l));
       g.append(line, hit);
       const lbl = (P, Q, name) => {
         const dx = Q.x - P.x, dy = Q.y - P.y, len = Math.hypot(dx, dy) || 1;
@@ -5500,7 +5625,8 @@ export class Lab {
         const t = svgEl('text', { class: 'iflbl', x: P.x + dx / len * off + (-dy / len) * 9, y: P.y + dy / len * off + (dx / len) * 9 + 3, 'text-anchor': 'middle' });
         t.textContent = name; return t;
       };
-      g.append(lbl(A, B, l.a.if), lbl(B, A, l.b.if));
+      const lg = svgEl('g');
+      lg.append(lbl(A, B, l.a.if), lbl(B, A, l.b.if));
       for (const [P, Q, end] of [[A, B, l.a], [B, A, l.b]]) {
         const br = this.sim.dev(end.dev)?.bridge;
         if (!br?.stp || P.type !== 'switch') continue;
@@ -5511,16 +5637,17 @@ export class Lab {
         const tt = svgEl('title'); tt.textContent = `${P.name} ${end.if}: ${STP_TEXT.ROLE[ps.role]}, ${STP_TEXT.STATE[ps.state]}${ps.edge ? ', edge port' : ''}${br.stp.rstp && ps.legacy ? ', neighbor speaks only classic STP' : ''}`;
         const letter = svgEl('text', { 'text-anchor': 'middle', y: 2.7 }); letter.textContent = { root: 'R', designated: 'D', alternate: 'A', backup: 'B', disabled: '' }[ps.role];
         dot.append(tt, svgEl('circle', { r: 6 }), letter);
-        g.append(dot);
+        lg.append(dot);
       }
       const props = [l.mtu !== 1500 ? `MTU ${l.mtu}` : '', Number(l.delay) > 0 ? `${l.delay} ms` : '', Number(l.loss) > 0 ? `${l.loss} % loss` : ''].filter(Boolean);
       if (props.length) {
         const t = svgEl('text', { class: 'mtulbl', x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 - 7, 'text-anchor': 'middle' });
-        t.textContent = props.join(' · '); g.append(t);
+        t.textContent = props.join(' · '); lg.append(t);
       }
       this.gLinks.append(g);
+      this.gLinkLbl.append(lg);
     }
-    const traceDevs = this.traceId ? new Set(this.sim.log.filter(e => e.trace === this.traceId).map(e => e.devId)) : null;
+    const traceDevs = hl?.devs;
     for (const d of topo.devices) {
       const sel = this.sel?.kind === 'dev' && this.sel.id === d.id;
       const g = svgEl('g', { class: `dev t-${d.type}${sel ? ' sel' : ''}${this.connectFrom === d.id ? ' pend' : ''}${traceDevs?.has(d.id) ? ' trace' : ''}`,
@@ -5536,7 +5663,8 @@ export class Lab {
       if (badge) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 + lines.length * 12 }); t.textContent = badge; g.append(t); }
       const st = d.type === 'switch' ? this.sim.dev(d.id)?.bridge?.stpTable() : null;
       if (st) { const t = svgEl('text', { class: 'stpbadge', x: CARD_W / 2, y: CARD_H + 28 }); const proto = st.mode === 'rstp' ? 'RSTP' : 'STP'; t.textContent = st.isRoot ? `Root bridge (${proto}), prio ${d.stp.priority}` : `${proto}, prio ${d.stp.priority}`; g.append(t); }
-      g.addEventListener('pointerdown', e => this.devPointerDown(e, d));
+      g.addEventListener('pointerdown', e => { if (e.button !== 2) this.devPointerDown(e, d); });
+      g.addEventListener('contextmenu', e => this.devMenu(e, d));
       g.addEventListener('dblclick', () => { this.select({ kind: 'dev', id: d.id }); this.setTab('console'); });
       g.addEventListener('keydown', e => { if (e.key === 'Enter') this.select({ kind: 'dev', id: d.id }); });
       this.gDevs.append(g);
@@ -5612,7 +5740,7 @@ export class Lab {
   // ------------------------------------------------------------ Interaction
   bindCanvas() {
     this.svg.addEventListener('pointerdown', e => {
-      if (e.target !== this.svg) return;
+      if (e.target !== this.svg || e.button === 2) return;
       this.select(null);
       if (this.connectMode) { this.connectFrom = null; this.render(); }
       const start = { x: e.clientX, y: e.clientY, vx: this.view.x, vy: this.view.y };
@@ -5625,6 +5753,7 @@ export class Lab {
       const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
       window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
     });
+    this.svg.addEventListener('contextmenu', e => { if (e.target === this.svg || e.target.closest('.zone-g')) this.canvasMenu(e); });
     this.svg.addEventListener('wheel', e => {
       e.preventDefault();
       const p = this.toSvg(e);
@@ -5714,7 +5843,8 @@ export class Lab {
     const t = svgEl('text', { class: 'zone-t', x: z.x + 17, y: z.y + 22 }); t.textContent = label;
     g.append(tab, t);
     if (this.canEditTopo) {
-      tab.addEventListener('pointerdown', e => this.zonePointer(e, z, 'move'));
+      tab.addEventListener('pointerdown', e => { if (e.button !== 2) this.zonePointer(e, z, 'move'); });
+      tab.addEventListener('contextmenu', e => this.zoneMenu(e, z));
       tab.addEventListener('dblclick', () => { this.select({ kind: 'zone', id: z.id }); setTimeout(() => this.side.querySelector('input')?.focus(), 30); });
       const rs = svgEl('rect', { class: 'zone-rs', x: z.x + z.w - 13, y: z.y + z.h - 13, width: 11, height: 11, rx: 3 });
       rs.addEventListener('pointerdown', e => this.zonePointer(e, z, 'resize'));
@@ -5795,6 +5925,8 @@ export class Lab {
     if (!this.root.isConnected) return;
     const tag = (e.target.tagName || '').toLowerCase();
     if (['input', 'textarea', 'select'].includes(tag)) return;
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); return e.shiftKey ? this.redo() : this.undo(); }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); return this.redo(); }
     if (e.key === ' ') { e.preventDefault(); this.setPlaying(!this.playing); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); this.stepOnce(); }
     else if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel) { e.preventDefault(); this.deleteSelected(); }
@@ -5849,6 +5981,7 @@ export class Lab {
           h('li', {}, 'Click a device: configuration, tables and console appear here. Double-click opens the console directly.'),
           h('li', {}, 'Type e.g. ping 10.0.0.2 in the console and watch the packets travel.'),
           h('li', {}, 'Space pauses time, the right arrow advances one event. The speed slider sets the slow motion. F switches to fullscreen.'),
+          h('li', {}, 'Ctrl+Z undoes a change, Ctrl+Y redoes it. Right-click on a device, cable, area or packet shows what you can do with it.'),
           h('li', {}, 'Clicking a packet takes it apart into its layers in the packet inspector.')),
         h('h4', {}, 'Layer colors'),
         h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'VRRP, OSPF']]
@@ -5928,14 +6061,19 @@ export class Lab {
     if (this.logFilter === 'bpdu') return true;
     if (this.logFilter === 'stp') return e.stp && e.tag !== 'bpdu-sent' || e.tag === 'loop-detected' || e.tag === 'storm' || e.tag === 'mac-flap';
     if (this.logFilter === 'nosend') return e.kind !== 'send';
-    if (this.logFilter === 'trace') return e.trace === this.traceId;
+    if (this.logFilter === 'track') return !!this.track?.seqs.has(e.seq);
     if (this.logFilter.startsWith('dev:')) return e.devId === this.logFilter.slice(4);
     return true;
   }
   logRow(e) {
     const row = h('div', { class: `e k-${e.kind}${e.frame ? ' has-frame' : ''}${this.selectedLog === e.seq ? ' sel' : ''}`, 'data-seq': e.seq },
       h('span', { class: 't' }, (e.t / 1000).toFixed(4)), h('span', { class: 'd', title: e.dev }, e.dev), h('span', { class: 'x' }, e.text));
-    if (e.frame) row.addEventListener('click', () => this.inspect(e));
+    if (e.frame) {
+      row.addEventListener('click', () => this.inspect(e));
+      row.addEventListener('contextmenu', ev => contextMenu(ev, [
+        { label: 'Take apart in the inspector', icon: I.eye, onClick: () => this.inspect(e) },
+        flowOf(e.frame) ? { label: 'Track this conversation', icon: I.route, onClick: () => this.trackFrom(e) } : null]));
+    }
     return row;
   }
   renderLog() {
@@ -5943,17 +6081,21 @@ export class Lab {
     const stp = this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled), hellos = this.hasHellos();
     if (stp || this.logFilter === 'stp') opts.push(['stp', 'Spanning tree only']);
     if (stp || hellos || this.logFilter === 'bpdu') opts.push(['bpdu', `Everything, including ${stp && hellos ? 'BPDUs and hellos' : stp ? 'BPDUs' : 'hellos'}`]);
-    if (this.traceId) opts.push(['trace', 'Traced packet']);
+    if (this.track) opts.push(['track', `Conversation: ${this.track.label}`]);
     for (const d of this.sim.topo.devices) opts.push(['dev:' + d.id, `Only ${d.name}`]);
     this.filterSel.innerHTML = '';
     for (const [v, t] of opts) this.filterSel.append(h('option', { value: v, selected: v === this.logFilter ? true : null }, t));
     this.logEl.innerHTML = '';
+    if (this.track) this.updateTrack();
+    if (this.logFilter === 'track' && !this.trackRaw) return this.renderFlow();
+    if (this.logFilter === 'track') this.logEl.append(this.flowBar());
     const list = this.sim.log.filter(e => this.logVisible(e)).slice(-600);
     if (!list.length) this.logEl.append(h('div', { class: 'empty', style: { padding: '10px' } }, 'Nothing has happened yet. Open the console of a device and send a ping.'));
     for (const e of list) this.logEl.append(this.logRow(e));
     this.logEl.scrollTop = this.logEl.scrollHeight;
   }
   appendLog(entries) {
+    if (this.logFilter === 'track') { clearTimeout(this.flowTimer); this.flowTimer = setTimeout(() => { this.renderLog(); this.render(); }, 120); return; }
     const atBottom = this.logEl.scrollTop + this.logEl.clientHeight >= this.logEl.scrollHeight - 30;
     if (this.logEl.querySelector('.empty')) this.logEl.innerHTML = '';
     for (const e of entries) if (this.logVisible(e)) this.logEl.append(this.logRow(e));
@@ -5964,14 +6106,170 @@ export class Lab {
     this.selectedLog = e.seq;
     this.logEl.querySelectorAll('.e.sel').forEach(x => x.classList.remove('sel'));
     this.logEl.querySelector(`[data-seq="${e.seq}"]`)?.classList.add('sel');
-    renderInspector(this.inspEl, e, { onTrace: t => this.setTrace(t) });
+    renderInspector(this.inspEl, e, { onTrack: flowOf(e.frame) ? () => this.trackFrom(e) : null });
     this.emit('inspect', e);
   }
-  setTrace(t) {
-    this.traceId = t;
-    if (t) { this.logFilter = 'trace'; toast('The log now shows only this packet, the devices involved are highlighted'); }
-    else if (this.logFilter === 'trace') this.logFilter = 'all';
-    this.render(); this.renderLog();
+  // ------------------------------------------------------------ Tracking a conversation
+  // Follows everything that belongs together (a DHCP exchange, a TCP connection, a ping …)
+  // and shows it as a list of messages: who sent what to whom, over which devices.
+  trackFrom(e) {
+    const f = flowOf(e.frame);
+    if (!f) return toast('This frame does not belong to a conversation that can be tracked');
+    this.track = { keys: new Set([f.key]), traces: new Set(e.trace ? [e.trace] : []), devs: new Set(), label: f.label, kind: f.kind, seqs: new Set(), upTo: 0 };
+    this.flowSel = null; this.trackRaw = false; this.logFilter = 'track';
+    this.renderLog(); this.render();
+    toast('Tracking the conversation: every message in order, the path is highlighted in the diagram');
+  }
+  stopTrack() {
+    if (!this.track) return;
+    this.track = null; this.flowSel = null;
+    if (this.logFilter === 'track') this.logFilter = 'all';
+    this.renderLog(); this.render();
+  }
+  updateTrack() {
+    const t = this.track, tags = TRACK_TAGS[t.kind];
+    for (const e of this.sim.log) {
+      if (e.seq <= t.upTo) continue;
+      t.upTo = e.seq;
+      if (e.frame) {
+        const f = flowOf(e.frame);
+        // Same conversation, or the same packet after NAT or a relay changed its addresses
+        if ((f && t.keys.has(f.key)) || (e.trace && t.traces.has(e.trace))) {
+          if (f) t.keys.add(f.key);
+          if (e.trace) t.traces.add(e.trace);
+          t.seqs.add(e.seq); t.devs.add(e.devId); if (e.data?.toId) t.devs.add(e.data.toId);
+        }
+      } else if (tags?.test(e.tag || '') && t.devs.has(e.devId)) t.seqs.add(e.seq);
+    }
+  }
+  /** Messages of the tracked conversation: one per packet on its way, with the hops */
+  flowMessages() {
+    const msgs = new Map();
+    for (const e of this.sim.log) {
+      if (e.kind !== 'send' || !this.track.seqs.has(e.seq)) continue;
+      // One message is one packet on its way (also when a relay or NAT passes it on); an
+      // answer is a new message even when it carries the same trace id
+      const id = (e.trace ?? 'f' + e.frame.id) + '|' + shortLabel(e.frame);
+      if (!msgs.has(id)) msgs.set(id, { id, first: e, edges: [] });
+      msgs.get(id).edges.push([e.dev, e.data?.to, e.devId, e.data?.toId]);
+    }
+    return [...msgs.values()];
+  }
+  pathText(edges) {
+    // A tree from the sender: a → b → {c, d → e}. Floods branch, a relay continues the line.
+    const kids = new Map();
+    for (const [from, to] of edges) {
+      if (!to) continue;
+      if (!kids.has(from)) kids.set(from, []);
+      if (!kids.get(from).includes(to)) kids.get(from).push(to);
+    }
+    const seen = new Set();
+    const walk = n => {
+      seen.add(n);
+      const next = (kids.get(n) || []).filter(x => !seen.has(x));
+      next.forEach(x => seen.add(x));
+      if (!next.length) return n;
+      const parts = next.map(walk);
+      return `${n} → ${parts.length === 1 ? parts[0] : `{${parts.join(', ')}}`}`;
+    };
+    return edges.length ? walk(edges[0][0]) : '';
+  }
+  flowBar() {
+    const t = this.track;
+    return h('div', { class: 'flowbar' }, h('b', {}, t.label), h('span', { class: 'grow' }),
+      h('button', { class: 'tog' + (this.trackRaw ? '' : ' on'), onclick: () => { this.trackRaw = false; this.renderLog(); } }, 'Messages'),
+      h('button', { class: 'tog' + (this.trackRaw ? ' on' : ''), onclick: () => { this.trackRaw = true; this.renderLog(); } }, 'All events'),
+      h('button', { class: 'btn ghost small', onclick: () => this.stopTrack() }, 'Stop'));
+  }
+  renderFlow() {
+    const msgs = this.flowMessages();
+    this.logEl.append(this.flowBar());
+    if (!msgs.length) this.logEl.append(h('div', { class: 'empty', style: { padding: '10px' } }, 'No messages of this conversation yet.'));
+    msgs.forEach((m, i) => {
+      const row = h('div', { class: `flow-row${this.flowSel === m.id ? ' sel' : ''}`, title: summary(m.first.frame) },
+        h('span', { class: 'n' }, String(i + 1)),
+        h('span', { class: 't' }, (m.first.t / 1000).toFixed(4)),
+        h('span', { class: 'what' }, summary(m.first.frame)),
+        h('span', { class: 'path mono' }, this.pathText(m.edges)));
+      row.addEventListener('click', () => { this.flowSel = this.flowSel === m.id ? null : m.id; this.inspect(m.first); this.renderLog(); this.render(); });
+      this.logEl.append(row);
+    });
+    this.logEl.scrollTop = this.logEl.scrollHeight;
+  }
+  trackHighlight() {
+    if (!this.track) return null;
+    const devs = new Set(), edges = new Set();
+    for (const m of this.flowMessages()) {
+      if (this.flowSel && m.id !== this.flowSel) continue;
+      for (const [, , a, b] of m.edges) { devs.add(a); if (b) { devs.add(b); edges.add(a + '|' + b); } }
+    }
+    return { devs, edges };
+  }
+  /** Clicking a packet on a cable: its entry in the event log, and the layers in the inspector */
+  showInLog(f) {
+    const e = this.sim.log.find(x => x.seq === f.logSeq);
+    if (!e) return this.inspect({ seq: -1, t: this.sim.time, dev: '', frame: f.frame, trace: traceOf(f.frame) });
+    if (!this.logVisible(e)) { if (this.logFilter === 'track') this.stopTrack(); this.logFilter = e.tag === 'bpdu-sent' || e.tag === 'hello-sent' ? 'bpdu' : 'all'; this.renderLog(); }
+    else if (this.logFilter === 'track' && !this.trackRaw) { this.trackRaw = true; this.renderLog(); }
+    this.inspect(e);
+    this.logEl.querySelector(`[data-seq="${e.seq}"]`)?.scrollIntoView({ block: 'center' });
+  }
+
+  // ------------------------------------------------------------ Right-click menus
+  devMenu(e, d) {
+    const edit = this.canEditTopo;
+    contextMenu(e, [
+      { label: 'Console', icon: I.terminal, onClick: () => { this.select({ kind: 'dev', id: d.id }); this.setTab('console'); } },
+      { label: 'Configuration', icon: I.sliders, onClick: () => { this.select({ kind: 'dev', id: d.id }); this.setTab('config'); } },
+      { label: 'Tables', icon: I.table, onClick: () => { this.select({ kind: 'dev', id: d.id }); this.setTab('tables'); } },
+      '-',
+      edit ? { label: 'Connect a cable from here', icon: I.cable, hint: 'K', onClick: () => { this.setConnect(true); this.connectFrom = d.id; this.render(); toast('Now click the device on the other end'); } } : null,
+      edit ? { label: 'Rename', onClick: () => { this.select({ kind: 'dev', id: d.id }); setTimeout(() => { const i = this.side.querySelector('.side-head .name'); i?.focus(); i?.select(); }, 30); } } : null,
+      '-',
+      edit ? { label: 'Delete', icon: I.trash, danger: true, hint: 'Del', onClick: () => { this.select({ kind: 'dev', id: d.id }); this.deleteSelected(); } } : null
+    ], d.name);
+  }
+  linkMenu(e, l) {
+    const name = id => this.sim.dev(id)?.name;
+    contextMenu(e, [
+      { label: 'Cable settings', icon: I.sliders, onClick: () => this.select({ kind: 'link', id: l.id }) },
+      this.canConfig ? { label: l.up ? 'Disconnect (link down)' : 'Reconnect (link up)', onClick: () => { this.sim.setLinkUp(l, !l.up); this.render(); this.renderSide(); this.emit('config', { link: l.id, msg: l.up ? 'Link on' : 'Link off' }); } } : null,
+      '-',
+      this.canEditTopo ? { label: 'Delete cable', icon: I.trash, danger: true, onClick: () => { this.select({ kind: 'link', id: l.id }); this.deleteSelected(); } } : null
+    ], `${name(l.a.dev)} ${l.a.if} ↔ ${name(l.b.dev)} ${l.b.if}`);
+  }
+  zoneMenu(e, z) {
+    if (!this.canEditTopo) return;
+    contextMenu(e, [
+      { label: 'Rename and color', icon: I.sliders, onClick: () => { this.select({ kind: 'zone', id: z.id }); setTimeout(() => this.side.querySelector('input')?.focus(), 30); } },
+      '-',
+      { label: 'Delete area', icon: I.trash, danger: true, onClick: () => { this.select({ kind: 'zone', id: z.id }); this.deleteSelected(); } }
+    ], z.label || 'Area');
+  }
+  packetMenu(e, f) {
+    contextMenu(e, [
+      { label: 'Show in the event log', icon: I.eye, onClick: () => this.showInLog(f) },
+      flowOf(f.frame) ? { label: 'Track this conversation', icon: I.route, onClick: () => { const le = this.sim.log.find(x => x.seq === f.logSeq); this.trackFrom(le || { frame: f.frame, trace: traceOf(f.frame) }); } } : null
+    ], shortLabel(f.frame));
+  }
+  canvasMenu(e) {
+    const p = this.toSvg(e), snap = v => Math.round(v / 12) * 12;
+    const zone = (this.sim.topo.zones || []).find(z => p.x >= z.x && p.x <= z.x + z.w && p.y >= z.y && p.y <= z.y + z.h);
+    const types = this.canEditTopo ? this.opts.palette : [];
+    contextMenu(e, [
+      ...types.map(t => ({ label: `Add ${/^[A-Z]+$/.test(TYPE_NAMES[t]) ? TYPE_NAMES[t] : TYPE_NAMES[t].toLowerCase()} here`, icon: `<svg viewBox="0 0 40 40" width="16" height="16">${DEV_ICON[t]}</svg>`, onClick: () => this.addDevice(t, snap(p.x), snap(p.y)) })),
+      this.canEditTopo ? { label: 'Add area here', icon: I.area, onClick: () => this.addZone(snap(p.x), snap(p.y)) } : null,
+      zone && this.canEditTopo ? '-' : null,
+      zone && this.canEditTopo ? { label: `Rename area "${zone.label || 'Area'}"`, icon: I.sliders, onClick: () => { this.select({ kind: 'zone', id: zone.id }); setTimeout(() => this.side.querySelector('input')?.focus(), 30); } } : null,
+      zone && this.canEditTopo ? { label: 'Delete area', icon: I.trash, danger: true, onClick: () => { this.select({ kind: 'zone', id: zone.id }); this.deleteSelected(); } } : null,
+      '-',
+      (this.canEditTopo || this.canConfig) ? { label: 'Undo', icon: I.reset, hint: 'Ctrl+Z', disabled: !(this.undoStack?.length > 1 || this.histTimer), onClick: () => this.undo() } : null,
+      (this.canEditTopo || this.canConfig) ? { label: 'Redo', hint: 'Ctrl+Y', disabled: !this.redoStack?.length, onClick: () => this.redo() } : null,
+      '-',
+      { label: 'Fit the network into the view', icon: I.fit, onClick: () => this.fit(true) },
+      { label: this.isFull() ? 'Leave fullscreen' : 'Fullscreen', icon: this.isFull() ? I.unfull : I.full, hint: 'F', onClick: () => this.toggleFull() },
+      this.track ? { label: 'Stop tracking the conversation', onClick: () => this.stopTrack() } : null
+    ]);
   }
 
   // ------------------------------------------------------------ Time and animation
@@ -6015,36 +6313,69 @@ export class Lab {
   drawPackets() {
     const sim = this.sim, seen = new Set();
     const byId = new Map(sim.topo.devices.map(d => [d.id, d]));
+    // Group the packets per cable and direction
     const groups = new Map();
     for (const f of sim.inflight) {
       if (!this.showBpdu && isCtl(f.frame)) continue;
-      const key = f.link.id + (f.from === f.link.a.dev ? 'a' : 'b');
-      groups.set(key, (groups.get(key) || 0) + 1);
-      const idx = groups.get(key) - 1;
       const A = byId.get(f.from), B = byId.get(f.to);
       if (!A || !B) continue;
-      const p = Math.min(1, Math.max(0, (sim.time - f.t0) / (f.t1 - f.t0)));
-      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1;
-      const x = A.x + dx * p + (-dy / len) * (8 + idx * 4), y = A.y + dy * p + (dx / len) * (8 + idx * 4);
-      let g = this.pktEls.get(f.id);
-      if (!g) {
-        g = svgEl('g', { class: 'pkt', role: 'button', 'aria-label': shortLabel(f.frame) });
-        const kinds = layerKinds(f.frame);
-        const W = 12 + kinds.length * 7, H = 19;
-        g.append(svgEl('rect', { class: 'box', x: -W / 2, y: -H / 2, width: W, height: H, rx: 3, fill: 'var(--panel)' }));
-        kinds.forEach((k, i) => g.append(svgEl('rect', { x: -W / 2 + 3.5 + i * 7, y: -H / 2 + 3, width: 6, height: H - 6, rx: 1, fill: `var(--l-${k})` })));
-        const t = svgEl('text', { x: 0, y: H / 2 + 12 }); t.textContent = shortLabel(f.frame);
-        g.append(t);
-        g.addEventListener('pointerdown', e => {
-          e.stopPropagation();
-          this.setPlaying(false);
-          this.inspect({ seq: -1, t: sim.time, dev: `${byId.get(f.from)?.name} → ${byId.get(f.to)?.name}`, frame: f.frame, trace: traceOf(f.frame) });
-        });
-        this.gPkts.append(g);
-        this.pktEls.set(f.id, g);
+      const key = f.link.id + (f.from === f.link.a.dev ? 'a' : 'b');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ f, A, B, p: Math.min(1, Math.max(0, (sim.time - f.t0) / (f.t1 - f.t0))) });
+    }
+    for (const items of groups.values()) {
+      // Packets that travel together (a TCP burst) form a small tower beside the cable:
+      // every envelope stays visible, they just get smaller the more there are
+      const { A, B } = items[0];
+      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1, ux = dx / len, uy = dy / len;
+      // Stay on the free part of the cable, not on top of the device cards at its ends
+      const m = Math.min(46, len / 2);
+      items.forEach(it => { it.s = m + it.p * (len - 2 * m); });
+      items.sort((a, b) => a.s - b.s);
+      const towers = [];
+      for (const it of items) {
+        const t = towers[towers.length - 1];
+        if (t && it.s - t[0].s < 26) t.push(it); else towers.push([it]);
       }
-      g.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)})`);
-      seen.add(f.id);
+      for (const tower of towers) {
+        const n = tower.length, scale = n === 1 ? 1 : Math.max(0.5, 1 - 0.09 * (n - 1));
+        const s0 = tower.reduce((a, it) => a + it.s, 0) / n;
+        tower.forEach((it, k) => {
+          const { f } = it;
+          const off = 9 + (n === 1 ? 0 : 6 * scale) + k * 21 * scale;
+          const sAt = n === 1 ? it.s : s0;
+          const x = A.x + ux * sAt - uy * off, y = A.y + uy * sAt + ux * off;
+          let g = this.pktEls.get(f.id);
+          if (!g) {
+            g = svgEl('g', { class: 'pkt', role: 'button', 'aria-label': shortLabel(f.frame) });
+            const kinds = layerKinds(f.frame);
+            const W = 12 + kinds.length * 7, H = 19;
+            g.append(svgEl('rect', { class: 'box', x: -W / 2, y: -H / 2, width: W, height: H, rx: 3, fill: 'var(--panel)' }));
+            kinds.forEach((kd, i) => g.append(svgEl('rect', { x: -W / 2 + 3.5 + i * 7, y: -H / 2 + 3, width: 6, height: H - 6, rx: 1, fill: `var(--l-${kd})` })));
+            const t = svgEl('text', { x: 0, y: H / 2 + 12 }); t.textContent = shortLabel(f.frame);
+            g.W = W; g.H = H; g.text = t;
+            g.append(t);
+            g.addEventListener('pointerdown', e => {
+              e.stopPropagation();
+              if (e.button === 2) return;
+              this.setPlaying(false);
+              this.showInLog(f);
+            });
+            g.addEventListener('contextmenu', e => { this.setPlaying(false); this.packetMenu(e, f); });
+            this.gPkts.append(g);
+            this.pktEls.set(f.id, g);
+          }
+          // Alone: label below. In a tower: label beside each envelope, so none covers another
+          const side = n > 1 ? 'side' : 'below';
+          if (g.labelPos !== side) {
+            g.labelPos = side;
+            if (side === 'side') { g.text.setAttribute('x', g.W / 2 + 4); g.text.setAttribute('y', 3.5); g.text.setAttribute('class', 'side'); }
+            else { g.text.setAttribute('x', 0); g.text.setAttribute('y', g.H / 2 + 12); g.text.removeAttribute('class'); }
+          }
+          g.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)})${scale < 1 ? ` scale(${scale.toFixed(2)})` : ''}`);
+          seen.add(f.id);
+        });
+      }
     }
     for (const [id, g] of this.pktEls) if (!seen.has(id)) { g.remove(); this.pktEls.delete(id); }
   }
@@ -6599,6 +6930,42 @@ export function dissect(f, depth = 0) {
 export function frameStats(f) {
   return { len: frameLen(f), wire: frameWireLen(f), fcs: FCS };
 }
+
+/** The conversation a frame belongs to (all DHCP messages of one client, one TCP
+ *  connection, one ping, one ARP exchange …), for tracking it across the network.
+ *  kind also selects the log entries without a frame that belong to it. */
+export function flowOf(f) {
+  if (!f) return null;
+  const pair = (a, b) => [a, b].sort().join('|');
+  if (f.type === 'stp') return { key: 'stp', kind: 'stp', label: 'Spanning tree BPDUs' };
+  if (f.type === 'arp') {
+    const a = f.payload;
+    if (a.spa === a.tpa || a.spa === '0.0.0.0') return { key: `arp:${a.tpa}`, kind: 'arp', label: `ARP for ${a.tpa}` };
+    return { key: `arp:${pair(a.spa, a.tpa)}`, kind: 'arp', label: `ARP between ${a.spa} and ${a.tpa}` };
+  }
+  if (f.type !== 'ipv4') return null;
+  const ip = f.payload, l4 = ip.l4;
+  if (l4?.kind === 'udp' && l4.payload?.kind === 'vxlan') return flowOf(l4.payload.frame);
+  if (!l4) return { key: `ip:${pair(ip.src, ip.dst)}`, kind: 'ip', label: `IP between ${ip.src} and ${ip.dst}` };
+  if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return { key: `dhcp:${l4.payload.chaddr}`, kind: 'dhcp', label: `DHCP of ${l4.payload.chaddr}` };
+  if (l4.kind === 'udp' && l4.payload?.kind === 'dns') return { key: `dns:${l4.payload.id}:${l4.payload.qname}`, kind: 'dns', label: `DNS query for ${l4.payload.qname}` };
+  if (l4.kind === 'icmp') {
+    // Error messages belong to the conversation of the packet they report on
+    const o = l4.orig;
+    if (o) {
+      if (o.proto === PROTO.ICMP) return { key: `icmp:${pair(o.src, o.dst)}:${o.ident}`, kind: 'icmp', label: `Ping between ${o.src} and ${o.dst}` };
+      const p = o.proto === PROTO.TCP ? 'tcp' : 'udp';
+      return { key: `${p}:${pair(`${o.src}:${o.sport}`, `${o.dst}:${o.dport}`)}`, kind: p, label: `${p.toUpperCase()} ${o.src}:${o.sport} ↔ ${o.dst}:${o.dport}` };
+    }
+    return { key: `icmp:${pair(ip.src, ip.dst)}:${l4.ident}`, kind: 'icmp', label: `Ping between ${ip.src} and ${ip.dst}` };
+  }
+  if (l4.kind === 'tcp' || l4.kind === 'udp') {
+    const [a, b] = [`${ip.src}:${l4.sport}`, `${ip.dst}:${l4.dport}`];
+    const label = l4.dport < l4.sport ? `${l4.kind.toUpperCase()} ${a} → ${b}` : `${l4.kind.toUpperCase()} ${b} → ${a}`;
+    return { key: `${l4.kind}:${pair(a, b)}`, kind: l4.kind, label };
+  }
+  return { key: `${l4.kind}:${ip.src}`, kind: l4.kind, label: `${l4.kind.toUpperCase()} from ${ip.src}` };
+}
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/panels.js" <<'__PACKETPILOT_FILE_END__'
@@ -6645,6 +7012,27 @@ function section(dev, title, status, inUse, content) {
   return d;
 }
 
+// Optional features: only the ones in use (or just added) are shown, the rest waits in a
+// small menu with one line of explanation each. This keeps a new device calm to look at.
+const featShown = new Set();
+function features(dev, list, rerender, locked) {
+  const wrap = h('div', { class: 'features' });
+  const key = f => dev.id + '|' + f.id;
+  const active = list.filter(f => f.inUse || featShown.has(key(f)));
+  const rest = list.filter(f => !active.includes(f));
+  for (const f of active) wrap.append(section(dev, f.title, f.status || '', f.inUse, f.render()));
+  if (rest.length && !locked) {
+    const menu = h('div', { class: 'featmenu hidden', role: 'menu' }, rest.map(f => h('button', { class: 'featitem', role: 'menuitem', onclick: () => {
+      featShown.add(key(f)); sectionOpen.set(dev.id + '|' + f.title, true); f.onAdd?.(); rerender?.();
+    } }, h('b', {}, f.title), h('span', {}, f.desc))));
+    const btn = h('button', { class: 'btn addfeat', 'aria-expanded': 'false', html: `${I.plus} Add a feature <span class="small muted">(${rest.map(f => f.title).join(', ')})</span>`,
+      onclick: () => { const open = menu.classList.toggle('hidden') === false; btn.setAttribute('aria-expanded', String(open)); } });
+    wrap.append(btn, menu);
+  }
+  return wrap;
+}
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
 // ---------------------------------------------------------------- Configuration
 export function configPanel(dev, ctx) {
   const { sim, changed, locked, rerender } = ctx;
@@ -6673,22 +7061,35 @@ export function configPanel(dev, ctx) {
     box.append(h('h4', {}, 'Network card eth1'),
       h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } },
         h('span', {}, 'Address'), mode, ...addrRows,
-        h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
+        ...(i.dhcp ? [] : [h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for names, optional')])),
       i.dhcp ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('button', { class: 'btn', onclick: () => { dev.dhclient('eth1'); } }, 'Ask again (dhclient)'),
         lease ? h('button', { class: 'btn ghost', onclick: () => { dev.dhcpRelease('eth1'); rerender?.(); } }, 'Release') : null) : '',
-      h('dl', { class: 'kv', style: { marginTop: '10px' } }, h('dt', {}, 'MAC'), h('dd', {}, dev.mac('eth1'))),
-      h('p', { class: 'small muted', style: { marginTop: '8px' } }, 'A VLAN tag sends all frames with an 802.1Q tag, like a subinterface eth1.10 on Linux. Without a tag the host fits on an access port.'),
-      i.dhcp ? '' : h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr', marginTop: '8px' } },
-        h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for curl/ping with names')));
-    box.append(servicesEditor(dev, upd), dnsEditor(dev, upd));
-    if (c.type === 'server') box.append(section(dev, 'DHCP server', c.dhcpServer.enabled ? `on, ${dev.l3.dhcpLeases.size} lease${dev.l3.dhcpLeases.size === 1 ? '' : 's'}` : 'off', c.dhcpServer.enabled, dhcpServerEditor(dev, upd)));
+      h('dl', { class: 'kv', style: { marginTop: '10px' } }, h('dt', {}, 'MAC'), h('dd', {}, dev.mac('eth1'))));
+    const hasDnsSvc = () => c.services.some(x => x.proto === 'udp' && Number(x.port) === 53);
+    box.append(features(dev, [
+      { id: 'services', title: 'Services', desc: 'Programs that listen on a port, e.g. a web server on TCP 80',
+        inUse: c.services.length > 0, status: c.services.map(x => `${x.proto.toUpperCase()} ${x.port}`).join(', '), render: () => servicesEditor(dev, upd) },
+      { id: 'dns', title: 'DNS records', desc: 'Answer name queries for other devices (DNS server on UDP 53)',
+        inUse: c.dns.length > 0, status: plural(c.dns.length, 'record'), render: () => dnsEditor(dev, upd),
+        onAdd: () => { if (!hasDnsSvc()) upd(() => c.services.push({ proto: 'udp', port: 53, name: 'dns' }), `${dev.name}: DNS service`); } },
+      ...(c.type === 'server' ? [{ id: 'dhcpd', title: 'DHCP server', desc: 'Hand out addresses to other devices',
+        inUse: c.dhcpServer.enabled, status: c.dhcpServer.enabled ? `on, ${plural(dev.l3.dhcpLeases.size, 'lease')}` : 'off', render: () => dhcpServerEditor(dev, upd) }] : []),
+      { id: 'vlan', title: 'VLAN tag', desc: 'Send every frame with an 802.1Q tag, like eth1.10 on Linux',
+        inUse: !!i.vlan, status: i.vlan ? `VLAN ${i.vlan}` : '', render: () => h('div', {},
+          h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } }, h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
+          h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'Without a tag the host fits on an access port. With a tag, the switch port must be a trunk that allows this VLAN.')) }
+    ], rerender, locked));
   }
 
   if (c.type === 'router' || c.type === 'vtep') {
     const names = c.type === 'router' ? [...PORTS.router, 'lo'] : ['eth1', 'lo'];
     box.append(h('h4', {}, c.type === 'vtep' ? 'Underlay (layer 3)' : 'Interfaces'));
     const g = h('div', { class: 'cfg-grid' });
+    // Ports without a cable and without an address only appear on request
+    const used = n => n === 'lo' || !!sim.linkAt(dev.id, n) || isIp(c.ifaces[n].ip);
+    const showAll = featShown.has(dev.id + '|allports');
     for (const n of names) {
+      if (!showAll && !used(n)) continue;
       const i = c.ifaces[n];
       const linked = n === 'lo' || !!sim.linkAt(dev.id, n);
       g.append(h('span', { class: 'if', title: linked ? 'connected' : 'not connected' }, n + (linked ? '' : ' ○')),
@@ -6696,17 +7097,27 @@ export function configPanel(dev, ctx) {
         numInput(i.prefix, 0, 32, v => upd(() => i.prefix = v ?? 24, `${dev.name} ${n}: /${v}`)));
     }
     box.append(g);
-    if (c.type === 'router') box.append(subifEditor(dev, upd, sim, rerender));
+    const hidden = names.filter(n => !used(n));
+    if (hidden.length && !locked) box.append(h('button', { class: 'linkbtn small', onclick: () => { showAll ? featShown.delete(dev.id + '|allports') : featShown.add(dev.id + '|allports'); rerender?.(); } },
+      showAll ? 'Hide ports without a cable' : `Show ports without a cable (${hidden.join(', ')})`));
     box.append(routesEditor(dev, upd));
     if (c.type === 'router') {
-      box.append(
-        section(dev, 'Rules', c.acl.length ? `${c.acl.length} rule${c.acl.length === 1 ? '' : 's'}` : 'none', c.acl.length > 0, aclEditor(dev, upd)),
-        section(dev, 'NAT', c.nat.outside ? `outside ${c.nat.outside}` : 'off', !!c.nat.outside, natEditor(dev, upd, rerender)),
-        section(dev, 'DHCP', c.dhcpServer.enabled ? 'server on' : Object.values(c.ifaces).some(i => isIp(i.helper)) ? 'relay' : 'off',
-          c.dhcpServer.enabled || Object.values(c.ifaces).some(i => isIp(i.helper)), h('div', {}, relayEditor(dev, upd), dhcpServerEditor(dev, upd))),
-        section(dev, 'VRRP', c.vrrp.length ? (dev.vrrp?.table() || []).map(g => `${g.vrid}: ${g.state}`).join(', ') || `${c.vrrp.length} group${c.vrrp.length === 1 ? '' : 's'}` : 'off', c.vrrp.length > 0, vrrpEditor(dev, upd, rerender)),
-        section(dev, 'OSPF', c.ospf.enabled ? `on, ${(dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length} neighbor${(dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length === 1 ? '' : 's'}` : 'off', c.ospf.enabled, ospfEditor(dev, upd, rerender)),
-        section(dev, 'Advanced', c.forwarding === false || c.mssClamp ? 'changed' : '', c.forwarding === false || !!c.mssClamp, advancedEditor(dev, upd)));
+      const subs = Object.keys(c.ifaces).filter(n => c.ifaces[n].parent);
+      const relay = Object.values(c.ifaces).some(i => isIp(i.helper));
+      const fullNbrs = (dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length;
+      box.append(features(dev, [
+        { id: 'subif', title: 'Subinterfaces', desc: 'One cable, several VLANs: router on a stick', inUse: subs.length > 0, status: subs.join(', '), render: () => subifEditor(dev, upd, sim, rerender) },
+        { id: 'rules', title: 'Rules', desc: 'Allow, drop or reject forwarded packets (firewall)', inUse: c.acl.length > 0, status: plural(c.acl.length, 'rule'), render: () => aclEditor(dev, upd) },
+        { id: 'nat', title: 'NAT', desc: 'Inside hosts share the outside address, port forwards', inUse: !!c.nat.outside, status: c.nat.outside ? `outside ${c.nat.outside}` : 'off', render: () => natEditor(dev, upd, rerender) },
+        { id: 'dhcp', title: 'DHCP', desc: 'Hand out addresses, or relay requests to a DHCP server', inUse: c.dhcpServer.enabled || relay,
+          status: c.dhcpServer.enabled ? 'server on' : relay ? 'relay' : 'off', render: () => h('div', {}, relayEditor(dev, upd), dhcpServerEditor(dev, upd)) },
+        { id: 'vrrp', title: 'VRRP', desc: 'Share a gateway address with a second router', inUse: c.vrrp.length > 0,
+          status: (dev.vrrp?.table() || []).map(g => `${g.vrid}: ${g.state}`).join(', ') || plural(c.vrrp.length, 'group'), render: () => vrrpEditor(dev, upd, rerender) },
+        { id: 'ospf', title: 'OSPF', desc: 'Learn routes automatically from neighboring routers', inUse: c.ospf.enabled,
+          status: c.ospf.enabled ? `on, ${plural(fullNbrs, 'neighbor')}` : 'off', render: () => ospfEditor(dev, upd, rerender) },
+        { id: 'adv', title: 'Advanced', desc: 'IP forwarding on or off, MSS clamping', inUse: c.forwarding === false || !!c.mssClamp,
+          status: c.forwarding === false || c.mssClamp ? 'changed' : '', render: () => advancedEditor(dev, upd) }
+      ], rerender, locked));
     }
   }
 
@@ -6738,10 +7149,15 @@ export function configPanel(dev, ctx) {
         vl);
     }
     box.append(g);
-    box.append(h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '1fr 90px', marginTop: '10px' } },
-      h('span', { class: 'small' }, 'MAC table aging time (s), 0 = learns nothing'),
-      numInput(c.ageing, 0, 3600, v => upd(() => c.ageing = v ?? 300, `${dev.name}: aging ${v} s`))));
-    if (c.type === 'switch') box.append(stpEditor(dev, upd, sim, shown, rerender));
+    const st = c.stp;
+    box.append(features(dev, [
+      ...(c.type === 'switch' ? [{ id: 'stp', title: 'Spanning tree', desc: 'Block redundant paths so no loop forms (STP or RSTP)', inUse: !!st.enabled,
+        status: st.enabled ? `${st.mode === 'rstp' ? 'RSTP' : 'STP'}${dev.bridge.stpTable()?.isRoot ? ', root' : ''}` : 'off', render: () => stpEditor(dev, upd, sim, shown, rerender) }] : []),
+      { id: 'mac', title: 'MAC table', desc: 'How long learned addresses are kept, 0 turns the switch into a hub', inUse: Number(c.ageing) !== 300,
+        status: `aging ${c.ageing} s`, render: () => h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '1fr 90px' } },
+          h('span', { class: 'small' }, 'Aging time (s), 0 = learns nothing'),
+          numInput(c.ageing, 0, 3600, v => upd(() => c.ageing = v ?? 300, `${dev.name}: aging ${v} s`))) }
+    ], rerender, locked));
   }
 
   if (c.type === 'vtep') box.append(vxlanEditor(dev, upd, sim));
@@ -6753,7 +7169,6 @@ function subifEditor(dev, upd, sim, rerender) {
   const c = dev.cfg;
   const wrap = h('div');
   const subs = Object.keys(c.ifaces).filter(n => c.ifaces[n].parent);
-  wrap.append(h('h4', {}, 'Subinterfaces (802.1Q)'));
   const list = h('div', { class: 'list' });
   for (const n of subs) {
     const i = c.ifaces[n];
@@ -6785,8 +7200,7 @@ function stpEditor(dev, upd, sim, shown, rerender) {
   const wrap = h('div');
   const on = h('input', { type: 'checkbox', checked: st.enabled ? true : null });
   on.addEventListener('change', () => { upd(() => st.enabled = on.checked, `${dev.name}: spanning tree ${on.checked ? 'on' : 'off'}`); rerender?.(); });
-  wrap.append(h('h4', {}, st.mode === 'rstp' ? 'Rapid spanning tree (802.1w)' : 'Spanning tree (802.1D)'),
-    h('label', { class: 'row', style: { fontSize: '.88rem' } }, on, 'Spanning tree enabled'));
+  wrap.append(h('label', { class: 'row', style: { fontSize: '.88rem' } }, on, 'Spanning tree enabled'));
   if (!st.enabled) { wrap.append(h('p', { class: 'small muted' }, 'Off: all ports forward immediately. If the network has a loop, broadcasts circle endlessly.')); return wrap; }
   const prios = []; for (let p = 0; p <= 61440; p += 4096) prios.push([p, String(p) + (p === 32768 ? ' (default)' : '')]);
   const timers = st.timers === 'schnell' ? 'fast' : st.timers;
@@ -6819,7 +7233,6 @@ function servicesEditor(dev, upd) {
   const wrap = h('div');
   const draw = () => {
     wrap.innerHTML = '';
-    wrap.append(h('h4', {}, 'Services (listening ports)'));
     const list = h('div', { class: 'list' });
     c.services.forEach((sv, idx) => {
       const name = h('input', { class: 'input', value: sv.name || '', placeholder: 'Name', style: { minWidth: 0, flex: '1 1 0' } });
@@ -6849,10 +7262,9 @@ function servicesEditor(dev, upd) {
 function dnsEditor(dev, upd) {
   const c = dev.cfg;
   const wrap = h('div');
-  if (!c.services.some(s => s.proto === 'udp' && Number(s.port) === 53) && !c.dns.length) return wrap;
   const draw = () => {
     wrap.innerHTML = '';
-    wrap.append(h('h4', {}, 'DNS entries (A records)'));
+    if (!c.services.some(s => s.proto === 'udp' && Number(s.port) === 53)) wrap.append(h('p', { class: 'small', style: { color: 'var(--warn)', marginTop: 0 } }, 'No DNS service on UDP 53: add it under Services, otherwise nobody can ask.'));
     const list = h('div', { class: 'list' });
     c.dns.forEach((r, idx) => {
       const name = h('input', { class: 'input mono', value: r.name, placeholder: 'web.lab' });
@@ -6898,8 +7310,7 @@ function aclEditor(dev, upd) {
   const wrap = h('div');
   const draw = () => {
     wrap.innerHTML = '';
-    wrap.append(h('h4', {}, 'Rules for forwarded packets'),
-      h('p', { class: 'small muted' }, 'From top to bottom, the first matching rule applies. If none matches, the packet is forwarded.'));
+    wrap.append(h('p', { class: 'small muted', style: { marginTop: 0 } }, 'Rules for forwarded packets. From top to bottom, the first matching rule applies. If none matches, the packet is forwarded.'));
     const list = h('div', { class: 'list' });
     c.acl.forEach((r, idx) => {
       const src = h('input', { class: 'input mono', value: r.src || 'any', placeholder: 'any' });
@@ -7392,8 +7803,16 @@ export function viewSubnet(main) {
 function cheatSheet() {
   const rows = [];
   for (let len = 16; len <= 30; len++) rows.push(h('tr', {}, h('td', {}, `/${len}`), h('td', { class: 'mono' }, maskStr(len)), h('td', {}, (2 ** (32 - len)).toLocaleString('en')), h('td', {}, (2 ** (32 - len) - 2).toLocaleString('en'))));
-  return h('details', { class: 'sect', style: { marginTop: '18px' } }, h('summary', {}, h('span', {}, 'Cheat sheet: prefixes, masks and sizes')),
-    h('div', { class: 'sect-body' }, h('table', { class: 'rtable' }, h('tr', {}, h('th', {}, 'Prefix'), h('th', {}, 'Mask'), h('th', {}, 'Addresses'), h('th', {}, 'Usable hosts')), rows),
+  const steps = h('div', { html: `
+<p style="margin-top:4px"><b>Network, first host, last host, broadcast in four steps</b>, example <code>192.168.1.130/26</code>:</p>
+<ol style="margin:4px 0 8px 18px;padding:0;line-height:1.6">
+<li><b>Find the interesting octet and the block size.</b> /26 = 24 + 2: the prefix ends 2 bits into the 4th octet. Block size = 2<sup>8−2</sup> = <b>64</b> (or 256 − mask octet 192).</li>
+<li><b>Find the block the address lies in.</b> The blocks start at 0, 64, 128, 192. 130 lies in the block <b>128 to 191</b>.</li>
+<li><b>Network and broadcast are the edges of the block.</b> Network = first address of the block, all host bits 0: <code>192.168.1.128</code>. Broadcast = last address, all host bits 1: <code>192.168.1.191</code>.</li>
+<li><b>The hosts are everything in between.</b> First host = network + 1 = <code>.129</code>, last host = broadcast − 1 = <code>.190</code>. 64 − 2 = 62 usable.</li></ol>
+<p class="small muted" style="margin:0 0 10px">So the first host is only .1 when the block starts at .0. For <code>192.168.243.224/28</code> the blocks are 16 wide, 224 lies in the block 224 to 239, so the first host is .225 and the last .238. Addresses like .0 or .1 belong to a different subnet there.</p>` });
+  return h('details', { class: 'sect', style: { marginTop: '18px' } }, h('summary', {}, h('span', {}, 'Cheat sheet: step by step, prefixes, masks and sizes')),
+    h('div', { class: 'sect-body' }, steps, h('table', { class: 'rtable' }, h('tr', {}, h('th', {}, 'Prefix'), h('th', {}, 'Mask'), h('th', {}, 'Addresses'), h('th', {}, 'Usable hosts')), rows),
       h('p', { class: 'small muted', style: { marginTop: '8px' } }, 'Mask octets you will meet: 128, 192, 224, 240, 248, 252, 254, 255. Block size = 256 − mask octet.')));
 }
 __PACKETPILOT_FILE_END__
@@ -8417,11 +8836,13 @@ export function explain(mode, q) {
       : `<p>With ${bits} host bits there are 2<sup>${bits}</sup> − 2 = ${2 ** bits - 2} usable addresses (network and broadcast are reserved). ${bits - 1} host bits would only give ${2 ** (bits - 1) - 2}, too few for ${q.hosts}. So the prefix is 32 − ${bits} = <b>/${q.len}</b>.</p>`;
   }
   const x = explainOctet(q.ip, q.len), i = info(q.ip, q.len);
-  if (q.len % 8 === 0) return `<p>/${q.len} ends at an octet boundary: the first ${q.len / 8} octets are the network, the rest are host bits. Network <code>${i.net}</code>, broadcast <code>${i.bc}</code>, ${i.hosts.toLocaleString('en')} usable hosts.</p>`;
+  if (q.len % 8 === 0) return `<p>/${q.len} ends at an octet boundary: the first ${q.len / 8} octets are the network, the rest are host bits. Network <code>${i.net}</code> (all host bits 0), broadcast <code>${i.bc}</code> (all host bits 1).</p>
+<p>The hosts are everything in between: first host = network + 1 = <code>${i.first}</code>, last host = broadcast − 1 = <code>${i.last}</code>. ${i.hosts.toLocaleString('en')} usable.</p>`;
   const mark = x.binary.slice(0, x.bits) + '|' + x.binary.slice(x.bits);
   let s = `<p>The prefix /${q.len} ends in octet ${x.octet} after ${x.bits} bit${x.bits === 1 ? '' : 's'}. Mask in that octet: 256 − ${x.block} = ${x.maskOctet}, so the subnets there come in blocks of <b>${x.block}</b>.</p>
 <p>Octet ${x.octet} of <code>${q.ip}</code> is ${x.val} = <code>${mark}</code> in binary (network bits | host bits). ${x.val} lies in the block <b>${x.start} to ${x.end}</b>.</p>
-<p>Network <code>${i.net}</code>, broadcast <code>${i.bc}</code>, hosts <code>${i.first}</code> to <code>${i.last}</code>: 2<sup>${32 - q.len}</sup> − 2 = ${i.hosts.toLocaleString('en')} usable.</p>`;
+<p><b>Network</b> = start of the block, all host bits 0: <code>${i.net}</code>. <b>Broadcast</b> = end of the block, all host bits 1: <code>${i.bc}</code>.</p>
+<p><b>First host</b> = network + 1 = <code>${i.first}</code>, <b>last host</b> = broadcast − 1 = <code>${i.last}</code>. ${x.octet === 4 && x.start ? `Not .1 or .254: those belong to other blocks, this block only runs from ${x.start} to ${x.end}.` : ''} 2<sup>${32 - q.len}</sup> − 2 = ${i.hosts.toLocaleString('en')} usable.</p>`;
   if (mode === 'same') s += `<p>${q.other} ${info(q.other, q.len).net === i.net ? 'lies in the same block, so: <b>yes</b>' : `belongs to the network ${info(q.other, q.len).net}, so: <b>no</b>, the hosts need a router`}.</p>`;
   return s;
 }
@@ -8510,6 +8931,39 @@ export function resizer(axis, { onMove, onEnd, onReset, title = 'Drag to resize,
   });
   if (onReset) el.addEventListener('dblclick', onReset);
   return el;
+}
+
+/** Right-click menu at the mouse position. items: { label, icon, onClick, danger, disabled, hint } or '-' */
+let openMenu = null;
+export function closeMenu() { openMenu?.remove(); openMenu = null; }
+export function contextMenu(ev, items, title = '') {
+  ev.preventDefault(); ev.stopPropagation();
+  closeMenu();
+  const list = items.filter((x, i, a) => x && !(x === '-' && (i === 0 || a[i - 1] === '-' || i === a.length - 1)));
+  if (!list.length) return;
+  const m = h('div', { class: 'ctxmenu', role: 'menu' }, title ? h('div', { class: 'ctx-title' }, title) : null,
+    list.map(it => it === '-' ? h('div', { class: 'ctx-sep', role: 'separator' }) :
+      h('button', { class: `ctx-item${it.danger ? ' danger' : ''}`, role: 'menuitem', disabled: it.disabled ? true : null,
+        html: (it.icon || '<span class="ctx-noicon"></span>') + `<span>${esc(it.label)}</span>` + (it.hint ? `<kbd>${esc(it.hint)}</kbd>` : ''),
+        onclick: () => { closeMenu(); it.onClick?.(); } })));
+  document.body.append(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(ev.clientX, innerWidth - r.width - 6) + 'px';
+  m.style.top = Math.min(ev.clientY, innerHeight - r.height - 6) + 'px';
+  openMenu = m;
+  m.querySelector('button:not([disabled])')?.focus();
+  m.addEventListener('keydown', e => {
+    const btns = [...m.querySelectorAll('button:not([disabled])')], i = btns.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); btns[(i + 1) % btns.length]?.focus(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length]?.focus(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeMenu(); }
+  });
+}
+if (typeof window !== 'undefined') {
+  for (const t of ['pointerdown', 'wheel']) window.addEventListener(t, e => { if (openMenu && !openMenu.contains(e.target)) closeMenu(); }, true);
+  window.addEventListener('blur', e => { if (e.target === window) closeMenu(); });
+  window.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
+  window.addEventListener('hashchange', closeMenu);
 }
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"

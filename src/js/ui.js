@@ -74,3 +74,36 @@ export function resizer(axis, { onMove, onEnd, onReset, title = 'Drag to resize,
   if (onReset) el.addEventListener('dblclick', onReset);
   return el;
 }
+
+/** Right-click menu at the mouse position. items: { label, icon, onClick, danger, disabled, hint } or '-' */
+let openMenu = null;
+export function closeMenu() { openMenu?.remove(); openMenu = null; }
+export function contextMenu(ev, items, title = '') {
+  ev.preventDefault(); ev.stopPropagation();
+  closeMenu();
+  const list = items.filter((x, i, a) => x && !(x === '-' && (i === 0 || a[i - 1] === '-' || i === a.length - 1)));
+  if (!list.length) return;
+  const m = h('div', { class: 'ctxmenu', role: 'menu' }, title ? h('div', { class: 'ctx-title' }, title) : null,
+    list.map(it => it === '-' ? h('div', { class: 'ctx-sep', role: 'separator' }) :
+      h('button', { class: `ctx-item${it.danger ? ' danger' : ''}`, role: 'menuitem', disabled: it.disabled ? true : null,
+        html: (it.icon || '<span class="ctx-noicon"></span>') + `<span>${esc(it.label)}</span>` + (it.hint ? `<kbd>${esc(it.hint)}</kbd>` : ''),
+        onclick: () => { closeMenu(); it.onClick?.(); } })));
+  document.body.append(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(ev.clientX, innerWidth - r.width - 6) + 'px';
+  m.style.top = Math.min(ev.clientY, innerHeight - r.height - 6) + 'px';
+  openMenu = m;
+  m.querySelector('button:not([disabled])')?.focus();
+  m.addEventListener('keydown', e => {
+    const btns = [...m.querySelectorAll('button:not([disabled])')], i = btns.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); btns[(i + 1) % btns.length]?.focus(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length]?.focus(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeMenu(); }
+  });
+}
+if (typeof window !== 'undefined') {
+  for (const t of ['pointerdown', 'wheel']) window.addEventListener(t, e => { if (openMenu && !openMenu.contains(e.target)) closeMenu(); }, true);
+  window.addEventListener('blur', e => { if (e.target === window) closeMenu(); });
+  window.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
+  window.addEventListener('hashchange', closeMenu);
+}

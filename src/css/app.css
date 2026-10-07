@@ -311,8 +311,8 @@ svg.net .lnk.down { stroke-dasharray: 6 5; stroke: var(--err); }
 svg.net .lnk.jumbo { stroke-width: 4.5; }
 svg.net .lnk-hit { stroke: transparent; stroke-width: 14; cursor: pointer; }
 svg.net .lnk-g.sel .lnk { stroke: var(--select); }
-svg.net .iflbl { font-family: var(--mono); font-size: 10px; fill: var(--ink-2); }
-svg.net .mtulbl { font-family: var(--mono); font-size: 9.5px; fill: var(--ink-3); }
+svg.net .iflbl { font-family: var(--mono); font-size: 10px; fill: var(--ink-2); paint-order: stroke; stroke: var(--paper); stroke-width: 3.5px; stroke-linejoin: round; }
+svg.net .mtulbl { font-family: var(--mono); font-size: 9.5px; fill: var(--ink-3); paint-order: stroke; stroke: var(--paper); stroke-width: 3.5px; stroke-linejoin: round; }
 svg.net .dev { cursor: pointer; outline: none; }
 svg.net .dev:focus-visible .card { stroke: var(--focus); stroke-width: 2.5; }
 svg.net .dev .card { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
@@ -524,3 +524,35 @@ abbr.gl:hover, abbr.gl:focus-visible { border-bottom-color: var(--ink); outline:
 .featitem span { font-size: .8rem; color: var(--ink-2); }
 .linkbtn { border: 0; background: none; padding: 4px 0; color: var(--ink-2); cursor: pointer; text-decoration: underline dotted; }
 .linkbtn:hover { color: var(--ink); }
+svg.net .lnk-lbls { pointer-events: none; }
+svg.net .lnk-lbls .stp-dot { pointer-events: auto; }
+
+/* Right-click menus */
+.ctxmenu { position: fixed; z-index: 70; min-width: 210px; max-width: 300px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-s); box-shadow: var(--shadow); padding: 4px; display: grid; }
+.ctx-title { font-size: .76rem; font-weight: 650; color: var(--ink-3); padding: 4px 9px 3px; text-transform: none; }
+.ctx-item { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: center; border: 0; background: none; text-align: left; padding: 6px 9px; border-radius: 5px; color: var(--ink); cursor: pointer; font-size: .87rem; }
+.ctx-item svg { width: 16px; height: 16px; }
+.ctx-item:hover, .ctx-item:focus-visible { background: var(--panel-2); outline: none; }
+.ctx-item[disabled] { opacity: .45; cursor: default; }
+.ctx-item.danger { color: var(--err); }
+.ctx-item kbd { font-family: var(--mono); font-size: .72rem; color: var(--ink-3); }
+.ctx-sep { height: 1px; background: var(--line); margin: 4px 2px; }
+
+/* Tracked conversation: messages in order with their path */
+svg.net .lnk-g.trace .lnk { stroke: var(--l-vxlan); stroke-width: 3.2; }
+.flowbar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: var(--panel-2); border-bottom: 1px solid var(--line); font-size: .84rem; }
+.flowbar b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.flowbar .btn.small { padding: 2px 8px; font-size: .8rem; }
+.flow-row { display: grid; grid-template-columns: 22px 58px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 6px; padding: 5px 10px; border-bottom: 1px solid var(--grid); cursor: pointer; font-size: .84rem; }
+.flow-row:hover { background: var(--panel-2); }
+.flow-row.sel { background: color-mix(in srgb, var(--l-vxlan) 12%, var(--panel)); }
+.flow-row .n { grid-row: 1 / 3; width: 20px; height: 20px; border-radius: 50%; background: var(--l-vxlan); color: #fff; font-size: .72rem; font-weight: 700; display: grid; place-items: center; }
+.flow-row .t { font-family: var(--mono); font-size: .76rem; color: var(--ink-3); padding-top: 2px; }
+.flow-row .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-row .path { grid-column: 2 / 4; font-size: .78rem; color: var(--ink-2); overflow-wrap: anywhere; }
+.ctx-item svg .dv-fill { fill: color-mix(in srgb, var(--ink) 8%, var(--panel)); stroke: var(--ink); stroke-width: 2.4; }
+.ctx-item svg .dv-line, .ctx-item svg .dv-tunnel { stroke: var(--ink); stroke-width: 2.4; fill: none; }
+.ctx-item svg .dv-dot { fill: var(--ink); }
+.ctx-item svg .dv-screen { fill: color-mix(in srgb, var(--l-eth) 18%, var(--panel)); }
+.ctx-item svg .dv-led { fill: var(--l-ip); }
+svg.net .pkt text.side { text-anchor: start; }

@@ -3,7 +3,7 @@ import { dissect, summary } from './packets.js';
 import { frameLen, frameWireLen } from './net.js';
 import { h, esc } from './ui.js';
 
-export function renderInspector(el, entry, { onTrace } = {}) {
+export function renderInspector(el, entry, { onTrack } = {}) {
   el.innerHTML = '';
   if (!entry || !entry.frame) {
     el.append(h('div', { class: 'empty' }, 'Click a packet in the network diagram or a row in the log to take it apart layer by layer.'));
@@ -18,8 +18,8 @@ export function renderInspector(el, entry, { onTrace } = {}) {
   const bar = h('div', { class: 'bytebar', title: 'Share of each layer in the frame size' });
   for (const l of layers) bar.append(h('i', { class: `bg-${l.kind}`, style: { flex: `${Math.max(l.bytes, 1)} 0 0` }, title: `${l.name}: ${l.bytes} bytes` }));
   el.append(bar, h('div', { class: 'bytelegend' }, h('span', {}, '0'), h('span', {}, `${total} bytes`)));
-  if (entry.trace && onTrace) el.append(h('div', { class: 'row', style: { margin: '6px 0' } },
-    h('button', { class: 'btn', onclick: () => onTrace(entry.trace) }, 'Trace this packet\'s path')));
+  if (onTrack) el.append(h('div', { class: 'row', style: { margin: '6px 0' } },
+    h('button', { class: 'btn', onclick: onTrack, title: 'Show every message of this exchange in order, with the path through the network' }, 'Track this conversation')));
   for (const l of layers) {
     const d = h('details', { class: `layer lc-${l.kind}${l.depth ? ' inner' : ''}`, open: l.depth === 0 && ['ip', 'arp', 'vxlan', 'icmp', 'rt'].includes(l.kind) ? true : null });
     d.append(h('summary', {}, l.name, h('span', { class: 'b' }, `${l.bytes} bytes`)));
