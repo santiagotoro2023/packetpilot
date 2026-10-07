@@ -6,6 +6,16 @@ PacketPilot is a small learning web app for networking. It simulates hosts, serv
 
 ## Installation
 
+Three ways, all with the same app:
+
+- **Debian 12 or 13**: the installer script below (nginx, HTTPS, Let's Encrypt included).
+- **Docker / Docker Compose**: `docker compose up -d` in this repository, or `docker run -p 8080:8080 ghcr.io/santiagotoro2023/packetpilot:latest`.
+- **Kubernetes**: a Helm chart (`helm install packetpilot oci://ghcr.io/santiagotoro2023/charts/packetpilot -n packetpilot --create-namespace`) or a single manifest, ready for a small cluster with three nodes.
+
+Docker, Compose, Kubernetes, Helm and moving learners between servers are explained step by step in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+
+### Debian installer
+
 On Debian 12 or 13, as root or with sudo:
 
 ```bash
@@ -27,6 +37,7 @@ PacketPilot then runs at `https://<server>:8080/`, secured with a self-signed ce
 | `sudo bash packetpilot-install.sh --uninstall` | removes PacketPilot, nginx stays |
 | `bash packetpilot-install.sh --extract ./web` | only extracts the web files, no root needed |
 | `--force` | also installs on untested systems |
+| `--moved-to https://new.example.com` | PacketPilot moved elsewhere (e.g. to Kubernetes): every learner gets a one-click move of their progress (`--not-moved` removes it) |
 
 The script installs nginx (and openssl, if missing) from the Debian packages, writes the files to `/opt/packetpilot/www` and creates `/etc/nginx/sites-available/packetpilot`. The certificate and key live in `/opt/packetpilot/tls/`. The certificate covers the hostname, `localhost` and all IP addresses of the server and is valid for 825 days. Updates keep it, so browsers don't warn again; it is only replaced when it expires within 30 days or with `--new-cert`. To use your own certificate, replace `packetpilot.crt` and `packetpilot.key` there and run `systemctl reload nginx`. If `ufw` is active, the port is opened. At runtime PacketPilot loads nothing from the internet, so it also works in isolated lab networks.
 
@@ -55,7 +66,8 @@ Each browser stores progress, partial answers (including the network you edited 
 - **HTTP to HTTPS**: opening the old `http://` address shows a short page that hands the progress saved there to the `https://` address (once, then it just forwards). This is also how progress from versions before 1.2 comes back.
 - **IP address to domain**: after setting up Let's Encrypt, a card offers to move the progress to the domain with one click.
 - Merging never overwrites anything: lessons done on either side stay done, and when two networks share a name, both are kept.
-- You can also export everything as a JSON file from the home page and import it into another browser.
+- **Another server** (e.g. moving to Docker or Kubernetes): with the same address nothing changes for the learners. With a new address, run the old installer with `--moved-to <new address>`, and everyone can move their progress with one click. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#moving-learners-and-their-progress).
+- **Backup file**: on the home page, "Your progress and networks" downloads everything as one file (lessons, answers, saved networks, Fix it times and solved variants, subnetting statistics and streaks, settings) and restores it anywhere. Restoring merges and never loses anything.
 
 ## Logo
 
@@ -130,6 +142,7 @@ node test/course.test.mjs               # play through every lab lesson with its
 node test/build.test.mjs                # check the frame exercises against the simulation
 node test/challenges.test.mjs           # every troubleshooting variant is broken and solvable
 node test/subnet.test.mjs               # subnetting questions and answers are consistent
+node test/store.test.mjs                # backups: format, old exports, merging
 bash build.sh                           # regenerate packetpilot-install.sh
 ```
 
@@ -141,7 +154,12 @@ src/
   migrate.html        moves progress from http:// to https:// (served by nginx for plain HTTP)
   site.json           main address of the server, written by the installer
   js/engine.js        simulation (event queue, L2, STP, L3, TCP/UDP, VXLAN)
-  js/services.js      DHCP, NAT, VRRP and OSPF
+  js/services.js      DHCP, NAT, VRRP, OSPF and BFD
+  js/ipv6.js          IPv6: addresses, NDP, SLAAC, routing, ICMPv6
+  js/dns.js           DNS zones, delegation, recursive resolver and cache
+  js/vpn.js           WireGuard
+  js/bgp.js           BGP (eBGP, iBGP, route reflection, policy)
+  js/evpn.js          EVPN for VXLAN
   js/packets.js       building, describing and dissecting frames
   js/net.js           addresses and sizes
   js/cli.js           device console
@@ -158,11 +176,16 @@ src/
   js/site.js          main address and moving progress
   js/store.js         storage in the browser
 installer/            head and tail of the installer script
-build.sh              assembles the installer script
+build.sh              assembles the installer script (and syncs the version into deploy/)
+Dockerfile            container image (nginx unprivileged, port 8080)
+docker-compose.yml    quick start with Compose
+deploy/               Compose with HTTPS, Kubernetes manifest, Helm chart, container config
+docs/DEPLOYMENT.md    Docker, Compose, Kubernetes, Helm, moving learners
+.github/workflows/    tests, image (amd64, arm64) and chart to ghcr.io
 ```
 
 A new lesson is an object in `src/js/course/m*.js`. Lab steps consist of a topology, an introduction and goals. A goal is either a function that checks the state of the simulation, or a question whose correct answer is computed from the simulation.
 
 ## Planned
 
-IPv6 next, then ECMP and BFD, the DNS hierarchy, VPN (WireGuard, IPsec), BGP and EVPN.
+Ideas for later: OSPFv3 and BGP for IPv6, EVPN type 5 (routing between VNIs), DHCPv6, QoS.

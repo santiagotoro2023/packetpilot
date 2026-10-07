@@ -11,7 +11,7 @@ import { renderFrameBuilder } from './framebuilder.js';
 import { clone } from './net.js';
 import { viewChallenges, viewSubnet } from './practice.js';
 import { shareLink, decodeTopo, unpack } from './share.js';
-import { loadSite, moveCard, siteBase, oldHttpLink } from './site.js';
+import { loadSite, moveCard, siteBase, oldHttpLink, siteInfo } from './site.js';
 import { CHALLENGES } from './challenges.js';
 import { initGlossary, glossify } from './glossary.js';
 
@@ -89,10 +89,17 @@ function viewHome() {
         h('p', { class: 'muted small' }, 'Network, broadcast, masks and subnet sizes with random addresses and worked solutions.'), h('div', { class: 'small muted' }, sub.right ? `${sub.right} right so far, best streak ${sub.best}` : 'Endless questions'))));
   if (UPCOMING.length) page.append(h('h2', { style: { marginTop: '28px' } }, 'Coming soon'),
     h('div', { class: 'netgrid' }, UPCOMING.map(u => h('div', { class: 'netcard' }, h('h3', {}, u.title), h('p', { class: 'muted small' }, u.text)))));
-  page.append(h('div', { class: 'row', style: { marginTop: '28px' } },
-    h('button', { class: 'btn', html: I.download + 'Export progress and networks', onclick: () => download('packetpilot-export.json', store.exportAll()) }),
-    h('button', { class: 'btn', html: I.upload + 'Import', onclick: async () => { const t = await pickFile(); if (!t) return; try { store.importAll(t); toast('Import successful'); route(); } catch (e) { toast(e.message); } } }),
-    h('button', { class: 'btn ghost', onclick: () => { if (confirm('Reset progress for all lessons?')) { store.resetProgress(); route(); } } }, 'Reset progress')));
+  const sm = store.summary();
+  page.append(h('section', { class: 'databox', 'aria-labelledby': 'datah' },
+    h('h2', { id: 'datah' }, 'Your progress and networks'),
+    h('p', { class: 'muted' }, 'Everything you do is kept in this browser, for this address: finished lessons and answers, saved networks, your Fix it times and solved variants, the subnetting statistics and streaks, and your settings. Updates of PacketPilot keep all of it.'),
+    h('p', { class: 'muted' }, 'Moving to another server, address or browser? Download a backup here and restore it there. Restoring merges: nothing already there is overwritten, and restoring twice does no harm.'),
+    h('div', { class: 'row small', style: { margin: '8px 0 12px', gap: '14px' } }, ...[[sm.lessons, 'lessons done'], [sm.nets, 'saved networks'], [sm.challenges, 'Fix it challenges solved'], [sm.subnetRight, 'subnetting answers right'], [sm.subnetBest, 'best streak']]
+      .map(([n, t]) => h('span', { class: 'stat' }, h('b', {}, String(n)), ' ' + t))),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn primary', html: I.download + 'Download backup', onclick: () => download(`packetpilot-backup-${new Date().toISOString().slice(0, 10)}.json`, store.exportAll(siteInfo().version || '')) }),
+      h('button', { class: 'btn', html: I.upload + 'Restore backup', onclick: async () => { const t = await pickFile(); if (!t) return; try { store.importAll(t); const a = store.summary(); toast(`Backup restored: ${a.lessons} lessons, ${a.nets} networks, ${a.challenges} challenges`); route(); } catch (e) { toast(e.message); } } }),
+      h('button', { class: 'btn ghost', onclick: () => { if (confirm('Reset progress for all lessons, Fix it and subnetting? Saved networks stay.')) { store.resetProgress(); route(); } } }, 'Reset progress'))));
   main.append(page);
   const heroTopo = PRESETS.find(p => p.id === 'routed').make();
   heroTopo.devices = heroTopo.devices.filter(d => d.id !== 'pc2');

@@ -1,0 +1,40 @@
+# PacketPilot behind Caddy, which gets and renews a Let's Encrypt certificate by itself.
+#
+# Needs: a DNS name that points to this server, ports 80 and 443 reachable from the internet.
+#   1. Put your domain into .env:   PACKETPILOT_DOMAIN=packetpilot.example.com
+#   2. docker compose up -d
+#   3. Open https://packetpilot.example.com
+services:
+  packetpilot:
+    image: ghcr.io/santiagotoro2023/packetpilot:latest
+    restart: unless-stopped
+    environment:
+      PACKETPILOT_CANONICAL: "https://${PACKETPILOT_DOMAIN:?set PACKETPILOT_DOMAIN in .env}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PACKETPILOT_DOMAIN: "${PACKETPILOT_DOMAIN}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - packetpilot
+
+volumes:
+  caddy_data:
+  caddy_config:

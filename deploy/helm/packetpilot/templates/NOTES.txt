@@ -1,0 +1,26 @@
+PacketPilot {{ .Chart.AppVersion }} is installed with {{ if .Values.autoscaling.enabled }}{{ .Values.autoscaling.minReplicas }} to {{ .Values.autoscaling.maxReplicas }}{{ else }}{{ .Values.replicaCount }}{{ end }} replicas.
+{{- if .Values.ingress.enabled }}
+
+Open it at:
+{{- range .Values.ingress.hosts }}
+  {{ if $.Values.ingress.tls }}https{{ else }}http{{ end }}://{{ .host }}/
+{{- end }}
+{{- else if eq .Values.service.type "NodePort" }}
+
+Open it on any node:
+  export NODE_PORT=$(kubectl get -n {{ .Release.Namespace }} svc {{ include "packetpilot.fullname" . }} -o jsonpath="{.spec.ports[0].nodePort}")
+  echo http://<node-ip>:$NODE_PORT/
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+Open it at the external IP of the service:
+  kubectl get -n {{ .Release.Namespace }} svc {{ include "packetpilot.fullname" . }} -w
+{{- else }}
+
+Try it right away:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "packetpilot.fullname" . }} 8080:{{ .Values.service.port }}
+  open http://localhost:8080/
+{{- end }}
+
+Progress is stored in each learner's browser, per address. Moving from another
+PacketPilot server? See docs/DEPLOYMENT.md ("Moving learners"): one click on the old
+server carries everything over, or a backup file from the home page.

@@ -28,6 +28,12 @@
 #      Without an API: you create the TXT record by hand (renewal by hand, too)
 #    --email you@example.com                        Optional contact for Let's Encrypt
 #    sudo bash packetpilot-install.sh --no-letsencrypt   Back to the self-signed certificate
+#
+#  Moving to another server (e.g. Docker or Kubernetes, see docs/DEPLOYMENT.md):
+#    sudo bash packetpilot-install.sh --moved-to https://packetpilot.example.com
+#      This server keeps running and shows every learner a card "PacketPilot has a new
+#      address" with a button that carries all their progress over in one click.
+#    sudo bash packetpilot-install.sh --not-moved    Remove that card again
 # =============================================================================
 set -euo pipefail
 
@@ -53,6 +59,8 @@ PP_LE_DOMAIN=""
 PP_LE_DNS=""
 PP_LE_EMAIL=""
 PP_LE_SET="no"
+PP_MOVED_TO=""
+PP_MOVED_SET="no"
 PP_LE_CERT="${PP_TLS_DIR}/letsencrypt.crt"
 PP_LE_KEY="${PP_TLS_DIR}/letsencrypt.key"
 PP_ACME_HOME="${PP_ROOT}/acme"
@@ -89,6 +97,9 @@ while [ $# -gt 0 ]; do
     --email)         need "$1" "${2:-}"; PP_LE_EMAIL="$2"; shift 2 ;;
     --email=*)       PP_LE_EMAIL="${1#*=}"; shift ;;
     --no-letsencrypt) PP_LE_DOMAIN=""; PP_LE_SET="off"; shift ;;
+    --moved-to)  need "$1" "${2:-}"; PP_MOVED_TO="$2"; PP_MOVED_SET="yes"; shift 2 ;;
+    --moved-to=*) PP_MOVED_TO="${1#*=}"; PP_MOVED_SET="yes"; shift ;;
+    --not-moved) PP_MOVED_TO=""; PP_MOVED_SET="off"; shift ;;
     --update)    PP_ACTION="update"; shift ;;
     --uninstall) PP_ACTION="uninstall"; shift ;;
     --extract)   need "$1" "${2:-}"; PP_ACTION="extract"; PP_EXTRACT_DIR="$2"; shift 2 ;;
@@ -97,6 +108,10 @@ while [ $# -gt 0 ]; do
     *) die "Unknown option: $1 (help with --help)" ;;
   esac
 done
+if [ -n "$PP_MOVED_TO" ]; then
+  PP_MOVED_TO="${PP_MOVED_TO%/}"
+  printf '%s' "$PP_MOVED_TO" | grep -Eq '^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$' || die "--moved-to needs an address like https://packetpilot.example.com (no path)"
+fi
 
 case "$PP_PORT" in
   ''|*[!0-9]*) die "Invalid port: ${PP_PORT}" ;;

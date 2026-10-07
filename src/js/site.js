@@ -6,6 +6,7 @@ import { store } from './store.js';
 import { pack } from './share.js';
 
 let site = {};
+export const siteInfo = () => site;
 export async function loadSite() {
   try {
     const r = await Promise.race([fetch('site.json', { cache: 'no-store' }), new Promise((_, no) => setTimeout(no, 1500))]);

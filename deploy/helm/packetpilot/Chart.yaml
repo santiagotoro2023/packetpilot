@@ -1,0 +1,11 @@
+apiVersion: v2
+name: packetpilot
+description: PacketPilot, a network course with a packet-level lab simulator. Stateless static web app (progress is stored in the learners' browsers).
+type: application
+version: 2.8.0
+appVersion: "2.8.0"
+home: https://github.com/santiagotoro2023/packetpilot
+sources:
+  - https://github.com/santiagotoro2023/packetpilot
+keywords: [networking, education, simulator, course]
+icon: https://raw.githubusercontent.com/santiagotoro2023/packetpilot/main/assets/logo/packetpilot-icon-light.svg

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.7.0
+#  PacketPilot 2.8.0
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -28,10 +28,16 @@
 #      Without an API: you create the TXT record by hand (renewal by hand, too)
 #    --email you@example.com                        Optional contact for Let's Encrypt
 #    sudo bash packetpilot-install.sh --no-letsencrypt   Back to the self-signed certificate
+#
+#  Moving to another server (e.g. Docker or Kubernetes, see docs/DEPLOYMENT.md):
+#    sudo bash packetpilot-install.sh --moved-to https://packetpilot.example.com
+#      This server keeps running and shows every learner a card "PacketPilot has a new
+#      address" with a button that carries all their progress over in one click.
+#    sudo bash packetpilot-install.sh --not-moved    Remove that card again
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.7.0"
+PP_VERSION="2.8.0"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -53,6 +59,8 @@ PP_LE_DOMAIN=""
 PP_LE_DNS=""
 PP_LE_EMAIL=""
 PP_LE_SET="no"
+PP_MOVED_TO=""
+PP_MOVED_SET="no"
 PP_LE_CERT="${PP_TLS_DIR}/letsencrypt.crt"
 PP_LE_KEY="${PP_TLS_DIR}/letsencrypt.key"
 PP_ACME_HOME="${PP_ROOT}/acme"
@@ -89,6 +97,9 @@ while [ $# -gt 0 ]; do
     --email)         need "$1" "${2:-}"; PP_LE_EMAIL="$2"; shift 2 ;;
     --email=*)       PP_LE_EMAIL="${1#*=}"; shift ;;
     --no-letsencrypt) PP_LE_DOMAIN=""; PP_LE_SET="off"; shift ;;
+    --moved-to)  need "$1" "${2:-}"; PP_MOVED_TO="$2"; PP_MOVED_SET="yes"; shift 2 ;;
+    --moved-to=*) PP_MOVED_TO="${1#*=}"; PP_MOVED_SET="yes"; shift ;;
+    --not-moved) PP_MOVED_TO=""; PP_MOVED_SET="off"; shift ;;
     --update)    PP_ACTION="update"; shift ;;
     --uninstall) PP_ACTION="uninstall"; shift ;;
     --extract)   need "$1" "${2:-}"; PP_ACTION="extract"; PP_EXTRACT_DIR="$2"; shift 2 ;;
@@ -97,6 +108,10 @@ while [ $# -gt 0 ]; do
     *) die "Unknown option: $1 (help with --help)" ;;
   esac
 done
+if [ -n "$PP_MOVED_TO" ]; then
+  PP_MOVED_TO="${PP_MOVED_TO%/}"
+  printf '%s' "$PP_MOVED_TO" | grep -Eq '^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$' || die "--moved-to needs an address like https://packetpilot.example.com (no path)"
+fi
 
 case "$PP_PORT" in
   ''|*[!0-9]*) die "Invalid port: ${PP_PORT}" ;;
@@ -669,6 +684,11 @@ svg.net .pkt text.side { text-anchor: start; }
 .fb-grp { font-size: .74rem; font-weight: 650; color: var(--ink-3); margin: 6px 0 -2px; text-transform: uppercase; letter-spacing: .04em; }
 .fb-grp:first-child { margin-top: 0; }
 .ok-text { color: var(--ok, #1F9D68); }
+
+.databox { margin-top: 32px; padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--r-m, 12px); background: var(--panel); }
+.databox h2 { margin-top: 0; }
+.databox p { margin: 4px 0; max-width: 80ch; }
+.databox .stat b { font-size: 1.1rem; }
 __PACKETPILOT_FILE_END__
   cat > "$W/index.html" <<'__PACKETPILOT_FILE_END__'
 <!doctype html>
@@ -723,7 +743,7 @@ import { renderFrameBuilder } from './framebuilder.js';
 import { clone } from './net.js';
 import { viewChallenges, viewSubnet } from './practice.js';
 import { shareLink, decodeTopo, unpack } from './share.js';
-import { loadSite, moveCard, siteBase, oldHttpLink } from './site.js';
+import { loadSite, moveCard, siteBase, oldHttpLink, siteInfo } from './site.js';
 import { CHALLENGES } from './challenges.js';
 import { initGlossary, glossify } from './glossary.js';
 
@@ -801,10 +821,17 @@ function viewHome() {
         h('p', { class: 'muted small' }, 'Network, broadcast, masks and subnet sizes with random addresses and worked solutions.'), h('div', { class: 'small muted' }, sub.right ? `${sub.right} right so far, best streak ${sub.best}` : 'Endless questions'))));
   if (UPCOMING.length) page.append(h('h2', { style: { marginTop: '28px' } }, 'Coming soon'),
     h('div', { class: 'netgrid' }, UPCOMING.map(u => h('div', { class: 'netcard' }, h('h3', {}, u.title), h('p', { class: 'muted small' }, u.text)))));
-  page.append(h('div', { class: 'row', style: { marginTop: '28px' } },
-    h('button', { class: 'btn', html: I.download + 'Export progress and networks', onclick: () => download('packetpilot-export.json', store.exportAll()) }),
-    h('button', { class: 'btn', html: I.upload + 'Import', onclick: async () => { const t = await pickFile(); if (!t) return; try { store.importAll(t); toast('Import successful'); route(); } catch (e) { toast(e.message); } } }),
-    h('button', { class: 'btn ghost', onclick: () => { if (confirm('Reset progress for all lessons?')) { store.resetProgress(); route(); } } }, 'Reset progress')));
+  const sm = store.summary();
+  page.append(h('section', { class: 'databox', 'aria-labelledby': 'datah' },
+    h('h2', { id: 'datah' }, 'Your progress and networks'),
+    h('p', { class: 'muted' }, 'Everything you do is kept in this browser, for this address: finished lessons and answers, saved networks, your Fix it times and solved variants, the subnetting statistics and streaks, and your settings. Updates of PacketPilot keep all of it.'),
+    h('p', { class: 'muted' }, 'Moving to another server, address or browser? Download a backup here and restore it there. Restoring merges: nothing already there is overwritten, and restoring twice does no harm.'),
+    h('div', { class: 'row small', style: { margin: '8px 0 12px', gap: '14px' } }, ...[[sm.lessons, 'lessons done'], [sm.nets, 'saved networks'], [sm.challenges, 'Fix it challenges solved'], [sm.subnetRight, 'subnetting answers right'], [sm.subnetBest, 'best streak']]
+      .map(([n, t]) => h('span', { class: 'stat' }, h('b', {}, String(n)), ' ' + t))),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn primary', html: I.download + 'Download backup', onclick: () => download(`packetpilot-backup-${new Date().toISOString().slice(0, 10)}.json`, store.exportAll(siteInfo().version || '')) }),
+      h('button', { class: 'btn', html: I.upload + 'Restore backup', onclick: async () => { const t = await pickFile(); if (!t) return; try { store.importAll(t); const a = store.summary(); toast(`Backup restored: ${a.lessons} lessons, ${a.nets} networks, ${a.challenges} challenges`); route(); } catch (e) { toast(e.message); } } }),
+      h('button', { class: 'btn ghost', onclick: () => { if (confirm('Reset progress for all lessons, Fix it and subnetting? Saved networks stay.')) { store.resetProgress(); route(); } } }, 'Reset progress'))));
   main.append(page);
   const heroTopo = PRESETS.find(p => p.id === 'routed').make();
   heroTopo.devices = heroTopo.devices.filter(d => d.id !== 'pc2');
@@ -12353,6 +12380,7 @@ import { store } from './store.js';
 import { pack } from './share.js';
 
 let site = {};
+export const siteInfo = () => site;
 export async function loadSite() {
   try {
     const r = await Promise.race([fetch('site.json', { cache: 'no-store' }), new Promise((_, no) => setTimeout(no, 1500))]);
@@ -12445,6 +12473,7 @@ export function mergeState(cur, add) {
     const o = out.practice.subnet[mode];
     if (!o) { out.practice.subnet[mode] = s; continue; }
     o.right = Math.max(o.right || 0, s.right || 0); o.total = Math.max(o.total || 0, s.total || 0); o.best = Math.max(o.best || 0, s.best || 0);
+    o.streak = Math.max(o.streak || 0, s.streak || 0);
   }
   return out;
 }
@@ -12472,11 +12501,20 @@ export const store = {
   nets() { return mem.nets; },
   saveNet(name, topo) { mem.nets[name] = { topo, saved: Date.now() }; persist(); },
   deleteNet(name) { delete mem.nets[name]; persist(); },
-  exportAll() { return JSON.stringify(mem, null, 2); },
+  /** A backup file: everything in this browser, with a small header so it is recognized later */
+  exportAll(version = '') { return JSON.stringify({ app: 'PacketPilot', kind: 'backup', version, exported: new Date().toISOString(), data: mem }, null, 2); },
+  summary() {
+    const lessons = Object.values(mem.progress).filter(p => p.done).length;
+    const challenges = Object.values(mem.practice.challenges).filter(c => c.solved).length;
+    const sub = Object.values(mem.practice.subnet);
+    return { lessons, nets: Object.keys(mem.nets).length, challenges, subnetBest: Math.max(0, ...sub.map(x => x.best || 0)), subnetRight: sub.reduce((a, x) => a + (x.right || 0), 0) };
+  },
   snapshot() { return JSON.stringify(mem); },
   /** Import a file or a transferred state. merge keeps everything already in this browser. */
   importAll(json, { merge = true } = {}) {
-    const d = typeof json === 'string' ? JSON.parse(json) : json;
+    let d = typeof json === 'string' ? JSON.parse(json) : json;
+    // Backups since 2.8 wrap the data with a header; older exports are the data itself
+    if (d && d.app === 'PacketPilot' && d.data) d = d.data;
     if (typeof d !== 'object' || !d || !('progress' in d || 'nets' in d || 'prefs' in d)) throw new Error('Not a valid PacketPilot file');
     mem = merge ? mergeState(mem, d) : withDefaults(d);
     persist();
@@ -13706,6 +13744,8 @@ main_url() {
 write_site_json() {
   local url
   url="$(main_url)"
+  # A new home elsewhere (--moved-to) wins: every browser then offers to take its progress there
+  [ -n "$PP_MOVED_TO" ] && url="$PP_MOVED_TO"
   if [ -n "$url" ]; then
     printf '{ "version": "%s", "canonical": "%s" }\n' "$PP_VERSION" "${url%/}" > "${PP_WWW}/site.json"
   else
@@ -13731,16 +13771,17 @@ TLS=${PP_TLS}
 LE_DOMAIN=${PP_LE_DOMAIN}
 LE_DNS=${PP_LE_DNS}
 LE_EMAIL=${PP_LE_EMAIL}
+MOVED_TO=${PP_MOVED_TO}
 CONF
   chmod 644 "$PP_CONF"
 }
 
 keep_settings() {
-  local k v c_port="" c_tls="" c_domain="" c_dns="" c_email=""
+  local k v c_port="" c_tls="" c_domain="" c_dns="" c_email="" c_moved=""
   if [ -f "$PP_CONF" ]; then
     while IFS='=' read -r k v; do
       case "$k" in
-        PORT) c_port="$v" ;; TLS) c_tls="$v" ;; LE_DOMAIN) c_domain="$v" ;; LE_DNS) c_dns="$v" ;; LE_EMAIL) c_email="$v" ;;
+        PORT) c_port="$v" ;; TLS) c_tls="$v" ;; LE_DOMAIN) c_domain="$v" ;; LE_DNS) c_dns="$v" ;; LE_EMAIL) c_email="$v" ;; MOVED_TO) c_moved="$v" ;;
       esac
     done < "$PP_CONF"
   elif [ -f "$PP_SITE" ]; then
@@ -13757,6 +13798,7 @@ keep_settings() {
     PP_TLS="no"
     ok "Keeping plain HTTP (switch with --https)"
   fi
+  if [ "$PP_MOVED_SET" = "no" ] && [ -n "$c_moved" ]; then PP_MOVED_TO="$c_moved"; ok "Keeping the new address ${PP_MOVED_TO} (remove with --not-moved)"; fi
   case "$PP_LE_SET" in
     no)
       if [ -n "$c_domain" ]; then

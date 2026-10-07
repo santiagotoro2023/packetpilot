@@ -354,6 +354,8 @@ main_url() {
 write_site_json() {
   local url
   url="$(main_url)"
+  # A new home elsewhere (--moved-to) wins: every browser then offers to take its progress there
+  [ -n "$PP_MOVED_TO" ] && url="$PP_MOVED_TO"
   if [ -n "$url" ]; then
     printf '{ "version": "%s", "canonical": "%s" }\n' "$PP_VERSION" "${url%/}" > "${PP_WWW}/site.json"
   else
@@ -379,16 +381,17 @@ TLS=${PP_TLS}
 LE_DOMAIN=${PP_LE_DOMAIN}
 LE_DNS=${PP_LE_DNS}
 LE_EMAIL=${PP_LE_EMAIL}
+MOVED_TO=${PP_MOVED_TO}
 CONF
   chmod 644 "$PP_CONF"
 }
 
 keep_settings() {
-  local k v c_port="" c_tls="" c_domain="" c_dns="" c_email=""
+  local k v c_port="" c_tls="" c_domain="" c_dns="" c_email="" c_moved=""
   if [ -f "$PP_CONF" ]; then
     while IFS='=' read -r k v; do
       case "$k" in
-        PORT) c_port="$v" ;; TLS) c_tls="$v" ;; LE_DOMAIN) c_domain="$v" ;; LE_DNS) c_dns="$v" ;; LE_EMAIL) c_email="$v" ;;
+        PORT) c_port="$v" ;; TLS) c_tls="$v" ;; LE_DOMAIN) c_domain="$v" ;; LE_DNS) c_dns="$v" ;; LE_EMAIL) c_email="$v" ;; MOVED_TO) c_moved="$v" ;;
       esac
     done < "$PP_CONF"
   elif [ -f "$PP_SITE" ]; then
@@ -405,6 +408,7 @@ keep_settings() {
     PP_TLS="no"
     ok "Keeping plain HTTP (switch with --https)"
   fi
+  if [ "$PP_MOVED_SET" = "no" ] && [ -n "$c_moved" ]; then PP_MOVED_TO="$c_moved"; ok "Keeping the new address ${PP_MOVED_TO} (remove with --not-moved)"; fi
   case "$PP_LE_SET" in
     no)
       if [ -n "$c_domain" ]; then

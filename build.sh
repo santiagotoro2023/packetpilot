@@ -28,4 +28,8 @@ if grep -rq "$DELIM" src; then echo "The delimiter $DELIM occurs in src/, please
 } > "$OUT"
 chmod +x "$OUT"
 bash -n "$OUT"
+
+# The container deployment files name the same version as the installer
+sed -i -E "s/^version: .*/version: ${VERSION}/; s/^appVersion: .*/appVersion: \"${VERSION}\"/" deploy/helm/packetpilot/Chart.yaml
+sed -i -E "s#(image: ghcr.io/santiagotoro2023/packetpilot:)[0-9][^ ]*#\1${VERSION}#" deploy/kubernetes/packetpilot.yaml
 echo "Built: $OUT ($(du -h "$OUT" | cut -f1), version ${VERSION})"

@@ -43,6 +43,7 @@ export function mergeState(cur, add) {
     const o = out.practice.subnet[mode];
     if (!o) { out.practice.subnet[mode] = s; continue; }
     o.right = Math.max(o.right || 0, s.right || 0); o.total = Math.max(o.total || 0, s.total || 0); o.best = Math.max(o.best || 0, s.best || 0);
+    o.streak = Math.max(o.streak || 0, s.streak || 0);
   }
   return out;
 }
@@ -70,11 +71,20 @@ export const store = {
   nets() { return mem.nets; },
   saveNet(name, topo) { mem.nets[name] = { topo, saved: Date.now() }; persist(); },
   deleteNet(name) { delete mem.nets[name]; persist(); },
-  exportAll() { return JSON.stringify(mem, null, 2); },
+  /** A backup file: everything in this browser, with a small header so it is recognized later */
+  exportAll(version = '') { return JSON.stringify({ app: 'PacketPilot', kind: 'backup', version, exported: new Date().toISOString(), data: mem }, null, 2); },
+  summary() {
+    const lessons = Object.values(mem.progress).filter(p => p.done).length;
+    const challenges = Object.values(mem.practice.challenges).filter(c => c.solved).length;
+    const sub = Object.values(mem.practice.subnet);
+    return { lessons, nets: Object.keys(mem.nets).length, challenges, subnetBest: Math.max(0, ...sub.map(x => x.best || 0)), subnetRight: sub.reduce((a, x) => a + (x.right || 0), 0) };
+  },
   snapshot() { return JSON.stringify(mem); },
   /** Import a file or a transferred state. merge keeps everything already in this browser. */
   importAll(json, { merge = true } = {}) {
-    const d = typeof json === 'string' ? JSON.parse(json) : json;
+    let d = typeof json === 'string' ? JSON.parse(json) : json;
+    // Backups since 2.8 wrap the data with a header; older exports are the data itself
+    if (d && d.app === 'PacketPilot' && d.data) d = d.data;
     if (typeof d !== 'object' || !d || !('progress' in d || 'nets' in d || 'prefs' in d)) throw new Error('Not a valid PacketPilot file');
     mem = merge ? mergeState(mem, d) : withDefaults(d);
     persist();

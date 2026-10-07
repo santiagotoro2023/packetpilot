@@ -1,0 +1,144 @@
+# PacketPilot on Kubernetes without Helm: one file, apply and go.
+#
+#   kubectl apply -f deploy/kubernetes/packetpilot.yaml
+#   kubectl -n packetpilot port-forward svc/packetpilot 8080:80     # try it: http://localhost:8080
+#
+# Before you use the Ingress at the end: set your host name (two places) and the
+# ingressClassName of your cluster. PACKETPILOT_CANONICAL should be the same address.
+# The app is stateless (progress lives in the learners' browsers): no volume needed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: packetpilot
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: packetpilot
+  namespace: packetpilot
+  labels:
+    app.kubernetes.io/name: packetpilot
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: packetpilot
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: packetpilot
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: packetpilot
+          image: ghcr.io/santiagotoro2023/packetpilot:2.8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PACKETPILOT_CANONICAL
+              value: "https://packetpilot.example.com"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+      # One replica per node on a three node cluster
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: packetpilot
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: packetpilot
+  namespace: packetpilot
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: packetpilot
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: packetpilot
+  namespace: packetpilot
+  labels:
+    app.kubernetes.io/name: packetpilot
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: packetpilot
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: packetpilot
+  namespace: packetpilot
+  annotations:
+    # With cert-manager for a Let's Encrypt certificate (remove if you have none):
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx            # traefik on k3s
+  tls:
+    - hosts: [packetpilot.example.com]
+      secretName: packetpilot-tls
+  rules:
+    - host: packetpilot.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: packetpilot
+                port:
+                  name: http

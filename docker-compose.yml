@@ -1,0 +1,24 @@
+# PacketPilot with Docker Compose: the quickest start.
+#
+#   docker compose up -d          then open http://<server>:8080
+#
+# The image comes from the GitHub Container Registry. To build it from this
+# repository instead: docker compose up -d --build
+# With HTTPS and a domain name: see deploy/compose/https/
+services:
+  packetpilot:
+    image: ghcr.io/santiagotoro2023/packetpilot:latest
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Public address, if it has one (share links point there): https://packetpilot.example.com
+      PACKETPILOT_CANONICAL: ""
+    # Stateless and locked down: progress lives in the browsers of the learners
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true

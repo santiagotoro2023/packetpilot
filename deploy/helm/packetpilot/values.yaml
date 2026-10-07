@@ -1,0 +1,93 @@
+# Values for PacketPilot. The defaults suit a small cluster with three nodes:
+# three replicas, spread over the nodes, at most one down at a time during upgrades.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/santiagotoro2023/packetpilot
+  # Defaults to the appVersion of the chart
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# The public address learners use, e.g. https://packetpilot.example.com. Share links
+# point there, and a browser that opens PacketPilot under another address is offered
+# to take its progress along. Empty: taken from the first Ingress host (https if TLS).
+canonicalUrl: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 101
+  runAsGroup: 101
+  fsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+service:
+  type: ClusterIP
+  port: 80
+  # For type NodePort or LoadBalancer
+  nodePort: null
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt
+  hosts:
+    - host: packetpilot.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: packetpilot-tls
+  #    hosts:
+  #      - packetpilot.example.com
+
+# Static files only: very little is needed
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    memory: 64Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 9
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Spread the replicas over the nodes (and zones, if the nodes have zone labels)
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
+
+# Only allow traffic from the namespace of the ingress controller (and the cluster's
+# own probes). Needs a CNI that enforces NetworkPolicies.
+networkPolicy:
+  enabled: false
+  ingressNamespaceSelector:
+    kubernetes.io/metadata.name: ingress-nginx
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
