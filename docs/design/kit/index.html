@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Appname</title>
+<meta name="description" content="One sentence that says what the app does.">
+<!-- Favicon: the logo with fixed colors (light card). Make it with docs/design/logo/make-logo.mjs -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='8' width='26' height='16' rx='3' fill='%2317253A'/%3E%3Crect x='7' y='12' width='3' height='8' rx='1' fill='%232F6FDB'/%3E%3Crect x='12' y='12' width='3' height='8' rx='1' fill='%231F9D68'/%3E%3Crect x='17' y='12' width='3' height='8' rx='1' fill='%238B5E3C'/%3E%3Crect x='22' y='12' width='3' height='8' rx='1' fill='%23EE7F1A'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/cantarell.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/app.css">
+<!-- The theme is set before the first paint, so dark mode never flashes white. Same key as STORE_KEY in js/app.js -->
+<script>try{var t=JSON.parse(localStorage.getItem('appname.v1')||'{}').prefs;if(t&&t.theme)document.documentElement.dataset.theme=t.theme}catch(e){}</script>
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="Main navigation">
+    <a class="logo" href="#/" title="Appname" aria-label="Appname home">
+      <svg viewBox="0 0 32 32" width="36" height="36" aria-hidden="true"><rect x="3" y="8" width="26" height="16" rx="3" fill="var(--ink)"/><rect x="7" y="12" width="3" height="8" rx="1" fill="var(--c-blue)"/><rect x="12" y="12" width="3" height="8" rx="1" fill="var(--c-green)"/><rect x="17" y="12" width="3" height="8" rx="1" fill="var(--c-brown)"/><rect x="22" y="12" width="3" height="8" rx="1" fill="var(--c-orange)"/></svg>
+    </a>
+    <a href="#/" data-nav="home"><span data-icon="course"></span>Home</a>
+    <a href="#/work" data-nav="work"><span data-icon="lab"></span>Work</a>
+    <a href="#/library" data-nav="library"><span data-icon="nets"></span>Library</a>
+    <a href="#/components" data-nav="components"><span data-icon="sliders"></span>Parts</a>
+    <span class="spacer"></span>
+    <button id="theme" type="button" title="Light or dark"></button>
+  </nav>
+  <main class="main"></main>
+</div>
+<noscript><p style="padding:2rem">Appname requires JavaScript.</p></noscript>
+<script type="module">
+  import { I } from './js/icons.js';
+  document.querySelectorAll('[data-icon]').forEach(e => e.innerHTML = I[e.dataset.icon]);
+  import('./js/app.js');
+</script>
+</body>
+</html>

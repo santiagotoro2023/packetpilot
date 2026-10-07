@@ -20,9 +20,9 @@ export function viewChallenges(main, cleanup, id) {
   for (const lvl of [1, 2, 3]) {
     const list = CHALLENGES.filter(c => c.level === lvl);
     page.append(h('h2', { style: { marginTop: '22px' } }, LEVELS[lvl]));
-    page.append(h('div', { class: 'netgrid' }, list.map(c => {
+    page.append(h('div', { class: 'cardgrid' }, list.map(c => {
       const st = store.challenge(c.id);
-      return h('a', { class: 'netcard chcard' + (st?.solved ? ' solved' : ''), href: `#/troubleshoot/${c.id}` },
+      return h('a', { class: 'tile' + (st?.solved ? ' done' : ''), href: `#/troubleshoot/${c.id}` },
         h('div', { class: 'row', style: { justifyContent: 'space-between', flexWrap: 'nowrap' } }, h('h3', { style: { margin: 0 } }, c.title), st?.solved ? h('span', { class: 'st ok', html: I.check, title: 'solved' }) : levelDots(c.level)),
         h('div', { class: 'row' }, c.topics.map(t => h('span', { class: 'chip' }, t))),
         h('div', { class: 'muted small', html: c.symptom }),

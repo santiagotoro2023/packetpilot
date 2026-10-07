@@ -74,6 +74,10 @@ Each browser stores progress, partial answers (including the network you edited 
 
 The logo for presentations and marketing is in [`assets/logo`](assets/logo): the icon alone and with the name PacketPilot, each for light and dark backgrounds, transparent or with a background (PNG), plus the icon as SVG.
 
+## Design system
+
+PacketPilot's look is a reusable design system: **[docs/DESIGN.md](docs/DESIGN.md)** specifies colors, fonts, sizes, layout, components, logo and wording down to the pixel, and [`docs/design/kit`](docs/design/kit) is a runnable starter app with exact copies of the shared files (`base.css`, the fonts, `ui.js`, the icons). New projects start from the kit and look exactly like PacketPilot; `docs/design/logo/make-logo.mjs` makes their logos in the same style.
+
 ## What's inside
 
 **Course with fifteen modules and 75 lessons**
@@ -144,6 +148,7 @@ node test/build.test.mjs                # check the frame exercises against the 
 node test/challenges.test.mjs           # every troubleshooting variant is broken and solvable
 node test/subnet.test.mjs               # subnetting questions and answers are consistent
 node test/store.test.mjs                # backups: format, old exports, merging
+node test/design.test.mjs               # the design kit is an exact copy, DESIGN.md names every token
 bash build.sh                           # regenerate packetpilot-install.sh
 ```
 
@@ -151,7 +156,10 @@ bash build.sh                           # regenerate packetpilot-install.sh
 
 ```
 src/
-  index.html, css/app.css
+  index.html
+  css/base.css        the design system (shared by every project, see docs/DESIGN.md)
+  css/app.css         PacketPilot's own styles: lab, diagram, frame builder
+  fonts/              Cantarell and DejaVu Sans Mono, shipped so every system shows the same letters
   migrate.html        moves progress from http:// to https:// (served by nginx for plain HTTP)
   site.json           main address of the server, written by the installer
   js/engine.js        simulation (event queue, L2, STP, L3, TCP/UDP, VXLAN)
@@ -177,11 +185,13 @@ src/
   js/site.js          main address and moving progress
   js/store.js         storage in the browser
 installer/            head and tail of the installer script
-build.sh              assembles the installer script (and syncs the version into deploy/)
+build.sh              assembles the installer script (syncs the version into deploy/ and the shared files into docs/design/kit)
 Dockerfile            container image (nginx unprivileged, port 8080)
 docker-compose.yml    quick start with Compose
 deploy/               Compose with HTTPS, Kubernetes manifest, Helm chart, container config
 docs/DEPLOYMENT.md    Docker, Compose, Kubernetes, Helm, moving learners
+docs/DESIGN.md        the design specification for PacketPilot and every later project
+docs/design/          starter kit, logo template and generator, reference screenshots
 .github/workflows/    tests, image (amd64, arm64) and chart to ghcr.io
 ```
 

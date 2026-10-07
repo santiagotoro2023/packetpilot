@@ -25,7 +25,7 @@ jobs:
           node-version: 22
       - name: Simulation, course, challenges and frame exercises
         run: |
-          for t in engine course challenges build subnet store; do node test/$t.test.mjs; done
+          for t in engine course challenges build subnet store design; do node test/$t.test.mjs; done
       - name: Installer builds
         run: bash build.sh && git diff --exit-code -- deploy/ || (echo "Run build.sh and commit deploy/ changes" && exit 1)
 

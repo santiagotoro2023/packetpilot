@@ -26,7 +26,7 @@ function applyTheme() {
   if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
   const btn = document.querySelector('#theme');
   const dark = t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches);
-  btn.innerHTML = (dark ? I.sun : I.moon) + (dark ? 'Light' : 'Dark');
+  btn.innerHTML = `<span>${dark ? I.sun : I.moon}</span>${dark ? 'Light' : 'Dark'}`;
 }
 document.querySelector('#theme').addEventListener('click', () => {
   const dark = document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
@@ -39,7 +39,7 @@ applyTheme();
 function lessonProgress(l) { return { done: store.lessonDone(l.id), steps: store.lessonSteps(l.id), total: l.steps.length }; }
 function viewHome() {
   const page = h('div', { class: 'page' });
-  const heroBox = h('div', { class: 'hero-lab' }, h('span', { class: 'caption' }, 'Live: pc1 pings srv1. Every stripe on the envelope is a layer.'));
+  const heroBox = h('div', { class: 'hero-visual' }, h('span', { class: 'caption' }, 'Live: pc1 pings srv1. Every stripe on the envelope is a layer.'));
   const flat = MODULES.flatMap(m => m.lessons);
   const next = flat.find(l => !store.lessonDone(l.id)) || flat[0];
   const doneCount = flat.filter(l => store.lessonDone(l.id)).length;
@@ -80,13 +80,13 @@ function viewHome() {
   const solved = CHALLENGES.filter(c => store.challenge(c.id)?.solved).length;
   const sub = ['range', 'mask', 'size', 'same', 'split'].reduce((a, m) => { const s = store.subnetStats(m); return { right: a.right + (s.right || 0), best: Math.max(a.best, s.best || 0) }; }, { right: 0, best: 0 });
   page.append(h('h2', { style: { marginTop: '28px' } }, 'Practice'),
-    h('div', { class: 'netgrid' },
-      h('a', { class: 'netcard chcard', href: '#/troubleshoot' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('span', { class: 'pico', html: I.fix }), h('h3', { style: { margin: 0 } }, 'Troubleshooting')),
+    h('div', { class: 'cardgrid' },
+      h('a', { class: 'tile', href: '#/troubleshoot' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('span', { class: 'pico', html: I.fix }), h('h3', { style: { margin: 0 } }, 'Troubleshooting')),
         h('p', { class: 'muted small' }, 'Broken networks with a symptom and a hidden cause. Find it and fix it.'), h('div', { class: 'small muted' }, `${solved} of ${CHALLENGES.length} solved`)),
-      h('a', { class: 'netcard chcard', href: '#/subnetting' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('span', { class: 'pico', html: I.calc }), h('h3', { style: { margin: 0 } }, 'Subnetting trainer')),
+      h('a', { class: 'tile', href: '#/subnetting' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('span', { class: 'pico', html: I.calc }), h('h3', { style: { margin: 0 } }, 'Subnetting trainer')),
         h('p', { class: 'muted small' }, 'Network, broadcast, masks and subnet sizes with random addresses and worked solutions.'), h('div', { class: 'small muted' }, sub.right ? `${sub.right} right so far, best streak ${sub.best}` : 'Endless questions'))));
   if (UPCOMING.length) page.append(h('h2', { style: { marginTop: '28px' } }, 'Coming soon'),
-    h('div', { class: 'netgrid' }, UPCOMING.map(u => h('div', { class: 'netcard' }, h('h3', {}, u.title), h('p', { class: 'muted small' }, u.text)))));
+    h('div', { class: 'cardgrid' }, UPCOMING.map(u => h('div', { class: 'tile' }, h('h3', {}, u.title), h('p', { class: 'muted small' }, u.text)))));
   const sm = store.summary();
   page.append(h('section', { class: 'databox', 'aria-labelledby': 'datah' },
     h('h2', { id: 'datah' }, 'Your progress and networks'),
@@ -343,9 +343,9 @@ async function viewMigrate(code) {
 function viewNets() {
   const page = h('div', { class: 'page' }, h('h1', {}, 'Example networks'),
     h('p', { class: 'muted' }, 'Ready-made topologies to experiment with. A network opens in the lab, where you can change everything and save it under your own name.'));
-  const grid = h('div', { class: 'netgrid' });
+  const grid = h('div', { class: 'cardgrid' });
   for (const p of PRESETS) {
-    grid.append(h('article', { class: 'netcard' }, preview(p.make()), h('h3', {}, p.title),
+    grid.append(h('article', { class: 'tile' }, preview(p.make()), h('h3', {}, p.title),
       h('div', { class: 'row' }, p.topics.map(t => h('span', { class: 'chip' }, t))),
       h('p', { class: 'muted small' }, p.text),
       h('div', {}, h('a', { class: 'btn primary', href: `#/lab/${p.id}` }, 'Open in the lab'))));

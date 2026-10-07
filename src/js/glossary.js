@@ -156,7 +156,7 @@ ENTRIES.sort((a, b) => b.w.length - a.w.length);
 const RX = new RegExp(`(?<![\\w./:-])(${ENTRIES.map(e => esc(e.w)).join('|')})(?![\\w/:-])`, 'gi');
 const lookup = w => ENTRIES.find(e => e.exact ? e.w === w : e.w.toLowerCase() === w.toLowerCase());
 
-const BLOCKS = '.theory p, .theory li, .theory td, .theory .note, .quiz-q > div, .opts span, .goals .txt > span, .explain, .hint, .symptom, .netcard p, .module p.muted, .widget > p';
+const BLOCKS = '.theory p, .theory li, .theory td, .theory .note, .quiz-q > div, .opts span, .goals .txt > span, .explain, .hint, .symptom, .tile p, .module p.muted, .widget > p';
 const SKIP = 'code, pre, a, button, input, textarea, select, abbr, svg, h1, h2, h3, .feedback, .crumb';
 
 function markBlock(block) {

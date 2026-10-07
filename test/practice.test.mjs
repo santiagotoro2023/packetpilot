@@ -22,7 +22,7 @@ await page.goto(BASE); await page.evaluate(() => localStorage.clear()); await pa
 
 await ok('troubleshooting list and a challenge with timer, symptom and goals', async () => {
   await page.goto(BASE + '#/troubleshoot'); await wait(300);
-  assert.ok(await page.locator('.chcard').count() >= 10);
+  assert.ok(await page.locator('a.tile').count() >= 10);
   await page.goto(BASE + '#/troubleshoot/gateway'); await wait(1500);
   assert.ok(await page.locator('.symptom').count() === 1);
   assert.match(await page.locator('.chtimer').innerText(), /\d+:\d\d/);
