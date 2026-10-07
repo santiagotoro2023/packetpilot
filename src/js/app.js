@@ -261,7 +261,7 @@ function viewLab(presetId, shared = null) {
     for (const n of Object.keys(store.nets()).sort()) savedSel.append(h('option', { value: n }, n));
   };
   fillSaved();
-  const root = h('div', { style: { minHeight: 0 } });
+  const root = h('div', { class: 'lab-root', style: { minHeight: 0 } });
   const page = h('div', { class: 'labpage' }, h('div', { class: 'labbar' },
     h('span', { class: 'title' }, 'Lab'), nameIn,
     h('button', { class: 'btn', html: I.save + 'Save', onclick: () => { lab.sim.topo.name = nameIn.value.trim() || 'My network'; store.saveNet(lab.sim.topo.name, clone(lab.sim.topo)); fillSaved(); toast(`"${lab.sim.topo.name}" saved`); } }),

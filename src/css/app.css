@@ -506,3 +506,8 @@ abbr.gl:hover, abbr.gl:focus-visible { border-bottom-color: var(--ink); outline:
 .movecard { position: fixed; right: 18px; bottom: 76px; z-index: 40; max-width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-m);
   box-shadow: var(--shadow); padding: 12px 14px; font-size: .9rem; }
 .movecard p { margin: 4px 0 10px; color: var(--ink-2); }
+
+/* Fullscreen lab (lesson body with goals, or the free lab) */
+.lesson-body:fullscreen, .lesson-body.pseudo-full, .lab-root:fullscreen { background: var(--paper); height: 100vh; }
+.pseudo-full { position: fixed !important; inset: 0; z-index: 45; background: var(--paper); height: 100vh !important; }
+.btn.icon.on { color: var(--accent, var(--ink)); }

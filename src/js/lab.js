@@ -38,6 +38,8 @@ export class Lab {
     this.raf = requestAnimationFrame(t => this.loop(t));
     this.keyHandler = e => this.onKey(e);
     window.addEventListener('keydown', this.keyHandler);
+    this.fsHandler = () => { this.syncFull(); this.fit(true); };
+    document.addEventListener('fullscreenchange', this.fsHandler);
     this.ro = new ResizeObserver(() => { this.fit(false); this.placeHandles(); });
     this.ro.observe(this.canvasWrap);
     this.ro.observe(this.el);
@@ -46,6 +48,9 @@ export class Lab {
   destroy() {
     cancelAnimationFrame(this.raf);
     window.removeEventListener('keydown', this.keyHandler);
+    document.removeEventListener('fullscreenchange', this.fsHandler);
+    if (document.fullscreenElement && document.fullscreenElement === this.fullTarget()) document.exitFullscreen?.();
+    this.fullTarget().classList.remove('pseudo-full');
     this.ro.disconnect();
     this.unsub?.();
     this.root.innerHTML = '';
@@ -102,7 +107,8 @@ export class Lab {
       h('div', { class: 'bar' }, h('span', { class: 'speedlbl', style: { paddingLeft: '6px' } }, 'Speed'), speed, this.speedLbl),
       this.bpduBar = h('div', { class: 'bar hidden' }, this.bpduBtn = h('button', { class: 'tog on', title: 'Show or hide the periodic control messages (BPDUs, hellos) in the network diagram', onclick: () => this.toggleBpdu() }, 'BPDUs')),
       h('span', { class: 'grow' }),
-      h('div', { class: 'bar' }, iconBtn(I.fit, 'Fit view', () => this.fit(true))));
+      h('div', { class: 'bar' }, iconBtn(I.fit, 'Fit the network into the view', () => this.fit(true)),
+        this.fullBtn = iconBtn(I.full, 'Fullscreen (F)', () => this.toggleFull())));
     this.canvasWrap.append(this.player);
     this.overlay = h('div', { class: 'hint-overlay hidden' });
     this.stormEl = h('div', { class: 'storm hidden', role: 'alert' });
@@ -299,6 +305,26 @@ export class Lab {
     if (d.dhcpServer?.enabled) parts.push('DHCP server');
     if (d.nat?.outside) parts.push('NAT');
     return parts.join(' · ');
+  }
+  // Fullscreen: in a lesson or challenge the goals come along, in the free lab the whole lab.
+  // Without the Fullscreen API (e.g. iPhone) the area simply covers the window.
+  fullTarget() { return this.root.closest('.lesson-body') || this.root; }
+  isFull() { const t = this.fullTarget(); return document.fullscreenElement === t || t.classList.contains('pseudo-full'); }
+  toggleFull() {
+    const t = this.fullTarget();
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    else if (t.classList.contains('pseudo-full')) t.classList.remove('pseudo-full');
+    else if (t.requestFullscreen) t.requestFullscreen().catch(() => t.classList.add('pseudo-full'));
+    else t.classList.add('pseudo-full');
+    setTimeout(() => this.syncFull(), 50);
+  }
+  syncFull() {
+    if (!this.fullBtn) return;
+    const on = this.isFull();
+    this.fullBtn.innerHTML = on ? I.unfull : I.full;
+    this.fullBtn.title = on ? 'Leave fullscreen (F or Esc)' : 'Fullscreen (F)';
+    this.fullBtn.setAttribute('aria-label', this.fullBtn.title);
+    this.fullBtn.classList.toggle('on', on);
   }
   fit(force) {
     const r = this.canvasWrap.getBoundingClientRect();
@@ -512,7 +538,11 @@ export class Lab {
     else if (e.key === 'ArrowRight') { e.preventDefault(); this.stepOnce(); }
     else if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel) { e.preventDefault(); this.deleteSelected(); }
     else if (e.key === 'k' || e.key === 'K') this.setConnect(!this.connectMode);
-    else if (e.key === 'Escape') { this.setConnect(false); this.select(null); }
+    else if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) this.toggleFull();
+    else if (e.key === 'Escape') {
+      if (this.fullTarget().classList.contains('pseudo-full')) { this.toggleFull(); return; }
+      this.setConnect(false); this.select(null);
+    }
   }
   select(s) {
     const same = JSON.stringify(s) === JSON.stringify(this.sel);
@@ -557,7 +587,7 @@ export class Lab {
           this.canEditTopo ? h('li', {}, 'Areas organize the canvas: colored rectangles with a label, move them by the tab, resize them at the corner.') : null,
           h('li', {}, 'Click a device: configuration, tables and console appear here. Double-click opens the console directly.'),
           h('li', {}, 'Type e.g. ping 10.0.0.2 in the console and watch the packets travel.'),
-          h('li', {}, 'Space pauses time, the right arrow advances one event. The speed slider sets the slow motion.'),
+          h('li', {}, 'Space pauses time, the right arrow advances one event. The speed slider sets the slow motion. F switches to fullscreen.'),
           h('li', {}, 'Clicking a packet takes it apart into its layers in the packet inspector.')),
         h('h4', {}, 'Layer colors'),
         h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'VRRP, OSPF']]
