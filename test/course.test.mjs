@@ -110,6 +110,16 @@ const SOLUTIONS = {
     for (const id of ['r1', 'r2']) { Object.assign(sim.dev(id).cfg.bfd, { enabled: true, ospf: true }); sim.configChanged(id); }
     sim.runFor(15000); ctx.snap();
     runCommand(sim.dev('pc1'), 'ping -c 20 10.2.0.10'); sim.runFor(3500); prov.loss = 100; sim.runFor(25000); } },
+  'm12-l3': { answers: sim => ['2001:db8:1::/64', sim.dev('pc1').l3.v6.allAddrs().find(a => a.origin === 'slaac').ip.split(':').slice(4).join(':'), null, 'ff02::1:ff00:2', null, '2001:db8:2::80'], act: sim => {
+    sim.runFor(4000); runT(sim, 'pc1', 'ping -6 -c 2 2001:db8:2::80', 4000); runT(sim, 'pc1', 'ping -6 -c 1 ff02::1%eth1', 3000); runT(sim, 'pc1', 'curl http://www.lab/', 5000);
+    assert.ok(sim.log.some(e => e.dev === 'pc1' && e.tag === 'tcp-done' && e.data.ok && e.data.dst === '2001:db8:2::80'), 'curl over IPv6'); } },
+  'm12-l4': { answers: sim => [null, null, null, null, sim.dev('r1').l3.v6.addrs('eth1')[0].ip], act: sim => {
+    sim.runFor(4000);
+    sim.dev('r1').cfg.ipv6.ra = ['eth1']; sim.configChanged('r1'); sim.runFor(3000);
+    runT(sim, 'r1', 'ip -6 route add 2001:db8:2::/64 via 2001:db8:12::2', 100); runT(sim, 'r2', 'ip -6 route add 2001:db8:1::/64 via 2001:db8:12::1', 100);
+    runT(sim, 'pc1', 'ping -6 -c 2 2001:db8:2::80', 4000);
+    sim.dev('r1').cfg.ipv6.rdnss = '2001:db8:2::53'; sim.configChanged('r1'); sim.runFor(2000);
+    runT(sim, 'pc1', 'curl http://www.lab/', 5000); } },
   'm11-l2': { answers: [null, '198.41.0.4', '3', 'no', null, 'ns.partner.lab', 'REFUSED'], act: sim => {
     run(sim, 'client', 'dig www.firma.lab');
     assert.equal(sim.log.filter(e => e.dev === 'resolver' && e.tag === 'dns-iter').length, 3);

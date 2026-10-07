@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.4.0
+#  PacketPilot 2.5.0
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -31,7 +31,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.4.0"
+PP_VERSION="2.5.0"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -1147,7 +1147,7 @@ __PACKETPILOT_FILE_END__
   cat > "$W/js/challenges.js" <<'__PACKETPILOT_FILE_END__'
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo, ipv6Topo } from './presets.js';
 import { macFor } from './net.js';
 
 const preset = id => PRESETS.find(p => p.id === id).make();
@@ -1322,6 +1322,41 @@ export const CHALLENGES = [
     hints: ['dig www.firma.lab on the client: which address, and which TTL?', 'Compare with what the authoritative server says: dig @203.0.113.53 www.firma.lab', 'unbound-control dump_cache on the resolver shows what it remembers.'],
     presets: { client: ['curl http://www.firma.lab/', 'dig www.firma.lab', 'dig @203.0.113.53 www.firma.lab'], resolver: ['unbound-control dump_cache', 'unbound-control flush_all'] } },
 
+  { id: 'ipv6slaac', level: 1, title: 'The PCs have no IPv6 address', topics: ['IPv6', 'SLAAC', 'Router advertisement'],
+    symptom: '<p>The office was switched to dual stack yesterday. IPv4 works, but <code>ip -6 addr</code> on pc1 only shows an fe80:: address, and <code>ping -6 2001:db8:2::80</code> says "Network is unreachable".</p>',
+    topo: () => ipv6Topo(),
+    variants: [
+      { fault: t => { dev(t, 'r1').ipv6.ra = []; }, cause: 'r1 did not send router advertisements on eth1. Without an RA the PCs got neither a prefix nor a default router, only their link-local addresses.' },
+      { fault: t => { dev(t, 'r1').ipv6.ra = ['eth2']; }, cause: 'Router advertisements were turned on for eth2, the link to r2, instead of eth1 towards the LAN.' },
+      { fault: t => { dev(t, 'r1').ifaces.eth1.ip6 = ['2001:db8:1::1/56']; }, cause: 'r1 had a /56 on its LAN port. SLAAC only works with a /64: the RA contained the prefix, but without permission to form addresses from it.' },
+      { fault: t => { dev(t, 'pc1').ipv6.slaac = false; }, cause: 'SLAAC was turned off on pc1 (accept_ra 0). pc1 ignored every router advertisement. pc2 worked fine.' }],
+    goals: [{ text: 'pc1 pings the web server over IPv6 (2001:db8:2::80).', check: pingAfterStart('pc1', '2001:db8:2::80') }],
+    hints: ['rdisc6 eth1 on pc1 shows whether a router advertises anything, and what.', 'Look at the IPv6 section of r1: which ports send RAs, with which prefix length?'],
+    presets: { pc1: ['ip -6 addr', 'ip -6 route', 'rdisc6 eth1', 'ping -6 -c 2 2001:db8:2::80'], pc2: ['ip -6 addr'], r1: ['show ipv6 route', 'ip -6 addr'] } },
+
+  { id: 'ipv6route', level: 2, title: 'IPv6 stops at the router', topics: ['IPv6', 'Routing', 'NDP'],
+    symptom: '<p>pc1 has its IPv6 address and pings r1 over IPv6 just fine. The web server 2001:db8:2::80 does not answer over IPv6, over IPv4 everything works.</p>',
+    topo: () => ipv6Topo(),
+    variants: [
+      { fault: t => { dev(t, 'r2').routes = dev(t, 'r2').routes.filter(r => !String(r.dst).includes(':')); }, cause: 'r2 had no IPv6 route back to 2001:db8:1::/64. The requests reached the server, the replies died at r2.' },
+      { fault: t => { dev(t, 'r1').routes.find(r => String(r.dst).includes(':')).via = '2001:db8:12::3'; }, cause: 'The IPv6 route on r1 pointed to 2001:db8:12::3, which does not exist. r1 asked for it with Neighbor Solicitations that nobody answered (address unreachable).' },
+      { fault: t => { dev(t, 'web').ipv6.gw = ''; }, cause: 'The web server had a static IPv6 address but no IPv6 gateway. It could only answer inside its own network.' },
+      { fault: t => { dev(t, 'r2').ipv6.enabled = false; }, cause: 'IPv6 was turned off on r2. It routed IPv4 but dropped every IPv6 packet.' }],
+    goals: [{ text: 'pc1 pings 2001:db8:2::80 over IPv6.', check: pingAfterStart('pc1', '2001:db8:2::80') }],
+    hints: ['traceroute -6 2001:db8:2::80 shows how far the packets get.', 'Check every router on the way, in both directions: show ipv6 route and ip -6 neigh.'],
+    presets: { pc1: ['ping -6 -c 2 2001:db8:2::80', 'traceroute -6 2001:db8:2::80'], r1: ['show ipv6 route', 'ip -6 neigh'], r2: ['show ipv6 route', 'ip -6 neigh'], web: ['ip -6 route'] } },
+
+  { id: 'ipv6dual', level: 2, title: 'www.lab is broken, but only for the new PCs', topics: ['IPv6', 'Dual stack', 'DNS'],
+    symptom: '<p>Since the PCs got IPv6, <code>curl http://www.lab/</code> fails on pc1. <code>curl -4 http://www.lab/</code> still works. Old devices without IPv6 have no problem at all.</p>',
+    topo: () => ipv6Topo(),
+    variants: [
+      { fault: t => { dev(t, 'dns').dns.find(r => r.type === 'AAAA').ip = '2001:db8:2::81'; }, cause: 'The AAAA record of www.lab pointed to 2001:db8:2::81 instead of ::80. The PCs prefer IPv6 and tried an address nobody has. IPv4 clients only asked for the A record.' },
+      { fault: t => { dev(t, 'web').ifaces.eth1.ip6 = []; dev(t, 'web').ipv6.enabled = false; }, cause: 'The web server had no IPv6 at all, but DNS published an AAAA record for it. Every dual-stack client tried IPv6 first. Either give the server its IPv6 address or remove the AAAA record.' },
+      { fault: t => { dev(t, 'web').ipv6.gw = '2001:db8:2::2'; }, cause: 'The IPv6 gateway of the web server was 2001:db8:2::2, a router that does not exist. The SYN arrived, but the SYN/ACK never left the server network.' }],
+    goals: [{ text: 'pc1 opens http://www.lab/ over IPv6.', check: sim => sim.log.some(e => e.dev === 'pc1' && e.tag === 'tcp-done' && e.data.ok && String(e.data.dst).includes(':')) }],
+    hints: ['dig www.lab AAAA and dig www.lab A on pc1: which addresses does DNS give out?', 'Does the web server answer ping -6 at that address? Look at its IPv6 configuration.'],
+    presets: { pc1: ['curl http://www.lab/', 'curl -4 http://www.lab/', 'dig www.lab AAAA', 'ping -6 -c 2 2001:db8:2::80'], web: ['ip -6 addr', 'ip -6 route'] } },
+
   { id: 'ospf', level: 2, title: 'One site is missing from the map', topics: ['OSPF'],
     symptom: '<p>Three sites run OSPF. pc1 cannot reach the server srv3 at site 3.</p>',
     topo: () => ospfTopo(),
@@ -1378,7 +1413,7 @@ __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/cli.js" <<'__PACKETPILOT_FILE_END__'
 // Small command line per device, modeled on iproute2 and FRR
-import { isIp, parseCidr } from './net.js';
+import { isIp, parseCidr, isIp6, isAnyIp, parseCidr6, norm6, isLinkLocal6 } from './net.js';
 import { PORTS } from './engine.js';
 import { resolverOf, fqdn } from './dns.js';
 
@@ -1404,7 +1439,12 @@ export function helpFor(dev) {
     'dig +trace <name>     follow the delegation from the root yourself',
     'dig +norec / +short   no recursion wanted / only the answer',
     'curl http://<name>/   DNS first, then TCP (DNS server in the configuration)',
-    'ss -tan / ss -tuln    TCP connections / open ports');
+    'ss -tan / ss -tuln    TCP connections / open ports',
+    'ping -6 <addr|name> / ping6   ping over IPv6 (link-local: fe80::1%eth1)',
+    'ip -6 addr / route / neigh     IPv6 addresses, routes, neighbor cache',
+    'ip -6 addr add 2001:db8::1/64 dev eth1   add an IPv6 address',
+    'ip -6 route add <net>|default via <addr> [dev eth1]   static IPv6 route',
+    'traceroute -6 <addr>  path over IPv6');
   if (dev.type === 'router') l.push(
     'ip link add link eth1 name eth1.10 type vlan id 10   create a subinterface',
     'ip addr add 10.10.0.1/24 dev eth1.10   set an address',
@@ -1416,7 +1456,8 @@ export function helpFor(dev) {
     'show ip ospf neighbor / database / interface   OSPF state', 'show vrrp             VRRP groups and who is master', 'conntrack -L          NAT translations (also: show ip nat)');
   if (dev.cfg.recursion?.enabled) l.push('unbound-control dump_cache     what the resolver has cached, with TTL left', 'unbound-control flush_all      empty the cache (flush <name>: one name)');
   if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
-  if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)');
+  if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)', 'rdisc6 [eth1]         ask the routers for their advertisement (IPv6)');
+  if (dev.type === 'router') l.push('show ipv6 route / show ipv6 neighbors   IPv6 state in FRR style');
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
   if (dev.type === 'switch') l.push('show spanning-tree    STP status: root, roles, states',
     'spanning-tree on|off  turn STP on or off',
@@ -1435,35 +1476,40 @@ export function runCommand(dev, line) {
   const sim = dev.sim;
   const say = t => dev.print(t);
   const cmd = p.join(' ');
-  const own = ['ping', 'traceroute', 'arping', 'curl', 'nc', 'dig', 'nslookup', 'dhclient'];
+  const own = ['ping', 'ping6', 'traceroute', 'traceroute6', 'arping', 'curl', 'nc', 'dig', 'nslookup', 'dhclient', 'rdisc6'];
   if (!own.includes(p[0]) || !dev.l3) say(`$ ${cmd}`);
   try {
     if (p[0] === 'help' || p[0] === '?') return helpFor(dev).forEach(say);
     if (p[0] === 'clear' && !p[1]) { dev.consoleLines.length = 0; sim.emit('console', { devId: dev.id, clear: true }); return; }
 
-    if (p[0] === 'ping') {
+    if (p[0] === 'ping' || p[0] === 'ping6') {
+      const p0 = p[0];
       if (!dev.l3) return say('This device has no IP address. Pings can be sent from PCs, servers, routers and VTEPs.');
-      const o = { count: 4 }; let dst = null;
+      const o = { count: 4 }; let dst = null, family = p0 === 'ping6' ? 6 : 0;
       for (let i = 1; i < p.length; i++) {
-        if (p[i] === '-c') o.count = Math.min(100, Math.max(1, Number(p[++i]) || 4));
+        if (p[i] === '-6' || p[i] === '-4') family = Number(p[i][1]);
+        else if (p[i] === '-c') o.count = Math.min(100, Math.max(1, Number(p[++i]) || 4));
         else if (p[i] === '-s') o.size = Math.min(9000, Math.max(0, Number(p[++i]) || 56));
         else if (p[i] === '-M') o.df = p[++i] === 'do';
         else if (p[i] === '-t') o.ttl = Math.min(255, Math.max(1, Number(p[++i]) || 64));
         else dst = p[i];
       }
-      if (dst && !isIp(dst) && /^[a-zA-Z][a-zA-Z0-9.-]*$/.test(dst)) {
+      if (dst && !isAnyIp(dst) && /^[a-zA-Z][a-zA-Z0-9.-]*$/.test(dst)) {
         say(`$ ${cmd}`);
-        return dev.resolve(dst, ip => ip ? dev.ping(ip, { ...o, noEcho: true }) : say(`ping: ${dst}: Name or service not known`));
+        if (!dev.resolve) return say(`ping: ${dst}: no DNS on this device, use an address`);
+        return dev.resolve(dst, ip => ip ? dev.ping(ip, { ...o, noEcho: true }) : say(`ping: ${dst}: Name or service not known`), { family });
       }
-      if (!isIp(dst)) return say('ping: please enter a valid IPv4 address, e.g. ping 10.0.0.2');
-      dev.ping(dst, o); return;
+      if (!isAnyIp(dst)) return say('ping: please enter a valid address, e.g. ping 10.0.0.2 or ping 2001:db8::1');
+      if (family === 4 && isIp6(dst)) return say(`ping: ${dst}: Address family for hostname not supported`);
+      dev.ping(isIp6(dst) ? norm6(dst) + (dst.includes('%') ? '%' + dst.split('%')[1] : '') : dst, o); return;
     }
-    if (p[0] === 'traceroute' || p[0] === 'tracert') {
+    if (p[0] === 'traceroute' || p[0] === 'tracert' || p[0] === 'traceroute6') {
       if (!dev.l3) return say('This device has no IP address.');
-      const dst = p.find((x, i) => i > 0 && isIp(x));
-      if (!dst) return say('traceroute: please enter an IPv4 address.');
-      dev.traceroute(dst); return;
+      const dst = p.find((x, i) => i > 0 && isAnyIp(x));
+      if (!dst) return say('traceroute: please enter an IPv4 or IPv6 address.');
+      dev.traceroute(isIp6(dst) ? norm6(dst) : dst); return;
     }
+    if (p[0] === 'ip' && dev.l3 && p.includes('-6')) return ip6Command(dev, p.filter(x => x !== '-6'), say);
     if (p[0] === 'ip' && dev.l3 && p[1] !== 'link') {
       const sub = p.filter(x => !x.startsWith('-'))[1] || '';
       const brief = p.includes('-br');
@@ -1494,6 +1540,7 @@ export function runCommand(dev, line) {
             if (addr) say(`    inet ${addr}${c.dhcp ? ` dynamic valid_lft ${dev.l3.lease?.lease ?? 0}sec` : ''}`);
             else if (c.dhcp) say('    (DHCP: no lease yet, try dhclient)');
             for (const g of dev.vrrp?.table() || []) if (g.ifname === n && g.state === 'master') say(`    inet ${g.vip}/32 (VRRP ${g.vrid} virtual address)`);
+            for (const a of dev.l3.v6.ifnames().includes(n) ? dev.l3.v6.addrs(n) : []) say(inet6Line(a));
           }
         }
         return;
@@ -1556,9 +1603,10 @@ export function runCommand(dev, line) {
       }
       if (/^n(eigh|eighbor)?$/.test(sub)) {
         if (p[2] === 'flush') { dev.l3.arp.clear(); sim.record(dev, 'info', 'ARP table flushed', { tag: 'arp-flushed' }); return say('OK'); }
-        const t = dev.l3.arpTable();
-        if (!t.length) return say('(empty)');
+        const t = dev.l3.arpTable(), t6 = dev.l3.v6.neighborTable();
+        if (!t.length && !t6.length) return say('(empty)');
         for (const e of t) say(`${e.ip} dev ${e.ifname}${e.mac ? ' lladdr ' + e.mac : ''} ${e.state}`);
+        for (const e of t6) say(`${e.ip} dev ${e.ifname}${e.mac ? ' lladdr ' + e.mac : ''}${e.router ? ' router' : ''} ${e.state}`);
         return;
       }
       return say('Unknown ip command. Type help.');
@@ -1616,12 +1664,16 @@ export function runCommand(dev, line) {
     }
     if (p[0] === 'curl' && dev.l3) {
       const u = p.slice(1).find(x => !x.startsWith('-')) || '';
-      const m = u.match(/^(?:http:\/\/)?([a-zA-Z0-9.-]+)(?::(\d+))?\/?$/);
-      if (!m) { say(`$ ${cmd}`); return say('Syntax: curl http://10.0.0.10/ or curl http://web.lab:8080/'); }
+      const m = u.match(/^(?:http:\/\/)?(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(?::(\d+))?\/?$/);
+      if (!m) { say(`$ ${cmd}`); return say('Syntax: curl http://10.0.0.10/, curl http://[2001:db8::80]/ or curl http://web.lab:8080/'); }
       const port = m[2] ? Number(m[2]) : 80;
-      if (isIp(m[1])) { dev.curl(m[1], port); return; }
+      const host = m[1].replace(/^\[|\]$/g, '');
+      const family = p.includes('-6') ? 6 : p.includes('-4') ? 4 : 0;
+      if (isIp(host)) { dev.curl(host, port); return; }
+      if (isIp6(host)) { dev.curl(norm6(host), port); return; }
       say(`$ ${cmd}`);
-      dev.resolve(m[1], ip => ip ? dev.curl(ip, port, { noEcho: true }) : say(`curl: (6) Could not resolve host: ${m[1]}`)); return;
+      if (!dev.resolve) return say(`curl: (6) Could not resolve host: ${host} (no DNS on this device)`);
+      dev.resolve(host, ip => ip ? dev.curl(ip, port, { noEcho: true }) : say(`curl: (6) Could not resolve host: ${host}`), { family }); return;
     }
     if (p[0] === 'nc' && dev.l3) {
       const args = p.slice(1).filter(x => !x.startsWith('-'));
@@ -1664,6 +1716,23 @@ export function runCommand(dev, line) {
       if (sub === 'flush_all') { const n = r.flush(); dev.record('info', `cache flushed (${n} entr${n === 1 ? 'y' : 'ies'} removed)`, { tag: 'dns-flush' }); return say(`ok removed ${n} rrsets`); }
       if (sub === 'flush' && p[2]) { const n = r.flush(p[2]); dev.record('info', `cache entries for ${fqdn(p[2])} removed`, { tag: 'dns-flush', data: { name: p[2] } }); return say(`ok removed ${n} rrsets`); }
       return say('Syntax: unbound-control dump_cache | flush_all | flush <name>');
+    }
+    if (p[0] === 'show' && p[1] === 'ipv6' && dev.l3) {
+      if (p[2] === 'route') return showIpv6Route(dev, say);
+      if (/^neigh/.test(p[2] || '')) return ip6Command(dev, ['ip', 'neigh'], say);
+      return say('Syntax: show ipv6 route | show ipv6 neighbors');
+    }
+    if (p[0] === 'rdisc6' && dev.l3) {
+      const ifn = p[1] || 'eth1';
+      if (!dev.l3.v6.on) { say(`$ ${cmd}`); return say('rdisc6: IPv6 is turned off on this device'); }
+      if (!dev.l3.v6.ifnames().includes(ifn)) { say(`$ ${cmd}`); return say(`rdisc6: ${ifn}: no such IPv6 interface`); }
+      dev.rdisc6(ifn); return;
+    }
+    if (p[0] === 'sysctl' && /^net\.ipv6\.conf\.(all|default)\.disable_ipv6=[01]$/.test(p[1] || '') && dev.cfg.ipv6) {
+      dev.cfg.ipv6.enabled = p[1].endsWith('=0');
+      sim.record(dev, 'info', `IPv6 ${dev.cfg.ipv6.enabled ? 'turned on' : 'turned off'}`, { tag: 'v6-toggle' });
+      sim.configChanged(dev.id);
+      return say(p[1].replace('=', ' = '));
     }
     if (p[0] === 'ss' && dev.l3) {
       const f = p.slice(1).join('');
@@ -1838,6 +1907,99 @@ export function runCommand(dev, line) {
 }
 
 export { PORTS };
+
+// ---------------------------------------------------------------- IPv6 commands
+function inet6Line(a) {
+  const flags = a.state === 'duplicate' ? ' dadfailed tentative' : a.state === 'tentative' ? ' tentative' : '';
+  return `    inet6 ${a.ip}/${a.len} scope ${a.scope}${a.origin === 'slaac' ? ' dynamic mngtmpaddr' : ''}${flags}`;
+}
+function route6Text(r, dev) {
+  const dst = r.len === 0 ? 'default' : `${r.net}/${r.len}`;
+  if (r.proto === 'C' || r.proto === 'K') return `${dst} dev ${r.dev} proto kernel metric 256`;
+  if (r.proto === 'RA') return `${dst} via ${r.via} dev ${r.dev} proto ra metric 1024 expires ${Math.max(0, Math.round((r.until - dev.sim.time) / 1000))}sec`;
+  if (!r.dev) return `${dst} via ${r.via}  (inactive: next hop not on any connected link${isLinkLocal6(r.via) ? ', a link-local next hop needs "dev"' : ''})`;
+  return `${dst} via ${r.via} dev ${r.dev} metric 1024`;
+}
+function showIpv6Route(dev, say) {
+  if (!dev.l3.v6.on) return say('IPv6 is turned off on this device');
+  say('Codes: K - kernel route, C - connected, S - static, R - router advertisement');
+  for (const r of dev.l3.v6.routes()) {
+    const code = { C: 'C>*', K: 'K>*', S: r.dev ? 'S>*' : 'S  ', RA: 'R>*' }[r.proto];
+    const dst = `${r.net}/${r.len}`;
+    say(r.via ? `${code} ${dst} [${r.proto === 'S' ? (r.distance || 1) + '/0' : '0/1024'}] via ${r.via}, ${r.dev || 'inactive'}` : `${code} ${dst} is directly connected, ${r.dev}`);
+  }
+}
+function ip6Command(dev, p, say) {
+  const sim = dev.sim, v6 = dev.l3.v6;
+  const sub = p[1] || '';
+  if (!v6.on && !/^a(ddr|ddress)?$/.test(sub)) return say('IPv6 is turned off on this device (Configuration, Add a feature, IPv6, or sysctl net.ipv6.conf.all.disable_ipv6=0)');
+  if (/^a(ddr|ddress)?$/.test(sub)) {
+    const act = p[2];
+    if (act === 'add' || act === 'del') {
+      const raw = p[3] || '', ifn = p[p.indexOf('dev') + 1];
+      const c = parseCidr6(raw.includes('/') ? raw : raw + '/64');
+      if (!c || !isIp6(raw.split('/')[0]) || p.indexOf('dev') < 0 || !dev.cfg.ifaces?.[ifn]) return say(`Syntax: ip -6 addr ${act} 2001:db8:1::1/64 dev eth1`);
+      const addr = `${norm6(raw.split('/')[0])}/${c.len}`;
+      const ifc = dev.cfg.ifaces[ifn];
+      ifc.ip6 = (Array.isArray(ifc.ip6) ? ifc.ip6 : []).filter(x => norm6(x.split('/')[0]) !== norm6(raw.split('/')[0]));
+      if (act === 'add') { ifc.ip6.push(addr); dev.cfg.ipv6.enabled = true; }
+      sim.record(dev, 'info', `IPv6 address ${addr} ${act === 'add' ? 'set on ' + ifn : 'removed from ' + ifn}`, { tag: 'addr-changed', data: { ifname: ifn, v6: true } });
+      sim.configChanged(dev.id);
+      return say('OK');
+    }
+    if (!v6.on) return say('(IPv6 is turned off)');
+    for (const n of v6.ifnames()) {
+      say(`${n}: <${dev.l3.linkUp(n) ? 'UP,LOWER_UP' : 'NO-CARRIER'}> mtu ${dev.l3.mtu(n)}`);
+      for (const a of v6.addrs(n)) say(inet6Line(a));
+    }
+    return;
+  }
+  if (/^r(oute)?$/.test(sub)) {
+    const act = p[2];
+    if (act === 'get') {
+      const dst = p[3];
+      if (!isIp6(dst)) return say('Please enter an IPv6 address.');
+      if (v6.isOwn(dst)) return say(`local ${norm6(dst)} dev lo  (own address)`);
+      const r = v6.lookup(norm6(dst));
+      if (!r) return say('RTNETLINK answers: Network is unreachable');
+      return say(`${norm6(dst)} from :: ${r.via ? 'via ' + r.via + ' ' : ''}dev ${r.dev} src ${v6.srcFor(norm6(dst))}   [match: ${r.net}/${r.len}]`);
+    }
+    if (act === 'add' || act === 'del' || act === 'delete') {
+      const net = p[3] === 'default' ? { net: '::', len: 0 } : parseCidr6(p[3] || '');
+      if (!net) return say('Syntax: ip -6 route add 2001:db8:2::/64 via 2001:db8:12::2   or   ip -6 route add default via fe80::1 dev eth1');
+      const key = `${net.net}/${net.len}`;
+      const same = r => { const c = parseCidr6(r.dst === 'default6' ? '::/0' : r.dst); return c && `${c.net}/${c.len}` === key; };
+      dev.cfg.routes ??= [];
+      if (act === 'add') {
+        const via = p[p.indexOf('via') + 1];
+        if (p.indexOf('via') < 0 || !isIp6(via)) return say('Syntax: ip -6 route add 2001:db8:2::/64 via 2001:db8:12::2 [dev eth2]');
+        if (dev.cfg.routes.some(same)) return say('RTNETLINK answers: File exists');
+        const ifn = p.indexOf('dev') > 0 ? p[p.indexOf('dev') + 1] : null;
+        if (isLinkLocal6(via) && !ifn && v6.ifnames().length > 1) return say('RTNETLINK answers: No route to host (a link-local next hop needs "dev eth1")');
+        dev.cfg.routes.push({ dst: key, via: norm6(via), ...(ifn ? { dev: ifn } : {}) });
+      } else {
+        const before = dev.cfg.routes.length;
+        dev.cfg.routes = dev.cfg.routes.filter(r => !same(r));
+        if (before === dev.cfg.routes.length) return say('RTNETLINK answers: No such process');
+      }
+      sim.record(dev, 'info', `IPv6 route ${key} ${act === 'add' ? 'added' : 'removed'}`, { tag: 'route-changed', data: { dst: key, act, v6: true } });
+      sim.configChanged(dev.id);
+      return say('OK');
+    }
+    const rs = v6.routes();
+    if (!rs.length) return say('(no IPv6 routes)');
+    for (const r of rs) say(route6Text(r, dev));
+    return;
+  }
+  if (/^n(eigh|eighbor)?$/.test(sub)) {
+    if (p[2] === 'flush') { v6.nd.clear(); sim.record(dev, 'info', 'IPv6 neighbor cache flushed', { tag: 'nd-flushed' }); return say('OK'); }
+    const t = v6.neighborTable();
+    if (!t.length) return say('(empty)');
+    for (const e of t) say(`${e.ip} dev ${e.ifname}${e.mac ? ' lladdr ' + e.mac : ''}${e.router ? ' router' : ''} ${e.state}`);
+    return;
+  }
+  return say('Unknown ip -6 command. Try ip -6 addr, ip -6 route, ip -6 neigh.');
+}
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js/course"
   cat > "$W/js/course/helpers.js" <<'__PACKETPILOT_FILE_END__'
@@ -1883,11 +2045,11 @@ import m8 from './m8.js';
 import m9 from './m9.js';
 import m10 from './m10.js';
 import m11 from './m11.js';
+import m12 from './m12.js';
 
 // Display order: all of layer 2, then layer 3, VLAN/VXLAN, transport, then the network services
-export const MODULES = [m1, m4, m2, m3, m5, m11, m6, m7, m8, m9, m10];
+export const MODULES = [m1, m4, m2, m12, m3, m5, m11, m6, m7, m8, m9, m10];
 export const UPCOMING = [
-  { title: 'IPv6', text: 'Addresses, Neighbor Discovery instead of ARP, SLAAC and dual stack.' },
   { title: 'VPN', text: 'WireGuard and IPsec between sites, MTU with a double envelope.' },
   { title: 'BGP and EVPN', text: 'Routing between networks and a real control plane for VXLAN.' }
 ]
@@ -2382,6 +2544,155 @@ ${note('"DNS propagation" is not a process that pushes changes around. Nothing i
           { text: 'Flush the cache of the resolver (<code>unbound-control flush_all</code>) and resolve www.firma.lab again. It has to start at the root.', check: flushedThenResolved }],
         hints: ['Changing a record: click ns1, Configuration, DNS records, and edit the address in the www.firma.lab row.', 'unbound-control dump_cache on the resolver shows every cache entry with the TTL that is left.', 'The negative entry for blog.firma.lab lives as long as the SOA of firma.lab says: 60 seconds here.'],
         outro: '<p>The cache made the second answer instant, and the same cache delivered the old address after the move, for at most the TTL. That is why operators lower the TTL before a move. Flushing helps on your own resolver, but not on the thousands of resolvers of other people.</p>' }
+    ] }
+  ]
+};
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/course"
+  cat > "$W/js/course/m12.js" <<'__PACKETPILOT_FILE_END__'
+import { note, tag } from './helpers.js';
+import { ipv6Topo } from '../presets.js';
+import { macFor, slaacFor, solicitedNode, mcastMac6, linkLocalFor } from '../net.js';
+
+const M = id => macFor(id + '/eth1');
+const A = id => slaacFor('2001:db8:1::', M(id));
+const ifId = id => A(id).split(':').slice(4).join(':');
+const ADDR = {
+  mac: [[M('pc1'), 'pc1'], [M('pc2'), 'pc2'], [M('r1'), 'r1 eth1'], [mcastMac6(solicitedNode(A('pc2'))), 'multicast 33:33:ff:…'], ['33:33:00:00:00:01', 'multicast all nodes']],
+  ip6: [[A('pc1'), 'pc1 (SLAAC)'], [A('pc2'), 'pc2 (SLAAC)'], [linkLocalFor(M('pc1')), 'pc1 link-local'], [linkLocalFor(M('r1')), 'r1 eth1 link-local'], ['2001:db8:1::1', 'r1 eth1'],
+    ['ff02::1', 'all nodes'], ['ff02::2', 'all routers'], [solicitedNode(A('pc2')), 'solicited-node group'], ['::', 'unspecified']]
+};
+const v6Ping = (from, to) => tag(from, 'ping-done', d => d.dst === to && d.received > 0);
+const globalOf = (sim, id) => sim.dev(id)?.l3.v6.allAddrs().some(a => a.scope === 'global' && a.state === 'preferred');
+const curl6 = from => tag(from, 'tcp-done', d => d.ok && String(d.dst).includes(':'));
+
+export default {
+  id: 'm12', title: 'IPv6', bands: ['ip', 'icmp'],
+  text: '128-bit addresses, no broadcast and no ARP: Neighbor Discovery, addresses that configure themselves, and two protocols side by side.',
+  lessons: [
+    { id: 'm12-l1', title: 'Addresses with 128 bits', minutes: 14, steps: [
+      { type: 'theory', title: 'Why a new IP?', html: `
+<p>IPv4 has about 4.3 billion addresses, far too few for every phone, PC and sensor. NAT bought time, but it breaks the original idea that every device can reach every other one. IPv6 uses <b>128 bits</b>: enough for every grain of sand, and much more structure.</p>
+<h2>Writing an address</h2>
+<p>Eight groups of 16 bits in hex, separated by colons. Two rules shorten it:</p>
+<table><tr><th>Rule</th><th>Example</th></tr>
+<tr><td>Full</td><td><code>2001:0db8:0000:0000:0000:ff00:0042:8329</code></td></tr>
+<tr><td>Drop leading zeros in each group</td><td><code>2001:db8:0:0:0:ff00:42:8329</code></td></tr>
+<tr><td>Replace <b>one</b> run of zero groups with <code>::</code></td><td><code>2001:db8::ff00:42:8329</code></td></tr></table>
+<p><code>::</code> may appear only once, otherwise nobody knows how many zeros each one stands for. A LAN is always a <b>/64</b>: the first 64 bits are the network (prefix), the last 64 bits identify the interface. A company typically gets a /48, a home a /56: thousands of /64 networks.</p>
+<h2>Kinds of addresses</h2>
+<table><tr><th>Prefix</th><th>Kind</th><th>Meaning</th></tr>
+<tr><td><code>2000::/3</code></td><td>Global unicast</td><td>reachable on the internet, like a public IPv4 address</td></tr>
+<tr><td><code>fe80::/10</code></td><td>Link-local</td><td>every interface has one, valid only on its own link, never routed</td></tr>
+<tr><td><code>fc00::/7</code></td><td>Unique local (ULA)</td><td>private, like 10.0.0.0/8</td></tr>
+<tr><td><code>ff00::/8</code></td><td>Multicast</td><td>to a group, e.g. <code>ff02::1</code> all nodes, <code>ff02::2</code> all routers</td></tr>
+<tr><td><code>::1</code> / <code>::</code></td><td>Loopback / unspecified</td><td>127.0.0.1 / "no address yet"</td></tr></table>
+${note('IPv6 has <b>no broadcast</b>. Whatever went to everyone in IPv4 now goes to a multicast group, and only the devices that joined it look at it.')}
+<h2>A leaner header</h2>
+<p>The IPv6 header always has 40 bytes. There is no checksum (layer 2 and TCP/UDP check anyway), and <b>routers never fragment</b>: a packet that is too large is dropped and the sender gets an ICMPv6 <i>Packet Too Big</i>. The TTL is now called <b>hop limit</b>.</p>` },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'Shorten 2001:0db8:0000:0000:0001:0000:0000:0001 as far as possible.', input: ['2001:db8::1:0:0:1'], explain: 'Only one :: is allowed. With two equal runs, the first one is replaced.' },
+        { q: 'Which address is link-local?', options: ['2001:db8::1', 'fe80::a8c1:abff:fe12:3456', 'ff02::1', 'fd00::1'], correct: 1 },
+        { q: 'How many bits does the network part of a normal IPv6 LAN have?', input: ['64'] },
+        { q: 'A router receives an IPv6 packet of 1500 bytes for a link with MTU 1400. What does it do?', options: ['Fragment it', 'Drop it and send Packet Too Big to the sender', 'Send it anyway', 'Shorten the payload'], correct: 1 },
+        { q: 'What replaces the broadcast of IPv4?', options: ['Anycast', 'Multicast to groups like ff02::1', 'Nothing, everything is unicast', 'ARP'], correct: 1 }] }
+    ] },
+
+    { id: 'm12-l2', title: 'Neighbor Discovery instead of ARP', minutes: 16, steps: [
+      { type: 'theory', title: 'Finding neighbors and routers', html: `
+<p>ARP is gone. Its job is done by <b>Neighbor Discovery (NDP)</b>, which is part of ICMPv6:</p>
+<table><tr><th>Message</th><th>Type</th><th>Job</th></tr>
+<tr><td>Neighbor Solicitation (NS)</td><td>135</td><td>"Who has 2001:db8:1::20? Tell me your MAC", like an ARP request</td></tr>
+<tr><td>Neighbor Advertisement (NA)</td><td>136</td><td>"2001:db8:1::20 is at aa:c1:…", like an ARP reply</td></tr>
+<tr><td>Router Solicitation (RS)</td><td>133</td><td>a host asks: "routers, are you there?"</td></tr>
+<tr><td>Router Advertisement (RA)</td><td>134</td><td>a router announces itself, its prefixes and optionally a DNS server</td></tr></table>
+<h2>Solicited-node multicast</h2>
+<p>An ARP request goes to every device. An NS only goes to the <b>solicited-node group</b> of the wanted address: <code>ff02::1:ff</code> plus its last 24 bits. Only devices whose address ends the same way have joined this group, so everyone else's network card filters the frame away without bothering the CPU.</p>
+<pre>wanted:   2001:db8:1::a8c1:abff:fe12:3456
+group:    ff02::1:ff12:3456
+MAC:      33:33:ff:12:34:56   (33:33 + last 32 bits of the group)</pre>
+<h2>SLAAC: addresses without DHCP</h2>
+<ol><li>The interface forms its link-local address <code>fe80::</code> + interface ID.</li>
+<li><b>Duplicate address detection</b> (DAD): it sends an NS for this address from <code>::</code>. If nobody answers within a second, the address is unique.</li>
+<li>It sends an RS to <code>ff02::2</code>. The router answers with an RA: prefix <code>2001:db8:1::/64</code>, "use me as your default router", maybe a DNS server (RDNSS).</li>
+<li>The host appends its interface ID to the prefix, runs DAD again, done.</li></ol>
+<p>The interface ID comes from the MAC (<b>EUI-64</b>): flip the 7th bit of the first byte and insert <code>ff:fe</code> in the middle. <code>aa:c1:ab:12:34:56</code> becomes <code>a8c1:abff:fe12:3456</code>. Modern systems use random IDs instead (privacy extensions), so a device cannot be tracked by its address.</p>
+${note('The default gateway in IPv6 is the <b>link-local</b> address of the router, learned from the RA. That is why <code>ip -6 route</code> shows <code>default via fe80::…</code>.')}` },
+      { type: 'stack', title: 'A PC boots into an IPv6 LAN', hint: 'From power on to the first ping to a server. The top is the first step.',
+        items: [{ name: 'Form the link-local address fe80::…', kind: 'ip' }, { name: 'DAD: NS for the link-local address from ::', kind: 'icmp' },
+          { name: 'RS to ff02::2', kind: 'icmp' }, { name: 'RA from the router: prefix 2001:db8:1::/64', kind: 'icmp' },
+          { name: 'Form 2001:db8:1::<interface ID> (SLAAC)', kind: 'ip' }, { name: 'DAD for the global address', kind: 'icmp' },
+          { name: 'NS to the solicited-node group of the router', kind: 'icmp' }, { name: 'Echo Request to the server via the router', kind: 'icmp' }],
+        explain: 'Every address is tested before use. The router is known from the RA, but its MAC still has to be resolved with NS/NA before the first packet can leave.' },
+      { type: 'build', title: 'Build the Neighbor Solicitation', blocks: ['eth', 'vlan', 'arp', 'ip', 'ipv6', 'icmp', 'icmp6', 'udp', 'data'],
+        task: `<p><b>pc1</b> (${A('pc1')}) wants to ping <b>pc2</b> (${A('pc2')}) in the same LAN, but does not know its MAC yet. Build the frame pc1 sends first.</p>`,
+        addresses: ADDR,
+        expected: [
+          { block: 'eth', fields: { dst: mcastMac6(solicitedNode(A('pc2'))), src: M('pc1'), type: '0x86dd' } },
+          { block: 'ipv6', fields: { src: A('pc1'), dst: solicitedNode(A('pc2')), proto: '58', ttl: '255' } },
+          { block: 'icmp6', fields: { type: '135', target: A('pc2') } }],
+        explain: 'The NS goes to the solicited-node group of pc2 (ff02::1:ff + the last 24 bits), on the MAC 33:33 + the last 32 bits of the group. The hop limit is always 255: a receiver drops NDP messages with a lower value, so they cannot come from outside the link.' },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'Which solicited-node group belongs to 2001:db8:1::42:abcd?', input: ['ff02::1:ff42:abcd'] },
+        { q: 'From which source address does a host send the NS for duplicate address detection?', options: ['Its link-local address', '::', 'ff02::1', 'The address it is testing'], correct: 1,
+          explain: 'The address is not yet allowed to be used, so the NS comes from the unspecified address.' },
+        { q: 'Where does a host get its IPv6 default gateway from with SLAAC?', options: ['From DHCP', 'From the Router Advertisement', 'From DNS', 'It is always ::1'], correct: 1 },
+        { q: 'Interface ID by EUI-64 for the MAC 00:11:22:33:44:55?', input: ['211:22ff:fe33:4455', '0211:22ff:fe33:4455'], explain: '00 with the 7th bit flipped is 02, then ff:fe goes in the middle: 0211:22ff:fe33:4455.' }] }
+    ] },
+
+    { id: 'm12-l3', title: 'IPv6 in the LAN', minutes: 18, steps: [
+      { type: 'lab', title: 'Dual stack in action', topo: () => ipv6Topo(), edit: 'config',
+        intro: '<p>pc1 and pc2 have an IPv4 address and get IPv6 by themselves: r1 sends router advertisements on the LAN. The servers have static IPv6 addresses, r1 and r2 static IPv6 routes. The name www.lab has an A and an AAAA record.</p>',
+        presets: { pc1: ['ip -6 addr', 'ip -6 route', 'rdisc6 eth1', 'ping -6 -c 2 2001:db8:2::80', 'ip -6 neigh', 'ping -6 -c 1 ff02::1%eth1', 'curl http://www.lab/'], r1: ['show ipv6 route', 'ip -6 neigh'] },
+        goals: [
+          { text: 'Look at the IPv6 addresses of pc1 (<code>ip -6 addr</code>). Which prefix did pc1 get from r1?', ask: true, expect: () => ['2001:db8:1::/64', '2001:db8:1::', '2001:db8:1:0::/64'], placeholder: 'prefix' },
+          { text: 'And what is pc1\'s interface ID, the last 64 bits?', ask: true, expect: () => [ifId('pc1'), '::' + ifId('pc1')], placeholder: 'xxxx:xxxx:xxxx:xxxx' },
+          { text: 'Ping the web server over IPv6: <code>ping -6 2001:db8:2::80</code>.', check: v6Ping('pc1', '2001:db8:2::80') },
+          { text: 'To forward your first ping, r1 had to find r2. To which multicast group did it send its Neighbor Solicitation for 2001:db8:12::2? (filter the log to r1)', ask: true, expect: () => [solicitedNode('2001:db8:12::2')], placeholder: 'ff02::…' },
+          { text: 'Ping all nodes of the LAN at once: <code>ping -6 -c 1 ff02::1%eth1</code>.', check: tag('pc1', 'ping-done', d => String(d.dst).startsWith('ff02::1') && (d.from || []).length >= 2) },
+          { text: 'Open <code>http://www.lab/</code> with curl. Which address does curl use?', ask: true, expect: () => ['2001:db8:2::80'] }],
+        hints: ['ip -6 addr shows "scope global dynamic" for the SLAAC address.', 'The interface ID is everything after 2001:db8:1:0:', 'The NS of r1 says "asks its solicited-node group …".'],
+        outro: '<p>pc1 asked DNS for AAAA first, because it has a global IPv6 address and an IPv6 default route, and preferred IPv6, like every modern operating system. The group ff02::1 reached pc2 and r1 at once: multicast replaces the broadcast. And the hop limit of the reply was 62, two routers on the way, just like the TTL in IPv4.</p>' }
+    ] },
+
+    { id: 'm12-l4', title: 'Building IPv6 routing yourself', minutes: 20, steps: [
+      { type: 'theory', title: 'What a router needs for IPv6', html: `
+<p>A router does not pass anything on just because it has IPv6 addresses. Three things are needed:</p>
+<table><tr><th>What</th><th>Linux / FRR</th><th>Effect</th></tr>
+<tr><td>Router advertisements on the LAN</td><td><code>ipv6 nd prefix 2001:db8:1::/64</code> (radvd, FRR)</td><td>hosts get a prefix and a default router</td></tr>
+<tr><td>Routes to the other networks</td><td><code>ip -6 route add 2001:db8:2::/64 via 2001:db8:12::2</code></td><td>like IPv4: static, OSPFv3 or BGP</td></tr>
+<tr><td>Optionally DNS in the RA</td><td>RDNSS option</td><td>hosts find a DNS server without DHCPv6</td></tr></table>
+<p>The RA has two flags for DHCPv6: <b>M</b> (managed: take addresses from DHCPv6) and <b>O</b> (other: only DNS and similar from DHCPv6). With both off, SLAAC and RDNSS do everything.</p>
+${note('IPv6 has no NAT in normal networks: every device has a global address. The firewall of the router decides what may come in, not the lack of a translation entry.', true)}` },
+      { type: 'lab', title: 'From link-local to the internet', topo: () => ipv6Topo({ ra: false, rdnss: false, routes6: false }), edit: 'config',
+        intro: '<p>The routers have their IPv6 addresses, but that is all: no router advertisements, no IPv6 routes, no DNS for the PCs. pc1 and pc2 only have link-local addresses.</p>',
+        presets: { pc1: ['ip -6 addr', 'ip -6 route', 'rdisc6 eth1', 'ping -6 -c 2 2001:db8:2::80', 'curl http://www.lab/'], r1: ['show ipv6 route', 'ip -6 route add 2001:db8:2::/64 via 2001:db8:12::2'], r2: ['show ipv6 route', 'ip -6 route add 2001:db8:1::/64 via 2001:db8:12::1'] },
+        goals: [
+          { text: 'Turn on router advertisements on r1 eth1 (Configuration, IPv6, check RA). pc1 forms its global address.', check: sim => globalOf(sim, 'pc1') },
+          { text: 'Give r1 and r2 the routes to each other\'s networks. pc1 then pings the web server 2001:db8:2::80.', check: v6Ping('pc1', '2001:db8:2::80') },
+          { text: 'Put the DNS server 2001:db8:2::53 into the router advertisement of r1. pc1 learns it.', check: sim => (sim.dev('pc1')?.l3.v6.rdnss || []).includes('2001:db8:2::53') },
+          { text: 'Open http://www.lab/ on pc1. It goes over IPv6.', check: curl6('pc1') },
+          { text: 'Through which router address does pc1 reach everything outside its LAN? (ip -6 route on pc1)', ask: true, expect: sim => [sim.dev('r1') ? linkLocalFor(sim.dev('r1').mac('eth1')) : ''], placeholder: 'fe80::…' }],
+        hints: ['A route needs both routers: r1 must know 2001:db8:2::/64 and r2 must know the way back to 2001:db8:1::/64.', 'The router advertisement is repeated every 30 seconds and sent at once after a change.', 'The default route of pc1 points to a link-local address.'],
+        outro: '<p>The PCs never got a manual setting: prefix, default router and DNS server all came from the router advertisement. The default router is the link-local address of r1, which stays the same even if the global prefix changes.</p>' }
+    ] },
+
+    { id: 'm12-l5', title: 'Dual stack and the way to IPv6', minutes: 10, steps: [
+      { type: 'theory', title: 'Two protocols side by side', html: `
+<p>The internet will not switch over in one night. Most networks run <b>dual stack</b>: every device has an IPv4 and an IPv6 address, and every application decides which one to use.</p>
+<ol><li>The name is resolved for <b>AAAA</b> and <b>A</b>.</li>
+<li>If the device has a global IPv6 address and a default route, IPv6 is preferred (RFC 6724).</li>
+<li><b>Happy Eyeballs</b>: browsers start IPv6 and, after a short head start of 50 to 250 ms, IPv4 in parallel. Whichever connects first wins. A broken IPv6 path then only costs a fraction of a second.</li></ol>
+<h2>When only one side has IPv6</h2>
+<table><tr><th>Technique</th><th>Idea</th></tr>
+<tr><td>NAT64 + DNS64</td><td>An IPv6-only network reaches IPv4 servers: DNS invents an AAAA record inside <code>64:ff9b::/96</code>, a gateway translates.</td></tr>
+<tr><td>464XLAT</td><td>Phones on IPv6-only mobile networks still offer IPv4 to old apps.</td></tr>
+<tr><td>Tunnels (6in4)</td><td>IPv6 packets travel inside IPv4 packets across an IPv4-only network.</td></tr></table>
+${note('ICMPv6 must not be blocked wholesale. Without Neighbor Discovery nothing works on the LAN, and without <i>Packet Too Big</i> large packets silently disappear, because routers never fragment.', true)}` },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'A PC has 2001:db8:1::10 and a default route via fe80::1. The name has A and AAAA. Which one does it use first?', options: ['A', 'AAAA'], correct: 1 },
+        { q: 'A firewall drops all ICMPv6. What breaks first?', options: ['Only ping', 'Neighbor Discovery on the LAN, and Path MTU Discovery across routers', 'Nothing', 'Only DNS'], correct: 1 },
+        { q: 'What does DNS64 do?', options: ['Stores IPv6 addresses in 64 bits', 'Synthesizes an AAAA record for an IPv4-only server so that NAT64 can translate', 'Resolves names twice', 'Blocks IPv4'], correct: 1 }] }
     ] }
   ]
 };
@@ -3819,10 +4130,11 @@ __PACKETPILOT_FILE_END__
   cat > "$W/js/engine.js" <<'__PACKETPILOT_FILE_END__'
 // PacketPilot simulation engine: event-driven, no DOM
 import { BCAST, VXLAN_PORT, PROTO, STP_MAC, isGroupMac, macFor, inNet, parseCidr, isIp,
-  netOf, intToIp, ipToInt, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp, dnsLen } from './net.js';
+  netOf, intToIp, ipToInt, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp, dnsLen, isIp6, isMcast6, IP6_HDR, isAnyIp } from './net.js';
 const ipCmp = (a, b) => (ipToInt(a) ?? 0) - (ipToInt(b) ?? 0);
-import { ethFrame, arpPacket, ipPacket, icmp, udp, tcp, ipChecksum, summary, icmpName, fmtBid } from './packets.js';
+import { ethFrame, arpPacket, ipPacket, icmp, icmp6, udp, tcp, ipChecksum, summary, icmpName, fmtBid } from './packets.js';
 import { serveDns, rrText, fqdn, resolverOf } from './dns.js';
+import { Ip6, icmp6Name } from './ipv6.js';
 import { dhcpOn67, natIn, natOut, Vrrp, Ospf, Bfd, BFD_PORT, DHCP_TIMING, vrrpMac } from './services.js';
 
 export const PORTS = {
@@ -4002,10 +4314,12 @@ export function flowHash(ip, policy = 'l3') {
   return (h >>> 0) % 9973;
 }
 export function isHello(f) {
+  if (f?.type === 'ipv6') return !!f.payload.l4?.periodic;
   const l4 = f?.type === 'ipv4' ? f.payload.l4 : null;
   return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello') || (l4.kind === 'udp' && l4.payload?.kind === 'bfd'));
 }
 export function traceOf(f) {
+  if (f?.type === 'ipv6') return f.payload.trace;
   if (!f || f.type !== 'ipv4') return null;
   const l4 = f.payload.l4;
   if (l4?.kind === 'udp' && l4.payload?.kind === 'vxlan') return traceOf(l4.payload.frame) ?? f.payload.trace;
@@ -4024,6 +4338,7 @@ export function normalizeDevice(cfg) {
     cfg.resolver ??= '';
     cfg.dnsZone ??= '';
     cfg.recursion = { enabled: false, roots: '', ...(cfg.recursion || {}) };
+    cfg.ipv6 = { enabled: false, slaac: true, gw: '', ...(cfg.ipv6 || {}) };
   }
   if (t === 'router') {
     for (const p of PORTS.router) cfg.ifaces[p] ??= { ip: '', prefix: 24 };
@@ -4035,6 +4350,7 @@ export function normalizeDevice(cfg) {
     cfg.bfd = { enabled: false, interval: 300, mult: 3, ospf: false, ...(cfg.bfd || {}) };
     cfg.maxPaths ??= 4;
     cfg.ecmpHash ??= 'l3';
+    cfg.ipv6 = { enabled: false, ra: [], rdnss: '', ...(cfg.ipv6 || {}) };
     cfg.ospf.ifaces ??= {};
   }
   if (t === 'router' || t === 'server') cfg.dhcpServer = { enabled: false, pools: [], ...(cfg.dhcpServer || {}) };
@@ -4101,6 +4417,7 @@ class L3 {
     this.arp = new Map(); this.pending = new Map(); this.pmtu = new Map();
     this.reasm = new Map(); this.sessions = new Set(); this.tcp = new Map();
     this.lease = null; this.natTable = []; this.dhcpLeases = new Map(); this.resolverSvc = null;
+    if (this.v6) this.v6.reset(); else this.v6 = new Ip6(this);
   }
   get cfg() { return this.dev.cfg; }
   get forwarding() { return this.cfg.type === 'router' ? this.cfg.forwarding !== false : false; }
@@ -4112,7 +4429,7 @@ class L3 {
       .map(([name, v]) => ({ name, ip: v.ip, prefix: Number(v.prefix ?? 24), vlan: v.vlan ? Number(v.vlan) : null, phys: v.parent || name }));
   }
   gateway() { return isIp(this.cfg.gw) ? this.cfg.gw : this.lease?.router || ''; }
-  resolver() { return isIp(this.cfg.resolver) ? this.cfg.resolver : this.lease?.dns || ''; }
+  resolver() { return isAnyIp(this.cfg.resolver) ? this.cfg.resolver : this.lease?.dns || this.v6?.rdnss[0] || ''; }
   phys(ifname) { return this.cfg.ifaces?.[ifname]?.parent || ifname; }
   logicalFor(phys, vid) {
     for (const [k, v] of Object.entries(this.cfg.ifaces || {})) {
@@ -4121,7 +4438,7 @@ class L3 {
     }
     return null;
   }
-  isOwn(ip) { return this.ifaces().some(i => i.ip === ip) || !!this.dev.vrrp?.ownsIp(ip); }
+  isOwn(ip) { if (String(ip).includes(':')) return this.v6.isOwn(ip); return this.ifaces().some(i => i.ip === ip) || !!this.dev.vrrp?.ownsIp(ip); }
   ifIp(ifname) { return this.ifaces().find(i => i.name === ifname)?.ip || null; }
   mtu(ifname) { return ifname === 'lo' ? 65536 : this.sim.mtuOf(this.dev.id, this.phys(ifname)); }
   linkUp(ifname) { if (ifname === 'lo') return true; const l = this.sim.linkAt(this.dev.id, this.phys(ifname)); return !!l && l.up; }
@@ -4165,6 +4482,7 @@ class L3 {
   /** One route for a packet. With several equal routes (ECMP) a hash over the flow picks
    *  one, so all packets of a flow take the same path */
   lookup(dst, pkt) {
+    if (String(dst).includes(':')) return this.v6.lookup(dst, pkt);
     const all = this.lookupAll(dst);
     if (!all.length) return null;
     const max = Math.max(1, Number(this.cfg.maxPaths ?? 4));
@@ -4175,6 +4493,7 @@ class L3 {
     return { ...cand[h % cand.length], ecmp: cand.length, hash: this.cfg.ecmpHash === 'l4' ? 'l4' : 'l3' };
   }
   srcFor(dst) {
+    if (String(dst).includes(':')) return this.v6.srcFor(dst);
     const r = this.lookup(dst);
     if (r) return this.ifIp(r.dev) || this.ifaces()[0]?.ip;
     return this.ifaces()[0]?.ip || '0.0.0.0';
@@ -4182,6 +4501,7 @@ class L3 {
 
   // ---- Sending
   output(pkt, ctx = {}) {
+    if (pkt.v === 6) return this.v6.output(pkt, ctx);
     if (this.isOwn(pkt.dst)) { this.sim.schedule(0.01, () => this.deliver(pkt, 'lo')); return { ok: true }; }
     const r = this.lookup(pkt.dst, pkt);
     if (!r) {
@@ -4321,9 +4641,11 @@ class L3 {
     const forVip = this.dev.vrrp?.accepts(ifname, frame.dst);
     if (frame.dst !== myMac && frame.dst !== BCAST && !forVip) {
       if (isGroupMac(frame.dst)) {
-        // Multicast: only routers running VRRP or OSPF listen, everyone else ignores it quietly
+        // Multicast: only routers running VRRP or OSPF listen, IPv6 nodes listen to their groups,
+        // everyone else ignores it quietly
         const k = frame.type === 'ipv4' ? frame.payload.l4?.kind : null;
-        if (!((k === 'vrrp' && this.dev.vrrp) || (k === 'ospf' && this.dev.ospf?.enabled))) return;
+        if (frame.type === 'ipv6') { if (!this.v6.acceptsMac(frame.dst)) return; }
+        else if (!((k === 'vrrp' && this.dev.vrrp) || (k === 'ospf' && this.dev.ospf?.enabled))) return;
       } else {
       this.dev.record('ignore', `sees a frame to ${frame.dst} on ${phys}: not for me, dropped`,
         { frame, tag: 'frame-not-mine', data: { type: frame.type, kind: frame.type === 'ipv4' ? frame.payload.l4?.kind : 'arp' } });
@@ -4334,6 +4656,7 @@ class L3 {
     for (const e of this.arp.values()) if (e.mac === frame.src && e.ifname === ifname && e.state !== 'INCOMPLETE') { e.t = this.sim.time; e.state = 'REACHABLE'; e.probing = false; }
     if (frame.type === 'arp') return this.rxArp(ifname, frame);
     if (frame.type === 'ipv4') return this.rxIp(ifname, frame.payload, frame);
+    if (frame.type === 'ipv6') return this.v6.rx(ifname, frame.payload, frame);
   }
   rxArp(ifname, frame) {
     const a = frame.payload;
@@ -4402,15 +4725,18 @@ class L3 {
     for (let i = 0; i < rules.length; i++) {
       const r = rules[i];
       const proto = r.proto || 'any';
-      const pn = { icmp: PROTO.ICMP, udp: PROTO.UDP, tcp: PROTO.TCP }[proto];
+      // Rules with IPv4 networks never match IPv6 packets; "any" matches both
+      if (ip.v === 6 && ((r.src && r.src !== 'any') || (r.dst && r.dst !== 'any'))) continue;
+      const pn = { icmp: ip.v === 6 ? PROTO.ICMP6 : PROTO.ICMP, udp: PROTO.UDP, tcp: PROTO.TCP }[proto];
       if (proto !== 'any' && ip.proto !== pn) continue;
-      if (proto === 'icmp' && r.icmpType !== undefined && r.icmpType !== '' && r.icmpType !== null) {
+      if (proto === 'icmp' && ip.v !== 6 && r.icmpType !== undefined && r.icmpType !== '' && r.icmpType !== null) {
         if (!ip.l4 || ip.l4.type !== Number(r.icmpType)) continue;
       }
       if ((proto === 'tcp' || proto === 'udp') && r.port) {
         if (!ip.l4 || ip.l4.dport !== Number(r.port)) continue;
       }
       const s = parseCidr(r.src || 'any'), d = parseCidr(r.dst || 'any');
+      if (ip.v === 6) return { rule: r, index: i + 1 };
       if (s && !inNet(ip.src, s.net, s.len)) continue;
       if (d && !inNet(ip.dst, d.net, d.len)) continue;
       return { rule: r, index: i + 1 };
@@ -4449,6 +4775,10 @@ class L3 {
     this.output(out, { forwarded: true, inIf });
   }
   icmpError(orig, type, code, extra = {}) {
+    if (orig.v === 6) {
+      const [t, c] = { '3/0': [1, 0], '3/1': [1, 3], '3/3': [1, 4], '3/13': [1, 1], '11/0': [3, 0], '3/4': [2, 0] }[`${type}/${code}`] || [1, 0];
+      return this.v6.icmpError(orig, t, c, extra);
+    }
     if (orig.proto === PROTO.ICMP && orig.l4 && ![0, 8].includes(orig.l4.type)) return;
     if (orig.frag && !orig.frag.first) return;
     const src = this.srcFor(orig.src);
@@ -4469,7 +4799,7 @@ class L3 {
       const full = clone(first);
       full.l4 = clone(first.frag.origL4);
       delete full.frag;
-      full.mf = false; full.fragOffset = 0; full.totalLength = IP_HDR + ip.frag.total;
+      full.mf = false; full.fragOffset = 0; full.totalLength = (ip.v === 6 ? IP6_HDR : IP_HDR) + ip.frag.total;
       this.dev.record('info', `reassembles ${r.parts.length} fragments into one packet of ${full.totalLength} bytes`, { tag: 'reassembled' });
       this.deliver(full, ifname);
     }
@@ -4478,9 +4808,10 @@ class L3 {
   deliver(ip, ifname, frame) {
     const l4 = ip.l4;
     if (!l4) return;
-    const toGroup = ip.dst === '255.255.255.255' || isMcastIp(ip.dst);
+    const toGroup = ip.dst === '255.255.255.255' || isMcastIp(ip.dst) || (ip.v === 6 && isMcast6(ip.dst));
     if (l4.kind === 'vrrp') return this.dev.vrrp?.onAdvert(ip, ifname, frame);
     if (l4.kind === 'ospf') return this.dev.ospf?.onPacket(ip, ifname, frame);
+    if (l4.kind === 'icmp6') return this.v6.deliverIcmp(ip, ifname, frame);
     // Like Linux: no answers to pings sent to a broadcast or multicast address
     if (toGroup && l4.kind !== 'udp') return;
     if (l4.kind === 'icmp') {
@@ -4566,7 +4897,7 @@ class L3 {
     const pkt = ipPacket({ src: src || this.srcFor(dst), dst, proto: PROTO.TCP, df: true, l4: seg });
     return this.output(pkt, {});
   }
-  mssFor(dst) { const r = this.lookup(dst); return (r ? this.mtu(r.dev) : 1500) - 40; }
+  mssFor(dst) { const r = this.lookup(dst); return (r ? this.mtu(r.dev) : 1500) - (isIp6(dst) ? 60 : 40); }
   onTcp(ip, frame) {
     const s = ip.l4;
     const key = `${s.dport}|${ip.src}|${s.sport}`;
@@ -4646,26 +4977,35 @@ class PingSession extends Session {
     Object.assign(this, { dst, count: o.count ?? 4, size: o.size ?? 56, df: !!o.df, ttl: o.ttl ?? 64, noEcho: !!o.noEcho });
     this.ident = IDENT++; this.seq = 0; this.sent = 0; this.received = 0; this.errors = 0; this.open = new Map();
   }
+  get v6() { return isIp6(this.dst); }
+  get hdr() { return this.v6 ? IP6_HDR : IP_HDR; }
   start() {
     this.begin();
-    if (!this.noEcho) this.dev.print(`$ ping -c ${this.count}${this.size !== 56 ? ' -s ' + this.size : ''}${this.df ? ' -M do' : ''}${this.ttl !== 64 ? ' -t ' + this.ttl : ''} ${this.dst}`);
-    this.dev.print(`PING ${this.dst}: ${this.size} bytes of data, ${IP_HDR + ICMP_HDR + this.size} byte IP packet`);
+    if (!this.noEcho) this.dev.print(`$ ping${this.v6 ? ' -6' : ''} -c ${this.count}${this.size !== 56 ? ' -s ' + this.size : ''}${this.df ? ' -M do' : ''}${this.ttl !== 64 ? ' -t ' + this.ttl : ''} ${this.dst}`);
+    this.dev.print(`PING ${this.dst}: ${this.size} bytes of data, ${this.hdr + ICMP_HDR + this.size} byte IP${this.v6 ? 'v6' : ''} packet`);
     this.sendNext();
   }
   sendNext() {
     if (this.done) return;
     const seq = ++this.seq;
-    const total = IP_HDR + ICMP_HDR + this.size;
+    const total = this.hdr + ICMP_HDR + this.size;
     const r = this.l3.lookup(this.dst);
-    if (!r && !this.l3.isOwn(this.dst)) { this.dev.print('ping: connect: Network is unreachable'); this.dev.record('err', `ping ${this.dst}: no route`, { tag: 'no-route' }); return this.finish(true); }
-    const lim = Math.min(this.l3.pmtu.get(this.dst) || Infinity, r ? this.l3.mtu(r.dev) : 65536);
+    if (this.v6 && !this.l3.v6.on) { this.dev.print('ping: connect: Address family not supported (IPv6 is turned off)'); return this.finish(true); }
+    if (!r && !this.l3.isOwn(this.dst) && !(this.v6 && isMcast6(this.dst) && this.l3.v6.lookup(this.dst))) {
+      this.dev.print(this.v6 && /^fe[89ab]|^ff/i.test(this.dst) && !this.dst.includes('%') ? `ping: ${this.dst}: link-local and multicast addresses need an interface, e.g. ${this.dst}%eth1` : 'ping: connect: Network is unreachable');
+      this.dev.record('err', `ping ${this.dst}: no route`, { tag: 'no-route' }); return this.finish(true);
+    }
+    const lim = Math.min(this.l3.pmtu.get(this.dst.split('%')[0]) || Infinity, r ? this.l3.mtu(r.dev) : 65536);
     this.sent++;
     if (this.df && total > lim) {
       this.dev.print(`ping: local error: message too long, mtu=${lim}`);
       this.dev.record('err', `Packet of ${total} bytes with DF does not fit (MTU ${lim}), rejected locally`, { tag: 'local-mtu-error', data: { mtu: lim } });
       this.errors++;
     } else {
-      const pkt = ipPacket({ src: this.l3.srcFor(this.dst), dst: this.dst, ttl: this.ttl, proto: PROTO.ICMP, df: this.df, l4: icmp(8, 0, { ident: this.ident, seq, dataLen: this.size }) });
+      const dst = this.dst.split('%')[0];
+      const pkt = this.v6 ? ipPacket({ src: this.l3.v6.srcFor(this.dst, r?.dev), dst, ttl: this.ttl, proto: PROTO.ICMP6, l4: icmp6(128, 0, { ident: this.ident, seq, dataLen: this.size }) })
+        : ipPacket({ src: this.l3.srcFor(this.dst), dst: this.dst, ttl: this.ttl, proto: PROTO.ICMP, df: this.df, l4: icmp(8, 0, { ident: this.ident, seq, dataLen: this.size }) });
+      if (this.v6) { pkt.noFrag = this.df; pkt.zone = this.dst.split('%')[1]; }
       const t0 = this.sim.time;
       const ev = this.sim.schedule(T.replyTimeout, () => { if (this.open.has(seq)) { this.open.delete(seq); this.dev.print(`icmp_seq=${seq}: no answer (timeout)`); this.checkEnd(); } });
       this.open.set(seq, { t0, ev });
@@ -4683,41 +5023,50 @@ class PingSession extends Session {
   onEchoReply(ip) {
     const l4 = ip.l4;
     if (l4.ident !== this.ident) return;
-    const o = this.take(l4.seq); if (!o) return;
+    const o = this.take(l4.seq);
+    // A ping to a multicast group gets one reply from every member: Linux marks the extra ones DUP!
+    if (!o) { if (this.answered?.has(l4.seq)) { this.dev.print(`${ICMP_HDR + l4.dataLen} bytes from ${ip.src}: icmp_seq=${l4.seq} ttl=${ip.ttl} (DUP!)`); (this.from ??= new Set()).add(ip.src); } return; }
+    (this.answered ??= new Set()).add(l4.seq);
     this.received++;
     this.dev.print(`${ICMP_HDR + l4.dataLen} bytes from ${ip.src}: icmp_seq=${l4.seq} ttl=${ip.ttl} time=${(this.sim.time - o.t0).toFixed(2)} ms`);
+    this.from ??= new Set(); this.from.add(ip.src);
     this.checkEnd();
   }
   onIcmpError(ip) {
     const l4 = ip.l4, o = l4.orig;
     if (!o || o.ident !== this.ident || !this.take(o.seq)) return;
     this.errors++;
-    const txt = l4.type === 11 ? 'Time to live exceeded' : l4.code === 0 ? 'Destination Net Unreachable' : l4.code === 1 ? 'Destination Host Unreachable'
+    const txt = l4.t6 !== undefined ? icmp6Name(l4.t6, l4.c6) + (l4.t6 === 2 ? `: mtu=${l4.mtu}` : '') : l4.type === 11 ? 'Time to live exceeded' : l4.code === 0 ? 'Destination Net Unreachable' : l4.code === 1 ? 'Destination Host Unreachable'
       : l4.code === 3 ? 'Destination Port Unreachable' : l4.code === 4 ? `Frag needed and DF set (mtu = ${l4.mtu})` : l4.code === 13 ? 'Packet filtered' : icmpName(l4.type, l4.code);
     this.dev.print(`From ${ip.src} icmp_seq=${o.seq} ${txt}`);
     this.checkEnd();
   }
   onArpFail(pkt) {
     const l4 = pkt.l4;
-    if (!l4 || l4.kind !== 'icmp' || l4.ident !== this.ident || !this.take(l4.seq)) return;
+    if (!l4 || (l4.kind !== 'icmp' && l4.kind !== 'icmp6') || l4.ident !== this.ident || !this.take(l4.seq)) return;
     this.errors++;
-    this.dev.print(`From ${pkt.src} icmp_seq=${l4.seq} Destination Host Unreachable`);
+    this.dev.print(`From ${pkt.src} icmp_seq=${l4.seq} ${pkt.v === 6 ? 'Destination unreachable: Address unreachable' : 'Destination Host Unreachable'}`);
     this.checkEnd();
   }
-  checkEnd() { if (this.seq >= this.count && this.open.size === 0) this.finish(); }
+  checkEnd() {
+    if (this.seq < this.count || this.open.size) return;
+    // To a multicast group, more members answer a little later: wait for them like Linux does
+    if (this.v6 && isMcast6(this.dst.split('%')[0])) { if (!this.lingering) { this.lingering = true; this.sim.schedule(500, () => this.finish()); } return; }
+    this.finish();
+  }
   finish(aborted = false) {
     if (this.done) return;
     this.end();
     const loss = this.sent ? Math.round((1 - this.received / this.sent) * 100) : 100;
     if (!aborted) { this.dev.print(`--- ${this.dst} ping statistics ---`); this.dev.print(`${this.sent} packets transmitted, ${this.received} received${this.errors ? `, ${this.errors} errors` : ''}, ${loss}% packet loss`); }
     this.dev.record(this.received ? 'ok' : 'err', `ping to ${this.dst} finished: ${this.received} of ${this.sent} answered`,
-      { tag: 'ping-done', data: { dst: this.dst, sent: this.sent, received: this.received, size: this.size, df: this.df } });
+      { tag: 'ping-done', data: { dst: this.dst, sent: this.sent, received: this.received, size: this.size, df: this.df, v6: this.v6, from: [...(this.from || [])] } });
   }
 }
 
 class TraceSession extends Session {
   constructor(l3, dst, o) { super(l3); Object.assign(this, { dst, max: o.maxHops ?? 8 }); this.ttl = 0; this.port = 33433; this.hops = []; }
-  start() { this.begin(); this.dev.print(`$ traceroute -n ${this.dst}`); this.dev.print(`traceroute to ${this.dst}, ${this.max} hops max`); this.next(); }
+  start() { this.begin(); this.dev.print(`$ traceroute${isIp6(this.dst) ? ' -6' : ''} -n ${this.dst}`); this.dev.print(`traceroute to ${this.dst}, ${this.max} hops max`); this.next(); }
   next() {
     if (this.done) return;
     if (this.ttl >= this.max) return this.finish();
@@ -4799,7 +5148,7 @@ class TcpClient extends Session {
   get tool() { return this.mode === 'probe' ? 'nc' : 'curl'; }
   start() {
     this.begin();
-    if (!this.noEcho) this.dev.print(this.mode === 'probe' ? `$ nc -zv ${this.dst} ${this.port}` : `$ curl http://${this.dst}${this.port !== 80 ? ':' + this.port : ''}/`);
+    if (!this.noEcho) this.dev.print(this.mode === 'probe' ? `$ nc -zv ${this.dst} ${this.port}` : `$ curl http://${isIp6(this.dst) ? `[${this.dst}]` : this.dst}${this.port !== 80 ? ':' + this.port : ''}/`);
     if (!this.l3.lookup(this.dst) && !this.l3.isOwn(this.dst)) { this.dev.print(`${this.tool}: Network is unreachable`); return this.finish(false); }
     this.key = `${this.lport}|${this.dst}|${this.port}`;
     this.l3.tcp.set(this.key, { client: this, state: 'SYN_SENT', lport: this.lport, rip: this.dst, rport: this.port });
@@ -4926,7 +5275,7 @@ class TcpClient extends Session {
 class DigSession extends Session {
   constructor(l3, server, name, then = null, o = {}) {
     super(l3);
-    Object.assign(this, { server, name, then, qtype: o.type || 'A', rd: o.rd ?? true, trace: !!o.trace, short: !!o.short });
+    Object.assign(this, { server, name, then, qtype: o.type || 'A', rd: o.rd ?? true, trace: !!o.trace, short: !!o.short, quietFail: !!o.quietFail });
     this.sport = 49152 + Math.floor(this.sim.random() * 16000); this.id = Math.floor(this.sim.random() * 65535);
   }
   print(t) { if (!this.then) this.dev.print(t); }
@@ -5035,9 +5384,50 @@ class DigSession extends Session {
       { tag: 'dns-done', data: { name: this.name, ok: !!ok, answer, rcode, server: this.server, trace: this.trace, qtype: this.qtype, answers: (d?.answers || []).length, ttl: addrs[addrs.length - 1]?.ttl ?? null, aa: !!d?.aa } });
     if (this.then) {
       if (answer) this.dev.print(`${this.name} → ${answer} (DNS via ${this.server})`);
-      else this.dev.print(`${this.name}: ${rcode === 'NXDOMAIN' ? 'Name or service not known' : rcode === 'TIMEOUT' ? 'Temporary failure in name resolution' : 'Name resolution failed (' + rcode + ')'}`);
+      else if (!this.quietFail || rcode === 'TIMEOUT') this.dev.print(`${this.name}: ${rcode === 'NXDOMAIN' ? 'Name or service not known' : rcode === 'TIMEOUT' ? 'Temporary failure in name resolution' : 'Name resolution failed (' + rcode + ')'}`);
       this.then(answer);
     }
+  }
+}
+
+/** rdisc6: send a Router Solicitation and print the advertisement, like the ndisc6 package */
+class RdiscSession extends Session {
+  constructor(l3, ifname) { super(l3); this.ifname = ifname; this.tries = 0; }
+  start() {
+    this.begin();
+    this.dev.print(`$ rdisc6 ${this.ifname}`);
+    this.dev.print(`Soliciting ff02::2 (ff02::2) on ${this.ifname}...`);
+    this.ask();
+  }
+  ask() {
+    if (this.done) return;
+    if (this.tries++ >= 3) { this.dev.print('Timed out.'); this.dev.print('No response.'); return this.end(); }
+    const v6 = this.l3.v6, src = v6.ifAddr(this.ifname, false) || '::';
+    v6.sendFrame(this.ifname, '33:33:00:00:00:02', ipPacket({ src, dst: 'ff02::2', ttl: 255, proto: PROTO.ICMP6, l4: icmp6(133, 0, { slla: src === '::' ? null : this.dev.mac(this.ifname) }) }));
+    this.dev.record('info', `rdisc6: Router Solicitation on ${this.ifname}`, { tag: 'rs-sent' });
+    this.timer = this.sim.schedule(1000, () => this.ask());
+  }
+  onRa(ip, ifname) {
+    if (this.done || ifname !== this.ifname) return;
+    this.sim.cancel(this.timer);
+    const m = ip.l4, out = t => this.dev.print(t);
+    out(''); out(`Hop limit                 :           ${m.hopLimit} (      0x${m.hopLimit.toString(16)})`);
+    out(`Stateful address conf.    :           ${m.managed ? 'Yes' : ' No'}`);
+    out(`Stateful other conf.      :           ${m.other ? 'Yes' : ' No'}`);
+    out(`Router lifetime           :         ${String(m.lifetime).padStart(4)} (0x${m.lifetime.toString(16).padStart(8, '0')}) seconds`);
+    for (const p of m.prefixes || []) {
+      out(` Prefix                   : ${p.prefix}/${p.len}`);
+      out(`  On-link                 :          Yes`);
+      out(`  Autonomous address conf.:          ${p.auto ? 'Yes' : ' No'}`);
+      out(`  Valid time              :      ${p.valid} (0x${p.valid.toString(16).padStart(8, '0')}) seconds`);
+      out(`  Pref. time              :       ${p.preferred} (0x${p.preferred.toString(16).padStart(8, '0')}) seconds`);
+    }
+    if (m.mtu) out(` MTU                      :         ${m.mtu} bytes (valid)`);
+    for (const d of m.rdnss || []) out(` Recursive DNS server     : ${d}`);
+    if (m.slla) out(` Source link-layer address: ${m.slla.toUpperCase()}`);
+    out(` from ${ip.src}`);
+    this.dev.record('ok', `rdisc6: advertisement from ${ip.src} received`, { tag: 'rdisc-done', data: { router: ip.src, prefixes: (m.prefixes || []).map(p => `${p.prefix}/${p.len}`) } });
+    this.end();
   }
 }
 
@@ -5064,15 +5454,28 @@ class Host extends Device {
   curl(dst, port = 80, o = {}) { const s = new TcpClient(this.l3, dst, port, 'http', o); s.start(); return s; }
   ncz(dst, port) { const s = new TcpClient(this.l3, dst, port, 'probe'); s.start(); return s; }
   dig(server, name, o = {}) { const s = new DigSession(this.l3, server, name, null, o); s.start(); return s; }
-  resolve(name, cb) {
-    if (isIp(name)) return cb(name);
+  /** Like getaddrinfo: with a global IPv6 address and an IPv6 default route, AAAA is asked first and preferred */
+  resolve(name, cb, o = {}) {
+    if (isAnyIp(name)) return cb(name);
     const dns = this.l3.resolver();
     if (!dns) { this.print(`${name}: no DNS server configured`); this.record('err', `cannot resolve ${name}: no DNS server configured`, { tag: 'dns-no-resolver' }); return cb(null); }
-    const s = new DigSession(this.l3, dns, name, cb); s.start(); return s;
+    const v6ok = this.l3.v6.hasGlobal() && this.l3.v6.routes().some(r => r.len === 0 && r.dev);
+    const want6 = o.family === 6 || (o.family !== 4 && v6ok);
+    if (!want6) { const s = new DigSession(this.l3, dns, name, cb); s.start(); return s; }
+    const s = new DigSession(this.l3, dns, name, a6 => {
+      if (a6 || o.family === 6) return cb(a6);
+      const s4 = new DigSession(this.l3, dns, name, cb); s4.start();
+    }, { type: 'AAAA', quietFail: o.family !== 6 });
+    s.start(); return s;
   }
   udpSend(dst, port, len = 32) { const s = new UdpSend(this.l3, dst, port, len); s.start(); return s; }
+  rdisc6(ifname = 'eth1') { const s = new RdiscSession(this.l3, ifname); s.start(); return s; }
+  onConfig() { this.l3.v6.onConfig(); }
+  onLink(ifname, up) { this.l3.v6.onLink(ifname, up); }
+  stop() { this.l3.v6.stop(); }
   // Interfaces in DHCP mode ask for an address shortly after the device starts
   start() {
+    this.l3.v6.start();
     if (this.cfg.recursion?.enabled && this.cfg.recursion.seed?.length) resolverOf(this.l3).seed(this.cfg.recursion.seed);
     for (const [n, v] of Object.entries(this.cfg.ifaces || {})) {
       if (v?.dhcp) this.sim.schedule(600 + this.sim.random() * 600, () => { if (!this.l3.lease && !this.dhcpRunning(n)) this.dhclient(n, { boot: true }); });
@@ -5102,8 +5505,9 @@ class Router extends Host {
     this.bfd.start(); this.bfdSnap = JSON.stringify(this.cfg.bfd);
     this.addrSnap = JSON.stringify(this.l3.ifaces());
   }
-  stop() { this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop(); }
+  stop() { super.stop(); this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop(); }
   onConfig() {
+    super.onConfig();
     const v = JSON.stringify(this.cfg.vrrp), o = JSON.stringify(this.cfg.ospf), a = JSON.stringify(this.l3.ifaces()), b = JSON.stringify(this.cfg.bfd);
     if (b !== this.bfdSnap) { this.bfdSnap = b; this.bfd.start(); } else this.bfd.sync();
     if (v !== this.vrrpSnap) { this.vrrpSnap = v; this.vrrp.start(); }
@@ -5111,7 +5515,7 @@ class Router extends Host {
     else if (a !== this.addrSnap) this.ospf.originate();
     this.addrSnap = a;
   }
-  onLink(ifname, up) { this.bfd?.onLink(ifname, up); this.vrrp?.onLink(ifname, up); this.ospf?.onLink(ifname, up); }
+  onLink(ifname, up) { super.onLink(ifname, up); this.bfd?.onLink(ifname, up); this.vrrp?.onLink(ifname, up); this.ospf?.onLink(ifname, up); }
 }
 
 // ---------------------------------------------------------------- DHCP client (DORA)
@@ -5713,7 +6117,10 @@ const BLOCKS = {
   arp: { name: 'ARP', size: 28, kind: 'arp', note: 'Request or reply' },
   stp: { name: 'BPDU (with LLC)', size: 38, kind: 'stp', note: 'Spanning tree: root ID, cost, bridge ID, timers' },
   ip: { name: 'IPv4', size: 20, kind: 'ip', note: 'TTL, protocol, addresses' },
+  ipv6: { name: 'IPv6', size: 40, kind: 'ip', note: 'Fixed 40 bytes: hop limit, next header, 128-bit addresses, no checksum' },
   icmp: { name: 'ICMP', size: 8, kind: 'icmp', note: 'Echo, Unreachable, Time Exceeded' },
+  icmp6: { name: 'ICMPv6', size: 8, kind: 'icmp', note: 'Echo, Unreachable, Packet Too Big, Time Exceeded (next header 58)' },
+  ndp: { name: 'NDP (NS/NA)', size: 32, kind: 'icmp', in: ['ipv6'], last: true, note: 'Neighbor Solicitation or Advertisement: target address and MAC option. Replaces ARP' },
   udp: { name: 'UDP', size: 8, kind: 'udp', note: 'Ports, length, checksum' },
   tcp: { name: 'TCP', size: 20, kind: 'tcp', note: 'Ports, sequence, flags (without options)' },
   vxlan: { name: 'VXLAN', size: 8, kind: 'vxlan', note: 'Flags, VNI' },
@@ -5726,9 +6133,12 @@ const BLOCKS = {
   data: { name: 'Data', size: null, kind: 'data', note: 'Application payload' }
 };
 // Headings in the palette, so the growing list stays easy to scan
-const GROUP = { eth: 'Layer 2', vlan: 'Layer 2', arp: 'Layer 2', stp: 'Layer 2', ip: 'Layer 3', icmp: 'Layer 3', udp: 'Transport', tcp: 'Transport', vxlan: 'Tunnels' };
+const GROUP = { eth: 'Layer 2', vlan: 'Layer 2', arp: 'Layer 2', stp: 'Layer 2', ip: 'Layer 3', ipv6: 'Layer 3', icmp: 'Layer 3', icmp6: 'Layer 3', ndp: 'Layer 3', udp: 'Transport', tcp: 'Transport', vxlan: 'Tunnels' };
 const PRESETS = {
   'Ping': ['eth', 'ip', 'icmp', 'data'],
+  'Ping over IPv6': ['eth', 'ipv6', 'icmp6', 'data'],
+  'Neighbor Solicitation': ['eth', 'ipv6', 'ndp'],
+  'TCP SYN over IPv6': ['eth', 'ipv6', 'tcp'],
   'ARP request': ['eth', 'arp'],
   'Ping in VLAN 10': ['eth', 'vlan', 'ip', 'icmp', 'data'],
   'DNS over UDP': ['eth', 'ip', 'udp', 'data'],
@@ -5752,14 +6162,17 @@ function validate(seq) {
     const b = seq[i], prev = seq[i - 1], next = seq[i + 1];
     if (b === 'vlan' && prev !== 'eth') err(i, 'The 802.1Q tag follows directly after the Ethernet header (after the source MAC).');
     if (b === 'eth' && i > 0 && prev !== 'vxlan') err(i, 'A second Ethernet header only makes sense after a VXLAN header (inner frame).');
-    if ((b === 'ip' || b === 'arp') && !['eth', 'vlan'].includes(prev)) err(i, `${BLOCKS[b].name} belongs directly in the Ethernet frame (EtherType).`);
+    if ((b === 'ip' || b === 'ipv6' || b === 'arp') && !['eth', 'vlan'].includes(prev)) err(i, `${BLOCKS[b].name} belongs directly in the Ethernet frame (EtherType).`);
+    if (b === 'icmp' && prev === 'ipv6') err(i, 'IPv6 uses ICMPv6 (next header 58), not ICMP.');
+    if (b === 'icmp6' && prev !== 'ipv6') err(i, 'ICMPv6 is carried in IPv6 (next header 58).');
     if (b === 'arp' && next) err(i + 1, 'ARP has no further payload, nothing follows it.');
     if (b === 'stp' && !['eth', 'vlan'].includes(prev)) err(i, 'A BPDU sits directly in the Ethernet frame (802.3 with LLC).');
     if (b === 'stp' && next) err(i + 1, 'Nothing follows the BPDU.');
-    if (['icmp', 'udp', 'tcp'].includes(b) && prev !== 'ip') err(i, `${BLOCKS[b].name} is carried in an IP packet (protocol field).`);
+    if (['udp', 'tcp'].includes(b) && prev !== 'ip' && prev !== 'ipv6') err(i, `${BLOCKS[b].name} is carried in an IP packet (protocol field).`);
+    if (b === 'icmp' && prev !== 'ip' && prev !== 'ipv6') err(i, 'ICMP is carried in an IPv4 packet (protocol 1).');
     if (b === 'vxlan' && prev !== 'udp') err(i, 'VXLAN is carried in UDP (destination port 4789).');
     if (b === 'vxlan' && next !== 'eth') err(i, 'The inner Ethernet frame follows the VXLAN header.');
-    if (b === 'data' && !['udp', 'tcp', 'icmp'].includes(prev)) err(i, 'Application data is carried in UDP, TCP or ICMP.');
+    if (b === 'data' && !['udp', 'tcp', 'icmp', 'icmp6'].includes(prev)) err(i, 'Application data is carried in UDP, TCP or ICMP.');
     if (b === 'data' && next) err(i + 1, 'Only the FCS comes after the data.');
     if (b === 'vlan' && seq.filter(x => x === 'vlan').length > 2) err(i, 'More than two tags (QinQ) are unusual.');
     const B = BLOCKS[b];
@@ -5920,6 +6333,21 @@ export const GLOSSARY = [
   ['retransmission', 'Sending data again that was not acknowledged in time.'],
   ['DNS', 'Domain Name System: translates names like web.lab into IP addresses.'],
   ['NXDOMAIN', 'DNS answer: this name does not exist.'],
+  ['IPv6', 'Internet Protocol version 6: 128-bit addresses, no broadcast, Neighbor Discovery instead of ARP.'],
+  ['link-local', 'An IPv6 address from fe80::/10 that every interface has. Valid only on its own link, never routed.', ['link-local address', 'link-local addresses']],
+  ['NDP', 'Neighbor Discovery Protocol: ICMPv6 messages that find neighbors (NS/NA), routers (RS/RA) and check for duplicate addresses.', ['Neighbor Discovery']],
+  ['Neighbor Solicitation', 'ICMPv6 type 135: "who has this IPv6 address?", sent to the solicited-node group. The IPv6 ARP request.'],
+  ['Neighbor Advertisement', 'ICMPv6 type 136: the answer to a Neighbor Solicitation, with the MAC address.'],
+  ['Router Advertisement', 'ICMPv6 type 134: a router announces itself, its prefixes and maybe a DNS server.', ['router advertisements', 'Router Advertisements']],
+  ['solicited-node', 'Multicast group ff02::1:ff plus the last 24 bits of an address. Neighbor Solicitations go there instead of to everyone.', ['solicited-node group', 'solicited-node multicast']],
+  ['SLAAC', 'Stateless address autoconfiguration: a host builds its own IPv6 address from the prefix in the router advertisement.'],
+  ['EUI-64', 'Interface ID from the MAC: flip the U/L bit and insert ff:fe in the middle.'],
+  ['DAD', 'Duplicate address detection: before using an IPv6 address, a host asks for it with an NS from ::. No answer means it is free.', ['duplicate address detection']],
+  ['RDNSS', 'Option in the router advertisement that tells hosts the DNS server, without DHCPv6.'],
+  ['hop limit', 'The TTL of IPv6: every router subtracts one.'],
+  ['dual stack', 'IPv4 and IPv6 running side by side on the same devices.'],
+  ['Happy Eyeballs', 'Clients try IPv6 and IPv4 almost in parallel and use whichever connects first.'],
+  ['Packet Too Big', 'ICMPv6 type 2: the packet does not fit through the next link. IPv6 routers never fragment, the sender has to send smaller packets.'],
   ['recursive resolver', 'A DNS server that finds any answer on behalf of its clients: it asks root, TLD and authoritative servers and caches the results.', ['resolver', 'resolvers', 'recursive resolvers']],
   ['stub resolver', 'The small DNS client in every operating system: it sends one question with RD set to a recursive resolver and waits.'],
   ['authoritative', 'A DNS server is authoritative for a zone it holds itself. Its answers carry the AA flag.', ['authoritatively', 'authoritative server', 'authoritative servers']],
@@ -6136,6 +6564,489 @@ export function renderInspector(el, entry, { onTrack } = {}) {
   }
 }
 export { esc };
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js"
+  cat > "$W/js/ipv6.js" <<'__PACKETPILOT_FILE_END__'
+// IPv6 next to IPv4: addresses (link-local, static, SLAAC), Neighbor Discovery (NS/NA with
+// solicited-node multicast, duplicate address detection, unreachability detection),
+// router advertisements, routing and forwarding, ICMPv6. Attached to every L3 as l3.v6.
+import { PROTO, parse6, fmt6, isIp6, norm6, inNet6, parseCidr6, linkLocalFor, slaacFor, isLinkLocal6, isMcast6,
+  solicitedNode, mcastMac6, ALL_NODES, ALL_ROUTERS, clone, zoneOf6 } from './net.js';
+import { ipPacket, icmp6 } from './packets.js';
+
+export const T6 = { dad: 1000, ndRetry: 1000, ndTries: 3, reachable: 30000, delay: 5000, rsRetry: 4000, rsTries: 3, raInterval: 30000, routerLifetime: 1800 };
+export const ICMP6_TEXT = {
+  '1/0': 'Destination unreachable: No route', '1/1': 'Destination unreachable: Administratively prohibited', '1/3': 'Destination unreachable: Address unreachable',
+  '1/4': 'Destination unreachable: Port unreachable', '2/0': 'Packet too big', '3/0': 'Time exceeded: Hop limit', '128/0': 'Echo Request', '129/0': 'Echo Reply',
+  '133/0': 'Router Solicitation', '134/0': 'Router Advertisement', '135/0': 'Neighbor Solicitation', '136/0': 'Neighbor Advertisement'
+};
+export const icmp6Name = (t, c) => ICMP6_TEXT[`${t}/${c}`] || `ICMPv6 type ${t} code ${c}`;
+// ICMPv6 errors in the numbers of ICMPv4, so ping, traceroute and curl can share their handling
+const V4_EQUIV = { '1/0': [3, 0], '1/1': [3, 13], '1/3': [3, 1], '1/4': [3, 3], '3/0': [11, 0], '2/0': [3, 4] };
+
+/** Static IPv6 addresses of an interface, from "2001:db8::1/64" strings */
+export function staticAddrs(ifc) {
+  return (Array.isArray(ifc?.ip6) ? ifc.ip6 : String(ifc?.ip6 || '').split(/[\s,]+/)).map(s => {
+    const [a, l] = String(s).trim().split('/');
+    return isIp6(a) && !isLinkLocal6(a) ? { ip: norm6(a), len: l === undefined ? 64 : Number(l) } : null;
+  }).filter(Boolean);
+}
+
+export class Ip6 {
+  constructor(l3) { this.l3 = l3; this.dev = l3.dev; this.sim = l3.sim; this.timers = []; this.reset(); }
+  reset() {
+    this.nd = new Map(); this.pending = new Map(); this.slaac = new Map(); this.routers = new Map();
+    this.rdnss = []; this.state = new Map(); this.rsTries = 0; this.raSeen = false;
+    for (const t of this.timers || []) this.sim.cancel(t);
+    this.timers = [];
+  }
+  get cfg() { return this.l3.cfg; }
+  get on() { return !!this.cfg.ipv6?.enabled; }
+  get isRouter() { return this.cfg.type === 'router'; }
+  later(ms, fn) { const ev = this.sim.schedule(ms, () => { this.timers = this.timers.filter(x => x !== ev); fn(); }); this.timers.push(ev); return ev; }
+  rec(kind, text, extra) { return this.dev.record(kind, text, extra); }
+
+  // ---- Addresses
+  ifnames() {
+    if (!this.on) return [];
+    return Object.entries(this.cfg.ifaces || {}).filter(([n, v]) => n !== 'lo' && !v.parent
+      && (this.cfg.type !== 'router' || !!this.sim.linkAt(this.dev.id, n) || staticAddrs(v).length)).map(([n]) => n);
+  }
+  /** Every address of an interface with its state: tentative (DAD running), preferred, duplicate */
+  addrs(ifname) {
+    if (!this.on) return [];
+    const st = ip => this.state.get(ifname + '|' + ip) || 'tentative';
+    const ll = linkLocalFor(this.dev.mac(ifname));
+    const out = [{ ip: ll, len: 64, scope: 'link', origin: 'kernel', state: st(ll) }];
+    for (const a of staticAddrs(this.cfg.ifaces?.[ifname])) out.push({ ...a, scope: 'global', origin: 'static', state: st(a.ip) });
+    for (const a of this.slaac.get(ifname) || []) if (!out.some(o => o.ip === a.ip)) out.push({ ...a, scope: 'global', origin: 'slaac', state: st(a.ip) });
+    return out;
+  }
+  allAddrs() { return this.ifnames().flatMap(n => this.addrs(n).map(a => ({ ...a, ifname: n }))); }
+  usable(a) { return a.state === 'preferred'; }
+  hasGlobal() { return this.allAddrs().some(a => a.scope === 'global' && this.usable(a)); }
+  isOwn(ip) {
+    if (!this.on || !isIp6(ip)) return false;
+    const n = norm6(ip);
+    return this.allAddrs().some(a => a.ip === n && this.usable(a)) || this.joinedGroup(n);
+  }
+  joinedGroup(g) {
+    if (g === ALL_NODES) return true;
+    if (g === ALL_ROUTERS) return this.isRouter;
+    return this.allAddrs().some(a => solicitedNode(a.ip) === g);
+  }
+  /** Multicast MACs this device listens to */
+  acceptsMac(mac) {
+    if (!this.on) return false;
+    if (mac === '33:33:00:00:00:01') return true;
+    if (mac === '33:33:00:00:00:02') return this.isRouter;
+    return this.allAddrs().some(a => mcastMac6(solicitedNode(a.ip)) === mac);
+  }
+  ifAddr(ifname, preferGlobal = true, near = null) {
+    const list = this.addrs(ifname).filter(a => this.usable(a));
+    if (near) { const m = list.find(a => a.scope === 'global' && inNet6(near, a.ip, a.len)); if (m) return m.ip; }
+    return (preferGlobal ? list.find(a => a.scope === 'global') : null)?.ip || list.find(a => a.scope === 'link')?.ip || null;
+  }
+  srcFor(dst, ifname = null) {
+    if (isLinkLocal6(dst) || isMcast6(dst)) return this.ifAddr(ifname || this.lookup(dst)?.dev || this.ifnames()[0], false) || '::';
+    const r = this.lookup(dst);
+    return (r && this.ifAddr(r.dev, true, dst)) || this.allAddrs().find(a => a.scope === 'global' && this.usable(a))?.ip || this.ifAddr(this.ifnames()[0], false) || '::';
+  }
+
+  // ---- Routing
+  routes() {
+    const out = [];
+    for (const n of this.ifnames()) {
+      if (!this.l3.linkUp(n)) continue;
+      out.push({ net: 'fe80::', len: 64, via: null, dev: n, proto: 'C', ll: true });
+      for (const a of this.addrs(n)) if (a.scope === 'global' && this.usable(a)) {
+        const c = parseCidr6(`${a.ip}/${a.len}`);
+        if (!out.some(r => r.proto === 'C' && r.net === c.net && r.len === c.len && r.dev === n)) out.push({ net: c.net, len: c.len, via: null, dev: n, proto: a.origin === 'slaac' ? 'K' : 'C', src: a.ip });
+      }
+    }
+    const statics = (this.cfg.routes || []).filter(r => parseCidr6(r.dst === 'default6' ? '::/0' : r.dst) && isIp6(r.via));
+    if (this.cfg.ipv6?.gw && isIp6(this.cfg.ipv6.gw)) statics.push({ dst: '::/0', via: this.cfg.ipv6.gw, dev: this.cfg.ipv6.gwDev || null, auto: true });
+    for (const r of statics) {
+      const p = parseCidr6(r.dst === 'default6' ? '::/0' : r.dst);
+      const via = norm6(r.via);
+      let dev = null;
+      if (isLinkLocal6(via)) dev = r.dev && this.ifnames().includes(r.dev) && this.l3.linkUp(r.dev) ? r.dev : (this.ifnames().length === 1 && this.l3.linkUp(this.ifnames()[0]) ? this.ifnames()[0] : null);
+      else dev = out.find(c => c.proto !== 'S' && !c.ll && c.via === null && inNet6(via, c.net, c.len))?.dev || null;
+      out.push({ net: p.net, len: p.len, via, dev, proto: 'S', active: !!dev, auto: r.auto, distance: Number(r.distance) > 0 ? Number(r.distance) : 1 });
+    }
+    for (const r of this.routers.values()) {
+      if (r.until <= this.sim.time || !this.l3.linkUp(r.ifname)) continue;
+      out.push({ net: '::', len: 0, via: r.ip, dev: r.ifname, proto: 'RA', metric: 1024, until: r.until });
+    }
+    return out;
+  }
+  lookupAll(dst) {
+    const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, K: 0, RA: 2 }[r.proto] ?? 255;
+    let best = [];
+    const better = (a, b) => a.len !== b.len ? a.len > b.len : ad(a) < ad(b);
+    for (const r of this.routes()) {
+      if (!r.dev || r.ll || !inNet6(dst, r.net, r.len)) continue;
+      if (!best.length || better(r, best[0])) best = [r];
+      else if (!better(best[0], r) && !best.some(b => b.via === r.via && b.dev === r.dev)) best.push(r);
+    }
+    return best;
+  }
+  lookup(dst, pkt = null) {
+    if (!isIp6(dst)) return null;
+    if (isLinkLocal6(dst) || isMcast6(dst)) {
+      // Link-local addresses need the interface: ping fe80::1%eth1 (with one interface it is obvious)
+      const z = zoneOf6(dst) || pkt?.zone;
+      const names = this.ifnames().filter(n => this.l3.linkUp(n));
+      const dev = z ? names.find(n => n === z) : names.length === 1 ? names[0] : null;
+      return dev ? { net: 'fe80::', len: 64, via: null, dev, proto: 'C', ll: true } : null;
+    }
+    const all = this.lookupAll(norm6(dst));
+    if (all.length <= 1 || !pkt) return all[0] || null;
+    return all[0];
+  }
+
+  // ---- Sending
+  output(pkt, ctx = {}) {
+    if (!this.on) return { ok: false, error: 'IPv6 is turned off on this device' };
+    if (this.isOwn(pkt.dst) && !isMcast6(pkt.dst)) { this.sim.schedule(0.01, () => this.l3.deliver(pkt, 'lo')); return { ok: true }; }
+    if (isMcast6(pkt.dst)) {
+      const ifn = ctx.ifname || this.lookup(pkt.dst, pkt)?.dev;
+      if (!ifn) return { ok: false, error: 'connect: Invalid argument (a multicast or link-local address needs an interface, e.g. %eth1)' };
+      this.sendFrame(ifn, mcastMac6(pkt.dst), pkt);
+      return { ok: true };
+    }
+    const r = this.lookup(pkt.dst, pkt);
+    if (!r) {
+      if (ctx.forwarded) { this.rec('drop', `no IPv6 route to ${pkt.dst}, sends ICMPv6 Destination Unreachable (no route) to ${pkt.src}`, { tag: 'no-route', data: { dst: pkt.dst } }); this.icmpError(pkt, 1, 0); }
+      else this.rec('err', isLinkLocal6(pkt.dst) ? `${pkt.dst} is link-local: which interface? (e.g. ${pkt.dst}%eth1)` : `no IPv6 route to ${pkt.dst}: Network is unreachable`, { tag: 'no-route', data: { dst: pkt.dst } });
+      return { ok: false, error: isLinkLocal6(pkt.dst) ? 'connect: Invalid argument (add %eth1)' : 'Network is unreachable' };
+    }
+    const mtu = Math.min(this.l3.mtu(r.dev), ctx.forwarded ? Infinity : this.l3.pmtu.get(norm6(pkt.dst)) || Infinity);
+    if (pkt.totalLength > mtu && !ctx.forwarded && !pkt.noFrag && !pkt.frag) {
+      // Only the sender may fragment in IPv6, with a fragment header (8 bytes) in every piece
+      const frags = this.fragment(pkt, mtu);
+      this.rec('info', `IPv6 packet (${pkt.totalLength} bytes) larger than the path MTU ${mtu}: the sender splits it into ${frags.length} fragments (fragment header)`, { tag: 'fragmented', data: { count: frags.length, mtu, v6: true } });
+      for (const f of frags) this.l2send(f, r.dev, r.via || norm6(pkt.dst));
+      return { ok: true };
+    }
+    if (pkt.totalLength > mtu) {
+      // IPv6 routers never fragment: the sender has to send smaller packets
+      if (ctx.forwarded) {
+        this.rec('drop', `IPv6 packet (${pkt.totalLength} bytes) larger than MTU ${mtu} of ${r.dev}: dropped, ICMPv6 Packet Too Big to ${pkt.src} (IPv6 routers never fragment)`, { tag: 'frag-needed-sent', data: { mtu, v6: true } });
+        this.icmpError(pkt, 2, 0, { mtu });
+      }
+      return { ok: false, error: `message too long, mtu=${mtu}`, mtu };
+    }
+    this.l2send(pkt, r.dev, r.via || norm6(pkt.dst));
+    return { ok: true };
+  }
+  sendFrame(ifname, mac, pkt) { this.l3.sendFrame(ifname, mac, 'ipv6', pkt); }
+  fragment(pkt, mtu) {
+    const total = pkt.totalLength - 40, chunk = Math.floor((mtu - 48) / 8) * 8, out = [];
+    for (let off = 0; off < total; off += chunk) {
+      const len = Math.min(chunk, total - off), first = off === 0;
+      const f = { ...clone(pkt), fragOffset: off, mf: off + len < total, l4: first ? clone(pkt.l4) : null, frag: { first, len, total, origL4: clone(pkt.l4), v6: true } };
+      f.totalLength = 48 + len;
+      out.push(f);
+    }
+    return out;
+  }
+  l2send(pkt, egress, nh) {
+    const e = this.nd.get(nh);
+    if (e && e.mac && e.ifname === egress && e.state !== 'INCOMPLETE') {
+      this.sendFrame(egress, e.mac, pkt);
+      this.nudCheck(nh, e);
+      return;
+    }
+    if (!this.pending.has(nh)) this.pending.set(nh, []);
+    this.pending.get(nh).push({ pkt, egress });
+    if (!e || e.state !== 'INCOMPLETE') this.solicit(nh, egress);
+  }
+  /** Neighbor Solicitation to the solicited-node group of the target: like an ARP request, but multicast */
+  solicit(nh, egress) {
+    const entry = { mac: null, ifname: egress, t: this.sim.time, state: 'INCOMPLETE', tries: 0 };
+    this.nd.set(nh, entry);
+    const ask = () => {
+      if (this.nd.get(nh) !== entry || entry.mac) return;
+      if (entry.tries >= T6.ndTries) {
+        this.nd.delete(nh);
+        this.rec('err', `no Neighbor Advertisement from ${nh} after ${T6.ndTries} solicitations: address unreachable`, { tag: 'nd-failed', data: { ip: nh } });
+        const q = this.pending.get(nh) || [];
+        this.pending.delete(nh);
+        for (const { pkt } of q) {
+          if (this.isOwn(pkt.src)) for (const s of [...this.l3.sessions]) s.onArpFail?.(pkt);
+          else this.icmpError(pkt, 1, 3);
+        }
+        return;
+      }
+      entry.tries++;
+      const src = this.ifAddr(egress, true, nh) || this.ifAddr(egress, false);
+      const g = solicitedNode(nh);
+      this.rec('info', `does not know the MAC of ${nh} and asks its solicited-node group ${g} (Neighbor Solicitation, attempt ${entry.tries})`, { tag: 'ns-sent', data: { ip: nh } });
+      this.sendFrame(egress, mcastMac6(g), ipPacket({ src, dst: g, ttl: 255, proto: PROTO.ICMP6, l4: icmp6(135, 0, { target: nh, slla: this.dev.mac(egress) }) }));
+      this.later(T6.ndRetry, ask);
+    };
+    ask();
+  }
+  nudCheck(nh, e) {
+    if (this.sim.time - e.t <= T6.reachable || e.probing) return;
+    e.probing = true; e.state = 'DELAY';
+    this.later(T6.delay, () => {
+      if (this.nd.get(nh) !== e) return;
+      if (this.sim.time - e.t <= T6.reachable) { e.probing = false; e.state = 'REACHABLE'; return; }
+      e.state = 'PROBE';
+      let n = 0;
+      const probe = () => {
+        if (this.nd.get(nh) !== e) return;
+        if (this.sim.time - e.t <= T6.reachable) { e.probing = false; e.state = 'REACHABLE'; return; }
+        if (n++ >= T6.ndTries) { this.nd.delete(nh); this.rec('err', `${nh} no longer answers at ${e.mac}: neighbor entry deleted (FAILED)`, { tag: 'nud-failed', data: { ip: nh } }); return; }
+        this.rec('info', `checks with a unicast Neighbor Solicitation whether ${nh} is still at ${e.mac} (probe ${n})`, { tag: 'nud-probe', data: { ip: nh } });
+        this.sendFrame(e.ifname, e.mac, ipPacket({ src: this.ifAddr(e.ifname, true, nh), dst: nh, ttl: 255, proto: PROTO.ICMP6, l4: icmp6(135, 0, { target: nh, slla: this.dev.mac(e.ifname) }) }));
+        this.later(T6.ndRetry, probe);
+      };
+      probe();
+    });
+  }
+  learn(ip, mac, ifname, state, how, router = null) {
+    const old = this.nd.get(ip);
+    const changed = !old || old.mac !== mac;
+    this.nd.set(ip, { mac, ifname, t: state === 'REACHABLE' ? this.sim.time : (old?.t ?? this.sim.time - T6.reachable - 1), state, router: router ?? old?.router ?? false });
+    if (changed) this.rec('learn', `adds ${ip} → ${mac} to the neighbor cache (${how})`, { tag: 'nd-learned', data: { ip, mac } });
+    const q = this.pending.get(ip);
+    if (q) { this.pending.delete(ip); for (const { pkt, egress } of q) this.sendFrame(egress, mac, pkt); }
+  }
+  neighborTable() {
+    return [...this.nd.entries()].map(([ip, e]) => ({ ip, mac: e.mac, ifname: e.ifname, router: !!e.router,
+      state: e.state === 'REACHABLE' && this.sim.time - e.t > T6.reachable ? 'STALE' : e.state }));
+  }
+  icmpError(orig, type, code, extra = {}) {
+    if (orig.l4?.kind === 'icmp6' && orig.l4.type < 128) return;
+    if (isMcast6(orig.dst) || orig.src === '::') return;
+    const o = orig.l4 || {};
+    const pkt = ipPacket({ src: this.srcFor(orig.src), dst: orig.src, proto: PROTO.ICMP6,
+      l4: icmp6(type, code, { dataLen: Math.min(orig.totalLength, 1232), mtu: extra.mtu, orig: { src: orig.src, dst: orig.dst, proto: orig.proto, ident: o.ident, seq: o.seq, sport: o.sport, dport: o.dport } }) });
+    this.output(pkt, {});
+  }
+
+  // ---- Receiving
+  rx(ifname, ip, frame) {
+    if (!this.on) { this.rec('ignore', `receives an IPv6 packet, but IPv6 is turned off: dropped`, { frame, tag: 'v6-off' }); return; }
+    const dst = norm6(ip.dst);
+    if (isMcast6(dst)) { if (this.joinedGroup(dst)) this.l3.deliver(ip, ifname, frame); return; }
+    if (this.isOwn(dst) && ip.frag) return this.l3.reassemble(ip, ifname);
+    if (this.isOwn(dst) || (ip.l4?.kind === 'icmp6' && ip.l4.type === 136 && this.addrs(ifname).some(a => a.ip === dst))) return this.l3.deliver(ip, ifname, frame);
+    if (!this.isRouter || this.cfg.forwarding === false) { this.rec('drop', `IPv6 packet to ${ip.dst} is not for me, and I do not forward`, { frame, tag: 'not-forwarding' }); return; }
+    if (isLinkLocal6(dst)) { this.rec('drop', `IPv6 packet to the link-local address ${ip.dst} is not for me: link-local packets never cross a router`, { frame, tag: 'not-forwarding' }); return; }
+    this.forward(ip, ifname, frame);
+  }
+  forward(ip, inIf, frame) {
+    if (isLinkLocal6(ip.src)) { this.rec('drop', `does not forward a packet with the link-local source ${ip.src}: it only exists on its own link`, { frame, tag: 'v6-ll-src' }); return; }
+    const m = this.l3.aclMatch(ip);
+    if (m && m.rule.action !== 'allow') {
+      this.rec('drop', `Rule ${m.index} (${m.rule.action}) matches: IPv6 packet ${ip.src} > ${ip.dst} is not forwarded`, { frame, tag: 'acl-drop', data: { rule: m.index } });
+      if (m.rule.action === 'reject') this.icmpError(ip, 1, 1);
+      return;
+    }
+    if (ip.ttl <= 1) {
+      this.rec('drop', `hop limit of ${ip.src} > ${ip.dst} expired, sends ICMPv6 Time Exceeded to ${ip.src}`, { frame, tag: 'ttl-expired' });
+      this.icmpError(ip, 3, 0);
+      return;
+    }
+    const r = this.lookup(ip.dst, ip);
+    const out = clone(ip);
+    out.ttl = ip.ttl - 1;
+    if (r) this.rec('fwd', `forwards ${ip.src} > ${ip.dst}: IPv6 route ${r.net}/${r.len}${r.via ? ' via ' + r.via : ' direct'} out ${r.dev}, hop limit ${ip.ttl} → ${out.ttl}`,
+      { frame, tag: 'forwarded', data: { dst: ip.dst, route: `${r.net}/${r.len}`, from: inIf, to: r.dev, via: r.via, v6: true } });
+    this.output(out, { forwarded: true, inIf });
+  }
+  /** ICMPv6 for this device: echo, errors and Neighbor Discovery */
+  deliverIcmp(ip, ifname, frame) {
+    const m = ip.l4;
+    if (m.type === 135) return this.onNs(ip, ifname, frame);
+    if (m.type === 136) return this.onNa(ip, ifname, frame);
+    if (m.type === 133) return this.onRs(ip, ifname, frame);
+    if (m.type === 134) { for (const s of [...this.l3.sessions]) s.onRa?.(ip, ifname); return this.onRa(ip, ifname, frame); }
+    if (m.type === 128) {
+      const src = isMcast6(ip.dst) ? this.ifAddr(ifname, !isLinkLocal6(ip.src)) : ip.dst;
+      this.rec('ok', `receives Echo Request from ${ip.src} (seq ${m.seq}) and replies`, { frame, tag: 'echo-request-received', data: { from: ip.src, v6: true } });
+      const reply = ipPacket({ src, dst: ip.src, proto: PROTO.ICMP6, trace: ip.trace, l4: icmp6(129, 0, { ident: m.ident, seq: m.seq, dataLen: m.dataLen }) });
+      if (isLinkLocal6(ip.src)) reply.zone = ifname;
+      this.output(reply, { ifname });
+      return;
+    }
+    if (m.type === 129) {
+      this.rec('ok', `receives Echo Reply from ${ip.src} (seq ${m.seq})`, { frame, tag: 'echo-reply-received', data: { from: ip.src, size: m.dataLen, v6: true } });
+      for (const s of [...this.l3.sessions]) s.onEchoReply?.(ip);
+      return;
+    }
+    if (m.type === 1 || m.type === 2 || m.type === 3) {
+      if (m.type === 2 && m.mtu && m.orig) {
+        this.l3.pmtu.set(m.orig.dst, m.mtu);
+        this.rec('learn', `remembers: path to ${m.orig.dst} has MTU ${m.mtu} (ICMPv6 Packet Too Big)`, { frame, tag: 'pmtu-learned', data: { mtu: m.mtu, v6: true } });
+        if (m.orig.proto === PROTO.TCP) this.l3.tcpPmtu(m.orig, m.mtu);
+      } else this.rec('err', `receives ICMPv6 ${icmp6Name(m.type, m.code)} from ${ip.src}`, { frame, tag: 'icmp-error-received', data: { type: m.type, code: m.code, v6: true } });
+      const [t, c] = V4_EQUIV[`${m.type}/${m.code}`] || [3, 1];
+      const shim = { ...ip, l4: { ...m, type: t, code: c, t6: m.type, c6: m.code } };
+      for (const s of [...this.l3.sessions]) s.onIcmpError?.(shim);
+    }
+  }
+  onNs(ip, ifname, frame) {
+    const m = ip.l4, target = norm6(m.target);
+    const mine = this.addrs(ifname).find(a => a.ip === target);
+    if (ip.src === '::') {
+      // Duplicate address detection by someone else
+      if (!mine || frame.src === this.dev.mac(ifname)) return;
+      if (mine.state === 'tentative') return this.duplicate(ifname, target, frame);
+      this.rec('info', `defends ${target}: another device is testing it (DAD), answers with a Neighbor Advertisement to all nodes`, { frame, tag: 'dad-defend', data: { ip: target } });
+      this.sendFrame(ifname, mcastMac6(ALL_NODES), ipPacket({ src: target, dst: ALL_NODES, ttl: 255, proto: PROTO.ICMP6, l4: icmp6(136, 0, { target, tlla: this.dev.mac(ifname), r: this.isRouter, s: false, o: true }) }));
+      return;
+    }
+    if (m.slla) this.learn(norm6(ip.src), m.slla, ifname, 'STALE', 'from the solicitation');
+    if (!mine || !this.usable(mine)) return;
+    this.rec('info', `answers the Neighbor Solicitation: ${target} is at ${this.dev.mac(ifname)}`, { frame, tag: 'na-sent', data: { ip: target } });
+    this.sendFrame(ifname, m.slla || frame.src, ipPacket({ src: target, dst: ip.src, ttl: 255, proto: PROTO.ICMP6, trace: ip.trace, l4: icmp6(136, 0, { target, tlla: this.dev.mac(ifname), r: this.isRouter, s: true, o: true }) }));
+  }
+  onNa(ip, ifname, frame) {
+    const m = ip.l4, target = norm6(m.target);
+    const mine = this.addrs(ifname).find(a => a.ip === target);
+    if (mine && frame.src !== this.dev.mac(ifname)) { if (mine.state === 'tentative') this.duplicate(ifname, target, frame); return; }
+    const e = this.nd.get(target);
+    if (!e && !this.pending.has(target)) { this.rec('ignore', `unsolicited Neighbor Advertisement for ${target}: no entry, ignored`, { frame, tag: 'na-ignored' }); return; }
+    this.learn(target, m.tlla || frame.src, ifname, m.s ? 'REACHABLE' : 'STALE', m.s ? 'Neighbor Advertisement' : 'unsolicited advertisement', !!m.r);
+  }
+
+  // ---- Duplicate address detection
+  dad(ifname, ip, then) {
+    const key = ifname + '|' + ip;
+    this.state.set(key, 'tentative');
+    this.rec('info', `tests whether ${ip} is free (duplicate address detection: Neighbor Solicitation from ::)`, { tag: 'dad-start', data: { ip, ifname } });
+    this.sendFrame(ifname, mcastMac6(solicitedNode(ip)), ipPacket({ src: '::', dst: solicitedNode(ip), ttl: 255, proto: PROTO.ICMP6, l4: icmp6(135, 0, { target: ip }) }));
+    this.later(T6.dad, () => {
+      if (this.state.get(key) !== 'tentative') return;
+      this.state.set(key, 'preferred');
+      this.rec('ok', `${ip} on ${ifname} is unique and usable now`, { tag: 'dad-ok', data: { ip, ifname } });
+      this.sim.emit('config', this.dev.id);
+      then?.();
+    });
+  }
+  duplicate(ifname, ip, frame) {
+    this.state.set(ifname + '|' + ip, 'duplicate');
+    this.rec('err', `${ip} is already in use by ${frame.src}: duplicate address detected, the address is not used (dadfailed)`, { frame, tag: 'dad-failed', data: { ip, ifname, by: frame.src } });
+    this.sim.emit('config', this.dev.id);
+  }
+
+  // ---- Router solicitation and advertisement, SLAAC
+  raIfaces() { const ra = this.cfg.ipv6?.ra || []; return this.isRouter ? this.ifnames().filter(n => ra.includes(n)) : []; }
+  sendRs(ifname) {
+    if (this.raSeen || this.rsTries >= T6.rsTries) return;
+    this.rsTries++;
+    const src = this.ifAddr(ifname, false) || '::';
+    this.rec('info', `asks the routers on ${ifname} for their prefixes: Router Solicitation to ff02::2${this.rsTries > 1 ? ` (attempt ${this.rsTries})` : ''}`, { tag: 'rs-sent' });
+    this.sendFrame(ifname, mcastMac6(ALL_ROUTERS), ipPacket({ src, dst: ALL_ROUTERS, ttl: 255, proto: PROTO.ICMP6, l4: icmp6(133, 0, { slla: src === '::' ? null : this.dev.mac(ifname) }) }));
+    this.later(T6.rsRetry, () => {
+      if (!this.raSeen && this.rsTries >= T6.rsTries) this.rec('err', `no Router Advertisement on ${ifname}: no IPv6 prefix and no default router`, { tag: 'ra-none' });
+      this.sendRs(ifname);
+    });
+  }
+  onRs(ip, ifname, frame) {
+    if (!this.raIfaces().includes(ifname)) {
+      if (this.isRouter) this.rec('ignore', `Router Solicitation on ${ifname}: router advertisements are not turned on for this interface`, { frame, tag: 'rs-ignored' });
+      return;
+    }
+    if (ip.l4.slla && ip.src !== '::') this.learn(norm6(ip.src), ip.l4.slla, ifname, 'STALE', 'from the router solicitation');
+    this.sendRa(ifname, true);
+  }
+  sendRa(ifname, solicited = false) {
+    const src = this.ifAddr(ifname, false);
+    if (!src) return;
+    const prefixes = this.addrs(ifname).filter(a => a.scope === 'global' && a.origin === 'static').map(a => ({ prefix: parseCidr6(`${a.ip}/${a.len}`).net, len: a.len, auto: a.len === 64, valid: 2592000, preferred: 604800 }));
+    const rdnss = String(this.cfg.ipv6?.rdnss || '').split(/[\s,]+/).filter(isIp6).map(norm6);
+    const ra = icmp6(134, 0, { hopLimit: 64, managed: false, other: false, lifetime: T6.routerLifetime, slla: this.dev.mac(ifname), mtu: this.l3.mtu(ifname), prefixes, rdnss, periodic: !solicited });
+    this.rec('info', `${solicited ? 'answers with' : 'sends'} a Router Advertisement on ${ifname}: ${prefixes.length ? 'prefix ' + prefixes.map(p => `${p.prefix}/${p.len}`).join(', ') : 'no prefix'}${rdnss.length ? ', DNS ' + rdnss.join(', ') : ''}, default router ${src}`,
+      { tag: solicited ? 'ra-sent' : 'ra-periodic', data: { ifname } });
+    this.sendFrame(ifname, mcastMac6(ALL_NODES), ipPacket({ src, dst: ALL_NODES, ttl: 255, proto: PROTO.ICMP6, l4: ra }));
+  }
+  onRa(ip, ifname, frame) {
+    if (this.isRouter) return;
+    const m = ip.l4;
+    if (!isLinkLocal6(ip.src)) { this.rec('drop', `ignores a Router Advertisement from ${ip.src}: it must come from a link-local address`, { frame, tag: 'ra-bad' }); return; }
+    const first = !this.raSeen;
+    this.raSeen = true;
+    const key = norm6(ip.src) + '|' + ifname;
+    if (m.lifetime > 0) {
+      const isNew = !this.routers.has(key);
+      this.routers.set(key, { ip: norm6(ip.src), ifname, until: this.sim.time + m.lifetime * 1000, mtu: m.mtu });
+      if (isNew) this.rec('learn', `uses ${ip.src} as its IPv6 default router (from the Router Advertisement, valid ${m.lifetime} s)`, { frame, tag: 'ra-router', data: { router: ip.src } });
+    } else this.routers.delete(key);
+    if (m.slla) this.learn(norm6(ip.src), m.slla, ifname, 'STALE', 'from the router advertisement', true);
+    if (m.rdnss?.length && m.rdnss.join() !== this.rdnss.join()) { this.rdnss = [...m.rdnss]; this.rec('learn', `learns the DNS server ${m.rdnss.join(', ')} from the Router Advertisement (RDNSS)`, { frame, tag: 'ra-rdnss', data: { dns: m.rdnss } }); }
+    if (this.cfg.ipv6?.slaac !== false) {
+      const list = this.slaac.get(ifname) || [];
+      for (const p of m.prefixes || []) {
+        if (!p.auto || p.len !== 64) continue;
+        const ip6 = slaacFor(p.prefix, this.dev.mac(ifname));
+        if (list.some(a => a.ip === ip6)) continue;
+        list.push({ ip: ip6, len: 64, prefix: p.prefix });
+        this.slaac.set(ifname, list);
+        this.rec('learn', `forms ${ip6} from the prefix ${p.prefix}/64 and its MAC ${this.dev.mac(ifname)} (SLAAC, EUI-64)`, { frame, tag: 'slaac-addr', data: { ip: ip6, prefix: p.prefix } });
+        this.dad(ifname, ip6);
+      }
+    }
+    if (first) this.sim.emit('config', this.dev.id);
+  }
+
+  // ---- Life cycle
+  start() {
+    this.stop();
+    this.snap = this.snapshot();
+    if (!this.on) return;
+    let k = 0;
+    for (const n of this.ifnames()) {
+      const delay = 200 + 100 * k++ + this.sim.random() * 200;
+      this.later(delay, () => {
+        const addrs = this.addrs(n);
+        const ll = addrs[0];
+        this.dad(n, ll.ip, () => {
+          if (!this.isRouter && this.cfg.ipv6?.slaac !== false) this.sendRs(n);
+          if (this.raIfaces().includes(n)) this.sendRa(n);
+        });
+        for (const a of addrs.slice(1)) if (a.origin === 'static') this.dad(n, a.ip);
+      });
+    }
+    if (this.raIfaces().length) {
+      const tick = () => { for (const n of this.raIfaces()) this.sendRa(n); this.later(T6.raInterval, tick); };
+      this.later(T6.raInterval, tick);
+    }
+  }
+  stop() { for (const t of this.timers) this.sim.cancel(t); this.timers = []; }
+  /** A cable was plugged in: the interface tests its addresses, asks for routers or advertises itself */
+  onLink(ifname, up) {
+    if (!this.on || !up || !this.ifnames().includes(ifname)) return;
+    for (const a of this.addrs(ifname)) if (!this.state.has(ifname + '|' + a.ip)) this.dad(ifname, a.ip, a.scope === 'link' ? () => {
+      if (!this.isRouter && this.cfg.ipv6?.slaac !== false) { this.rsTries = 0; this.sendRs(ifname); }
+      if (this.raIfaces().includes(ifname)) this.sendRa(ifname);
+    } : null);
+  }
+  snapshot() { return JSON.stringify([this.cfg.ipv6, Object.values(this.cfg.ifaces || {}).map(i => i.ip6 || '')]); }
+  /** After a configuration change: new addresses run DAD, RA settings take effect, or everything restarts */
+  onConfig() {
+    const snap = this.snapshot();
+    if (snap === this.snap) return;
+    const wasOn = this.snap && JSON.parse(this.snap)[0]?.enabled;
+    this.snap = snap;
+    if (!this.on) { this.stop(); this.nd.clear(); this.routers.clear(); return; }
+    if (!wasOn) { this.reset(); return this.start(); }
+    this.stop();
+    for (const n of this.ifnames()) for (const a of this.addrs(n)) if (!this.state.has(n + '|' + a.ip)) this.dad(n, a.ip);
+    // SLAAC was turned (back) on: ask the routers right away instead of waiting for the next advertisement
+    if (!this.isRouter && this.cfg.ipv6?.slaac !== false) for (const n of this.ifnames()) if (!(this.slaac.get(n) || []).length) { this.raSeen = false; this.rsTries = 0; this.sendRs(n); }
+    if (this.raIfaces().length) {
+      for (const n of this.raIfaces()) this.sendRa(n);
+      const tick = () => { for (const n of this.raIfaces()) this.sendRa(n); this.later(T6.raInterval, tick); };
+      this.later(T6.raInterval, tick);
+    }
+  }
+}
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
   cat > "$W/js/lab.js" <<'__PACKETPILOT_FILE_END__'
@@ -6505,15 +7416,18 @@ export class Lab {
   }
   /** Address lines under a device: one for hosts, one per configured interface for routers and VTEPs */
   addrLines(d) {
+    // IPv6: the global addresses (static or from SLAAC) once they are usable
+    const v6 = this.sim.dev(d.id)?.l3?.v6;
+    const six = n => v6?.on ? v6.addrs(n).filter(a => a.scope === 'global' && a.state !== 'duplicate').map(a => `${a.ip}/${a.len}${a.origin === 'slaac' ? ' (SLAAC)' : ''}`) : [];
     if (d.type === 'pc' || d.type === 'server') {
       const i = d.ifaces.eth1;
-      if (i.dhcp) { const l = this.sim.dev(d.id)?.l3?.lease; return [l ? `${l.ip}/${l.prefix} (DHCP)` : 'DHCP …']; }
-      return isIp(i.ip) ? [`${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}`] : [];
+      if (i.dhcp) { const l = this.sim.dev(d.id)?.l3?.lease; return [l ? `${l.ip}/${l.prefix} (DHCP)` : 'DHCP …', ...six('eth1')]; }
+      return [...(isIp(i.ip) ? [`${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}`] : []), ...six('eth1')];
     }
     if (d.type === 'router' || d.type === 'vtep') {
-      return Object.entries(d.ifaces).filter(([, i]) => isIp(i.ip))
+      return Object.entries(d.ifaces).filter(([n, i]) => isIp(i.ip) || six(n).length)
         .sort(([a], [b]) => (a === 'lo') - (b === 'lo') || a.localeCompare(b, 'en', { numeric: true }))
-        .map(([n, i]) => `${n} ${i.ip}/${i.prefix}`);
+        .flatMap(([n, i]) => [...(isIp(i.ip) ? [`${n} ${i.ip}/${i.prefix}`] : []), ...six(n).map(x => `${n} ${x}`)]);
     }
     return [];
   }
@@ -6816,7 +7730,7 @@ export class Lab {
           h('li', {}, 'Ctrl+Z undoes a change, Ctrl+Y redoes it. Right-click on a device, cable, area or packet shows what you can do with it.'),
           h('li', {}, 'Clicking a packet takes it apart into its layers in the packet inspector.')),
         h('h4', {}, 'Layer colors'),
-        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'Routing (OSPF, VRRP, BFD)']]
+        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4, IPv6'], ['icmp', 'ICMP, ICMPv6, NDP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'Routing (OSPF, VRRP, BFD)']]
           .map(([k, n]) => h('span', { class: 'chip' }, h('i', { class: `bg-${k}`, style: { width: '10px', height: '10px', borderRadius: '2px', display: 'inline-block' } }), n)))));
       return;
     }
@@ -7346,8 +8260,8 @@ export const bpduLen = b => (b?.version === 2 ? RST_BPDU_LEN : BPDU_LEN);
 export const STP_MAC = '01:80:c2:00:00:00';
 export const BCAST = 'ff:ff:ff:ff:ff:ff';
 export const VXLAN_PORT = 4789;
-export const PROTO = { ICMP: 1, TCP: 6, UDP: 17, OSPF: 89, VRRP: 112 };
-export const PROTO_NAME = { 1: 'ICMP', 6: 'TCP', 17: 'UDP', 89: 'OSPF', 112: 'VRRP' };
+export const PROTO = { ICMP: 1, TCP: 6, UDP: 17, ICMP6: 58, OSPF: 89, VRRP: 112 };
+export const PROTO_NAME = { 1: 'ICMP', 6: 'TCP', 17: 'UDP', 58: 'ICMPv6', 89: 'OSPF', 112: 'VRRP' };
 export const DHCP_LEN = 300;
 export const VRRP_MAC = '01:00:5e:00:00:12', OSPF_MAC = '01:00:5e:00:00:05';
 export const isMcastIp = ip => { const n = ipToInt(ip); return n !== null && (n >>> 28) === 14; };
@@ -7384,6 +8298,87 @@ export function parseCidr(s) {
   return { net: intToIp(netOf(m[1], len)), len };
 }
 export const cidr = (net, len) => `${net}/${len}`;
+
+// ---------- IPv6 ----------
+export const IP6_HDR = 40;
+/** 2001:db8::1 → [0x2001, 0xdb8, 0, 0, 0, 0, 0, 1], or null. A zone like %eth1 is ignored. */
+export function parse6(s) {
+  if (typeof s !== 'string') return null;
+  s = s.trim().split('%')[0].toLowerCase();
+  if (!s.includes(':') || !/^[0-9a-f:]+$/.test(s)) return null;
+  const parts = s.split('::');
+  if (parts.length > 2) return null;
+  const side = x => (x ? x.split(':') : []);
+  const a = side(parts[0]), b = parts.length === 2 ? side(parts[1]) : [];
+  if (parts.length === 1 && a.length !== 8) return null;
+  if (parts.length === 2 && a.length + b.length > 7) return null;
+  const words = [...a, ...Array(8 - a.length - b.length).fill('0'), ...b];
+  if (words.some(w => !/^[0-9a-f]{1,4}$/.test(w))) return null;
+  return words.map(w => parseInt(w, 16));
+}
+/** Shortest form after RFC 5952: lower case, leading zeros dropped, the longest run of zeros as :: */
+export function fmt6(w) {
+  if (!w) return '';
+  let best = -1, len = 0;
+  for (let i = 0; i < 8;) {
+    if (w[i] !== 0) { i++; continue; }
+    let j = i; while (j < 8 && w[j] === 0) j++;
+    if (j - i > len && j - i > 1) { best = i; len = j - i; }
+    i = j;
+  }
+  const hex = w.map(x => x.toString(16));
+  if (best < 0) return hex.join(':');
+  return hex.slice(0, best).join(':') + '::' + hex.slice(best + len).join(':');
+}
+export const isIp6 = s => parse6(s) !== null;
+export const norm6 = s => fmt6(parse6(s));
+export const isAnyIp = s => isIp(s) || isIp6(s);
+export const zoneOf6 = s => (String(s).includes('%') ? String(s).split('%')[1] : null);
+export function mask6(w, len) {
+  return w.map((x, i) => { const bits = Math.max(0, Math.min(16, len - i * 16)); return bits === 16 ? x : bits === 0 ? 0 : x & ((0xffff << (16 - bits)) & 0xffff); });
+}
+export function inNet6(addr, net, len) {
+  const a = parse6(addr), b = parse6(net);
+  if (!a || !b) return false;
+  return mask6(a, len).every((x, i) => x === mask6(b, len)[i]);
+}
+export function parseCidr6(s) {
+  if (s === 'default' || s === '::/0') return { net: '::', len: 0 };
+  const [a, l] = String(s).trim().split('/');
+  const w = parse6(a);
+  const len = l === undefined ? 128 : Number(l);
+  if (!w || !(len >= 0 && len <= 128) || !/^\d*$/.test(l ?? '')) return null;
+  return { net: fmt6(mask6(w, len)), len };
+}
+/** Interface identifier from a MAC (modified EUI-64): flip the U/L bit, insert ff:fe in the middle */
+export function eui64(mac) {
+  const b = mac.split(':').map(x => parseInt(x, 16));
+  b[0] ^= 2;
+  return [(b[0] << 8) | b[1], (b[2] << 8) | 0xff, 0xfe00 | b[3], (b[4] << 8) | b[5]];
+}
+export const linkLocalFor = mac => fmt6([0xfe80, 0, 0, 0, ...eui64(mac)]);
+export const slaacFor = (prefix, mac) => fmt6([...parse6(prefix).slice(0, 4), ...eui64(mac)]);
+export const isLinkLocal6 = a => ((parse6(a)?.[0] ?? 0) & 0xffc0) === 0xfe80;
+export const isMcast6 = a => ((parse6(a)?.[0] ?? 0) >> 8) === 0xff;
+export const ALL_NODES = 'ff02::1', ALL_ROUTERS = 'ff02::2';
+/** Solicited-node multicast group: ff02::1:ff plus the last 24 bits of the address */
+export function solicitedNode(addr) {
+  const w = parse6(addr);
+  return fmt6([0xff02, 0, 0, 0, 0, 1, 0xff00 | (w[6] & 0xff), w[7]]);
+}
+/** Multicast MAC for an IPv6 group: 33:33 plus the last 32 bits */
+export function mcastMac6(addr) {
+  const w = parse6(addr);
+  return ['33', '33', w[6] >> 8, w[6] & 255, w[7] >> 8, w[7] & 255].map(x => typeof x === 'string' ? x : x.toString(16).padStart(2, '0')).join(':');
+}
+/** ICMPv6 message length: echo with data, NDP messages with their options */
+export function icmp6Len(m) {
+  if (m.type === 128 || m.type === 129) return 8 + (m.dataLen || 0);
+  if (m.type === 133) return 8 + (m.slla ? 8 : 0);
+  if (m.type === 134) return 16 + (m.slla ? 8 : 0) + 32 * (m.prefixes?.length || 0) + (m.mtu ? 8 : 0) + (m.rdnss?.length ? 8 + 16 * m.rdnss.length : 0);
+  if (m.type === 135 || m.type === 136) return 24 + (m.slla || m.tlla ? 8 : 0);
+  return 8 + (m.dataLen || 48);
+}
 export const isBroadcastMac = m => m === BCAST;
 export function isGroupMac(mac) { return (parseInt(mac.slice(0, 2), 16) & 1) === 1; }
 export function isLocalMac(mac) { return (parseInt(mac.slice(0, 2), 16) & 2) === 2; }
@@ -7408,6 +8403,7 @@ export function l4Len(ip) {
   if (ip.frag) return ip.frag.len;
   if (!l4) return 0;
   if (l4.kind === 'icmp') return ICMP_HDR + (l4.dataLen || 0);
+  if (l4.kind === 'icmp6') return icmp6Len(l4);
   if (l4.kind === 'udp') return UDP_HDR + udpPayloadLen(l4);
   if (l4.kind === 'tcp') return tcpHdrLen(l4) + (l4.dataLen || 0);
   if (l4.kind === 'vrrp') return 8 + 4 * (l4.vips?.length || 1);
@@ -7442,14 +8438,14 @@ export function udpPayloadLen(udp) {
   if (p.kind === 'bfd') return 24;
   return p.len || 0;
 }
-export function ipTotalLen(ip) { return IP_HDR + l4Len(ip); }
+export function ipTotalLen(ip) { return (ip.v === 6 ? IP6_HDR : IP_HDR) + l4Len(ip); }
 /** Length from destination MAC to end of payload, without FCS (as tcpdump shows it) */
 export function frameLen(f) {
   return ETH_HDR + (f.vlan ? VLAN_TAG : 0) + framePayloadLen(f);
 }
 export function framePayloadLen(f) {
   if (f.type === 'arp') return ARP_LEN;
-  if (f.type === 'ipv4') return f.payload.totalLength;
+  if (f.type === 'ipv4' || f.type === 'ipv6') return f.payload.totalLength;
   if (f.type === 'stp') return LLC_LEN + bpduLen(f.payload);
   return f.payload?.len || 0;
 }
@@ -7462,7 +8458,7 @@ __PACKETPILOT_FILE_END__
   cat > "$W/js/packets.js" <<'__PACKETPILOT_FILE_END__'
 // Building, describing and dissecting frames
 import { ETH_HDR, VLAN_TAG, IP_HDR, UDP_HDR, ICMP_HDR, VXLAN_HDR, ARP_LEN, FCS, PROTO, LLC_LEN, bpduLen,
-  ipTotalLen, frameLen, frameWireLen, isGroupMac, isLocalMac, BCAST, STP_MAC, tcpHdrLen, dnsLen, udpPayloadLen, PROTO_NAME, ospfLen, DHCP_LEN } from './net.js';
+  ipTotalLen, frameLen, frameWireLen, isGroupMac, isLocalMac, BCAST, STP_MAC, tcpHdrLen, dnsLen, udpPayloadLen, PROTO_NAME, ospfLen, DHCP_LEN, IP6_HDR, icmp6Len, isMcast6, isLinkLocal6 } from './net.js';
 const ROLE_NAME = { root: 'Root port', designated: 'Designated', alternate: 'Alternate', backup: 'Backup' };
 
 const DHCP_NAME = { DISCOVER: 'Discover', OFFER: 'Offer', REQUEST: 'Request', ACK: 'ACK', NAK: 'NAK', RELEASE: 'Release' };
@@ -7478,6 +8474,13 @@ export function arpPacket(op, sha, spa, tha, tpa) {
   return { op, sha, spa, tha: tha || '00:00:00:00:00:00', tpa };
 }
 export function ipPacket({ src, dst, ttl = 64, proto, df = false, l4, trace, id }) {
+  // IPv6: same field names (ttl is the hop limit, proto the next header), 40 byte header without checksum
+  if (String(dst).includes(':') || String(src).includes(':')) {
+    const p6 = { v: 6, src, dst, ttl, proto: proto === PROTO.ICMP ? PROTO.ICMP6 : proto, df: true, mf: false, fragOffset: 0, tc: 0, flow: 0,
+      id: id ?? nextIpId(), l4, trace: trace ?? nextTrace(), checksum: 0, totalLength: 0 };
+    p6.totalLength = ipTotalLen(p6);
+    return p6;
+  }
   const p = { src, dst, ttl, proto, df, mf: false, fragOffset: 0, tos: 0,
     id: id ?? nextIpId(), l4, trace: trace ?? nextTrace(), checksum: 0, totalLength: 0 };
   p.totalLength = ipTotalLen(p);
@@ -7485,6 +8488,7 @@ export function ipPacket({ src, dst, ttl = 64, proto, df = false, l4, trace, id 
   return p;
 }
 export function icmp(type, code, extra = {}) { return { kind: 'icmp', type, code, ...extra }; }
+export function icmp6(type, code, extra = {}) { return { kind: 'icmp6', type, code, ...extra }; }
 export function udp(sport, dport, payload) { return { kind: 'udp', sport, dport, payload }; }
 export function tcp(sport, dport, seq, ack, flags, extra = {}) { return { kind: 'tcp', sport, dport, seq: seq >>> 0, ack: ack >>> 0, flags, win: 64240, dataLen: 0, ...extra }; }
 export const tcpFlags = f => ['SYN', 'FIN', 'RST', 'PSH', 'ACK'].filter(k => f[k]).join(', ') || 'none';
@@ -7512,6 +8516,10 @@ export const ICMP_NAMES = {
   '3/13': 'Destination Unreachable: Communication Administratively Prohibited'
 };
 export function icmpName(t, c) { return ICMP_NAMES[`${t}/${c}`] || `Type ${t} code ${c}`; }
+const ICMP6_NAMES = { '1/0': 'Destination Unreachable: No Route', '1/1': 'Destination Unreachable: Administratively Prohibited', '1/3': 'Destination Unreachable: Address Unreachable',
+  '1/4': 'Destination Unreachable: Port Unreachable', '2/0': 'Packet Too Big', '3/0': 'Time Exceeded (hop limit)', '128/0': 'Echo Request', '129/0': 'Echo Reply',
+  '133/0': 'Router Solicitation', '134/0': 'Router Advertisement', '135/0': 'Neighbor Solicitation', '136/0': 'Neighbor Advertisement' };
+export function icmp6Text(t, c) { return ICMP6_NAMES[`${t}/${c}`] || `Type ${t} code ${c}`; }
 
 /** Short label for the animation */
 export function shortLabel(f) {
@@ -7533,6 +8541,7 @@ export function shortLabel(f) {
     if (l4.type === 3) return 'Unreach';
     return 'ICMP';
   }
+  if (l4.kind === 'icmp6') return { 128: 'Ping6', 129: 'Pong6', 133: 'RS', 134: 'RA', 135: 'NS', 136: 'NA', 1: 'Unreach', 2: 'MTU!', 3: 'HL!' }[l4.type] || 'ICMPv6';
   if (l4.kind === 'udp' && l4.payload?.kind === 'vxlan') return 'VXLAN';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dns') return 'DNS';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return 'DHCP ' + (DHCP_NAME[l4.payload.op] || '');
@@ -7562,7 +8571,7 @@ export function layerKinds(f) {
     out.push('ip');
     const l4 = cur.payload.l4;
     if (!l4 || (cur.payload.frag && !cur.payload.frag.first)) { out.push('frag'); break; }
-    if (l4.kind === 'icmp') { out.push('icmp'); break; }
+    if (l4.kind === 'icmp' || l4.kind === 'icmp6') { out.push('icmp'); break; }
     if (l4.kind === 'vrrp' || l4.kind === 'ospf') { out.push('rt'); break; }
     if (l4.kind === 'udp') {
       out.push('udp');
@@ -7595,10 +8604,18 @@ export function summary(f) {
   }
   const ip = f.payload;
   const base = `${ip.src} > ${ip.dst}`;
-  if (ip.frag && !ip.frag.first) return `${tag}IP fragment ${base}, id ${ip.id}, offset ${ip.fragOffset}, ${ip.frag.len} bytes${ip.mf ? ', more follow' : ', last'}`;
+  if (ip.frag && !ip.frag.first) return `${tag}IP${ip.v === 6 ? 'v6' : ''} fragment ${base}, id ${ip.id}, offset ${ip.fragOffset}, ${ip.frag.len} bytes${ip.mf ? ', more follow' : ', last'}`;
   const l4 = ip.l4;
   let s;
-  if (l4.kind === 'icmp') {
+  if (l4.kind === 'icmp6') {
+    const m = l4;
+    s = m.type === 128 || m.type === 129 ? `ICMPv6 ${m.type === 128 ? 'Echo Request' : 'Echo Reply'} ${base}, seq ${m.seq}, hop limit ${ip.ttl}, ${ip.totalLength} bytes`
+      : m.type === 135 ? (ip.src === '::' ? `ICMPv6 Neighbor Solicitation (DAD): is anyone using ${m.target}?` : `ICMPv6 Neighbor Solicitation: who has ${m.target}? Tell ${ip.src}`)
+      : m.type === 136 ? `ICMPv6 Neighbor Advertisement: ${m.target} is at ${m.tlla}${m.r ? ' (router)' : ''}`
+      : m.type === 133 ? `ICMPv6 Router Solicitation from ${ip.src}`
+      : m.type === 134 ? `ICMPv6 Router Advertisement from ${ip.src}: ${(m.prefixes || []).map(p => `${p.prefix}/${p.len}`).join(', ') || 'no prefix'}${m.rdnss?.length ? ', DNS ' + m.rdnss.join(', ') : ''}`
+      : `ICMPv6 ${icmp6Text(m.type, m.code)}${m.mtu ? ` (MTU ${m.mtu})` : ''} ${base}`;
+  } else if (l4.kind === 'icmp') {
     if (l4.type === 8 || l4.type === 0) s = `ICMP ${l4.type === 8 ? 'Echo Request' : 'Echo Reply'} ${base}, seq ${l4.seq}, TTL ${ip.ttl}, ${ip.totalLength} bytes`;
     else s = `ICMP ${icmpName(l4.type, l4.code)}${l4.mtu ? ` (MTU ${l4.mtu})` : ''} ${base}`;
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'vxlan') {
@@ -7674,14 +8691,14 @@ export function dissect(f, depth = 0) {
   layers.push({ kind: 'eth', depth, name: `${pre}Ethernet II`, bytes: ETH_HDR, fields: [
     ['Destination MAC', f.dst, macNote(f.dst)],
     ['Source MAC', f.src, macNote(f.src)],
-    ['EtherType', f.vlan ? '0x8100 (802.1Q tag follows)' : (f.type === 'arp' ? '0x0806 (ARP)' : '0x0800 (IPv4)'), 'Says how to read the payload']
+    ['EtherType', f.vlan ? '0x8100 (802.1Q tag follows)' : (f.type === 'arp' ? '0x0806 (ARP)' : f.type === 'ipv6' ? '0x86DD (IPv6)' : '0x0800 (IPv4)'), 'Says how to read the payload']
   ]});
   if (f.vlan) layers.push({ kind: 'vlan', depth, name: `${pre}802.1Q tag`, bytes: VLAN_TAG, fields: [
     ['TPID', '0x8100', 'Identifies the tag'],
     ['PCP (priority)', String(f.vlan.pcp || 0), '0 to 7'],
     ['DEI', '0', 'May be dropped under congestion'],
     ['VID (VLAN)', String(f.vlan.vid), 'Usable 1 to 4094'],
-    ['EtherType', f.type === 'arp' ? '0x0806 (ARP)' : '0x0800 (IPv4)', '']
+    ['EtherType', f.type === 'arp' ? '0x0806 (ARP)' : f.type === 'ipv6' ? '0x86DD (IPv6)' : '0x0800 (IPv4)', '']
   ]});
   if (f.type === 'arp') {
     const a = f.payload;
@@ -7695,6 +8712,7 @@ export function dissect(f, depth = 0) {
     return layers;
   }
   const ip = f.payload;
+  if (ip.v === 6) return dissect6(f, ip, layers, depth, pre);
   const flags = [ip.df ? 'DF' : null, ip.mf ? 'MF' : null].filter(Boolean).join(', ') || 'none';
   layers.push({ kind: 'ip', depth, name: `${pre}IPv4`, bytes: IP_HDR, fields: [
     ['Version / IHL', '4 / 5 (20 bytes)', ''],
@@ -7708,6 +8726,40 @@ export function dissect(f, depth = 0) {
     ['Source IP', ip.src, 'Stays the same end to end'],
     ['Destination IP', ip.dst, '']
   ]});
+  return l4Layers(f, ip, layers, depth, pre);
+}
+function dissect6(f, ip, layers, depth, pre) {
+  const g = a => isMcast6(a) ? (a === 'ff02::1' ? 'All nodes on the link' : a === 'ff02::2' ? 'All routers on the link' : a.startsWith('ff02::1:ff') ? 'Solicited-node group of one address' : 'Multicast group')
+    : isLinkLocal6(a) ? 'Link-local: only valid on this link' : a === '::' ? 'Unspecified: the sender has no address yet' : 'Global address';
+  layers.push({ kind: 'ip', depth, name: `${pre}IPv6`, bytes: IP6_HDR, fields: [
+    ['Version', '6', ''], ['Traffic Class / Flow Label', `${ip.tc || 0} / ${ip.flow || 0}`, 'Priority and flow marking'],
+    ['Payload Length', `${ip.totalLength - IP6_HDR} bytes`, 'Only the payload, the header always has 40 bytes'],
+    ['Next Header', `${ip.frag ? '44 (Fragment)' : `${ip.proto} (${PROTO_NAME[ip.proto] || '?'})`}`, ip.frag ? 'A fragment header follows: only the sender may fragment in IPv6' : 'Like the protocol field in IPv4'],
+    ['Hop Limit', String(ip.ttl), 'The TTL of IPv6: every router subtracts 1'],
+    ['Source Address', ip.src, g(ip.src)], ['Destination Address', ip.dst, g(ip.dst)]] });
+  if (ip.frag) layers.push({ kind: 'ip', depth, name: 'Fragment header', bytes: 8, fields: [['Next Header', `${ip.proto} (${PROTO_NAME[ip.proto] || '?'})`, ''],
+    ['Fragment Offset', `${ip.fragOffset} bytes`, ''], ['M flag', ip.mf ? '1 (more follow)' : '0 (last)', ''], ['Identification', String(ip.id), 'Same in all fragments']] });
+  const m = ip.l4;
+  if (m?.kind !== 'icmp6' || (ip.frag && !ip.frag.first)) return l4Layers(f, ip, layers, depth, pre);
+  const fields = [['Type', `${m.type} (${icmp6Text(m.type, m.code)})`, m.type >= 133 && m.type <= 136 ? 'Neighbor Discovery: replaces ARP and finds routers' : ''], ['Code', String(m.code), '']];
+  if (m.type === 128 || m.type === 129) fields.push(['Identifier / Sequence', `${m.ident} / ${m.seq}`, ''], ['Data', `${m.dataLen} bytes`, '']);
+  if (m.type === 135 || m.type === 136) fields.push(['Target Address', m.target, m.type === 135 ? 'Whose MAC address is wanted' : 'The address this answer is about']);
+  if (m.type === 136) fields.push(['Flags', [m.r && 'R (router)', m.s && 'S (solicited)', m.o && 'O (override)'].filter(Boolean).join(', ') || 'none', '']);
+  if (m.slla) fields.push(['Option: source link-layer address', m.slla, 'The MAC of the sender']);
+  if (m.tlla) fields.push(['Option: target link-layer address', m.tlla, 'The answer: the wanted MAC']);
+  if (m.type === 134) {
+    fields.push(['Cur Hop Limit', String(m.hopLimit), 'Hop limit the hosts should use'], ['Flags M / O', `${m.managed ? 1 : 0} / ${m.other ? 1 : 0}`, 'M: addresses from DHCPv6. O: other settings from DHCPv6'],
+      ['Router Lifetime', `${m.lifetime} s`, 'How long this router may be the default router']);
+    for (const x of m.prefixes || []) fields.push(['Option: prefix information', `${x.prefix}/${x.len}`, `A flag ${x.auto ? '1: hosts form their own address (SLAAC)' : '0'}, valid ${x.valid} s`]);
+    if (m.mtu) fields.push(['Option: MTU', String(m.mtu), '']);
+    for (const d of m.rdnss || []) fields.push(['Option: recursive DNS server', d, 'RDNSS: the DNS server, without DHCP']);
+  }
+  if (m.type === 2) fields.push(['MTU', String(m.mtu), 'The sender has to send smaller packets: routers never fragment in IPv6']);
+  if (m.orig) fields.push(['Original packet', `${m.orig.src} > ${m.orig.dst}`, 'Part of the packet that caused the error']);
+  layers.push({ kind: 'icmp', depth, name: 'ICMPv6', bytes: icmp6Len(m), fields });
+  return layers;
+}
+function l4Layers(f, ip, layers, depth, pre) {
   if (ip.frag && !ip.frag.first) {
     layers.push({ kind: 'frag', depth, name: 'Fragment data', bytes: ip.frag.len, fields: [
       ['Content', `${ip.frag.len} bytes`, 'Continuation of the first fragment, without its own ICMP or UDP header']] });
@@ -7808,8 +8860,17 @@ export function flowOf(f) {
     if (a.spa === a.tpa || a.spa === '0.0.0.0') return { key: `arp:${a.tpa}`, kind: 'arp', label: `ARP for ${a.tpa}` };
     return { key: `arp:${pair(a.spa, a.tpa)}`, kind: 'arp', label: `ARP between ${a.spa} and ${a.tpa}` };
   }
-  if (f.type !== 'ipv4') return null;
+  if (f.type !== 'ipv4' && f.type !== 'ipv6') return null;
   const ip = f.payload, l4 = ip.l4;
+  if (l4?.kind === 'icmp6') {
+    if (l4.type >= 133 && l4.type <= 136) {
+      if (l4.type === 135 || l4.type === 136) return { key: `nd:${l4.target}`, kind: 'nd', label: `Neighbor Discovery for ${l4.target}` };
+      return { key: 'ra', kind: 'nd', label: 'Router solicitations and advertisements' };
+    }
+    const o = l4.orig;
+    if (o) return { key: `icmp:${pair(o.src, o.dst)}:${o.ident}`, kind: 'icmp', label: `Ping between ${o.src} and ${o.dst}` };
+    return { key: `icmp:${pair(ip.src, ip.dst)}:${l4.ident}`, kind: 'icmp', label: `Ping between ${ip.src} and ${ip.dst}` };
+  }
   if (l4?.kind === 'udp' && l4.payload?.kind === 'vxlan') return flowOf(l4.payload.frame);
   if (!l4) return { key: `ip:${pair(ip.src, ip.dst)}`, kind: 'ip', label: `IP between ${ip.src} and ${ip.dst}` };
   if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return { key: `dhcp:${l4.payload.chaddr}`, kind: 'dhcp', label: `DHCP of ${l4.payload.chaddr}` };
@@ -7837,15 +8898,16 @@ __PACKETPILOT_FILE_END__
 // Side panel: configuration, tables and console of a device
 import { h } from './ui.js';
 import { I } from './icons.js';
-import { isIp, parseCidr } from './net.js';
+import { isIp, parseCidr, isAnyIp, isIp6, parseCidr6, norm6 } from './net.js';
+import { staticAddrs } from './ipv6.js';
 import { PORTS, STP_TEXT } from './engine.js';
 import { runCommand } from './cli.js';
 
-function ipInput(value, onChange, placeholder = '') {
+function ipInput(value, onChange, placeholder = '', any = false) {
   const i = h('input', { class: 'input mono', value: value || '', placeholder, spellcheck: 'false' });
   i.addEventListener('change', () => {
     const v = i.value.trim();
-    if (v && !isIp(v)) { i.classList.add('bad'); return; }
+    if (v && !(any ? isAnyIp(v) : isIp(v))) { i.classList.add('bad'); return; }
     i.classList.remove('bad'); onChange(v);
   });
   return i;
@@ -7926,7 +8988,7 @@ export function configPanel(dev, ctx) {
     box.append(h('h4', {}, 'Network card eth1'),
       h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } },
         h('span', {}, 'Address'), mode, ...addrRows,
-        ...(i.dhcp ? [] : [h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for names, optional')])),
+        ...(i.dhcp ? [] : [h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for names, optional', true)])),
       i.dhcp ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('button', { class: 'btn', onclick: () => { dev.dhclient('eth1'); } }, 'Ask again (dhclient)'),
         lease ? h('button', { class: 'btn ghost', onclick: () => { dev.dhcpRelease('eth1'); rerender?.(); } }, 'Release') : null) : '',
       h('dl', { class: 'kv', style: { marginTop: '10px' } }, h('dt', {}, 'MAC'), h('dd', {}, dev.mac('eth1'))));
@@ -7942,6 +9004,9 @@ export function configPanel(dev, ctx) {
         onAdd: () => upd(() => { c.recursion.enabled = true; if (!hasDnsSvc()) c.services.push({ proto: 'udp', port: 53, name: 'dns' }); }, `${dev.name}: recursive resolver`) },
       ...(c.type === 'server' ? [{ id: 'dhcpd', title: 'DHCP server', desc: 'Hand out addresses to other devices',
         inUse: c.dhcpServer.enabled, status: c.dhcpServer.enabled ? `on, ${plural(dev.l3.dhcpLeases.size, 'lease')}` : 'off', render: () => dhcpServerEditor(dev, upd) }] : []),
+      { id: 'ipv6', title: 'IPv6', desc: 'A second address family: link-local, addresses from router advertisements (SLAAC), static addresses',
+        inUse: !!c.ipv6?.enabled, status: c.ipv6?.enabled ? plural(dev.l3.v6.allAddrs().filter(a => a.scope === 'global').length, 'global address') : 'off', render: () => ipv6HostEditor(dev, upd, rerender),
+        onAdd: () => upd(() => { c.ipv6.enabled = true; }, `${dev.name}: IPv6 on`) },
       { id: 'vlan', title: 'VLAN tag', desc: 'Send every frame with an 802.1Q tag, like eth1.10 on Linux',
         inUse: !!i.vlan, status: i.vlan ? `VLAN ${i.vlan}` : '', render: () => h('div', {},
           h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } }, h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
@@ -7975,6 +9040,9 @@ export function configPanel(dev, ctx) {
       const fullNbrs = (dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length;
       box.append(features(dev, [
         { id: 'subif', title: 'Subinterfaces', desc: 'One cable, several VLANs: router on a stick', inUse: subs.length > 0, status: subs.join(', '), render: () => subifEditor(dev, upd, sim, rerender) },
+        { id: 'ipv6', title: 'IPv6', desc: 'IPv6 addresses per interface, router advertisements for SLAAC, a DNS server for the clients (RDNSS)',
+          inUse: !!c.ipv6?.enabled, status: c.ipv6?.enabled ? `on${(c.ipv6.ra || []).length ? ', RA on ' + c.ipv6.ra.join(', ') : ''}` : 'off', render: () => ipv6RouterEditor(dev, upd, sim, rerender),
+          onAdd: () => upd(() => { c.ipv6.enabled = true; }, `${dev.name}: IPv6 on`) },
         { id: 'rules', title: 'Rules', desc: 'Allow, drop or reject forwarded packets (firewall)', inUse: c.acl.length > 0, status: plural(c.acl.length, 'rule'), render: () => aclEditor(dev, upd) },
         { id: 'nat', title: 'NAT', desc: 'Inside hosts share the outside address, port forwards', inUse: !!c.nat.outside, status: c.nat.outside ? `outside ${c.nat.outside}` : 'off', render: () => natEditor(dev, upd, rerender) },
         { id: 'dhcp', title: 'DHCP', desc: 'Hand out addresses, or relay requests to a DHCP server', inUse: c.dhcpServer.enabled || relay,
@@ -8193,11 +9261,13 @@ function routesEditor(dev, upd) {
     const list = h('div', { class: 'list' });
     c.routes.forEach((r, idx) => {
       const dst = h('input', { class: 'input mono', value: r.dst, placeholder: '10.0.0.0/24' });
-      dst.addEventListener('change', () => { if (!parseCidr(dst.value)) return dst.classList.add('bad'); dst.classList.remove('bad'); upd(() => r.dst = dst.value.trim(), `${dev.name}: route ${dst.value}`); });
-      const act = dev.l3.routes().find(x => x.proto === 'S' && x.via === r.via && parseCidr(r.dst) && x.net === parseCidr(r.dst).net);
+      dst.addEventListener('change', () => { if (!parseCidr(dst.value) && !parseCidr6(dst.value)) return dst.classList.add('bad'); dst.classList.remove('bad'); upd(() => r.dst = dst.value.trim(), `${dev.name}: route ${dst.value}`); });
+      const six = !!parseCidr6(r.dst) && !parseCidr(r.dst);
+      const act = six ? dev.l3.v6.routes().find(x => x.proto === 'S' && x.via === (isIp6(r.via) ? norm6(r.via) : r.via) && x.net === parseCidr6(r.dst).net)
+        : dev.l3.routes().find(x => x.proto === 'S' && x.via === r.via && parseCidr(r.dst) && x.net === parseCidr(r.dst).net);
       list.append(h('div', { class: 'item' },
         h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, dst, h('span', { class: 'small muted' }, 'via'),
-          ipInput(r.via, v => upd(() => r.via = v, `${dev.name}: next hop ${v}`), 'Next hop'),
+          ipInput(r.via, v => upd(() => r.via = v, `${dev.name}: next hop ${v}`), 'Next hop', true),
           (() => { const d = numInput(r.distance ?? '', 1, 255, v => upd(() => { if (!v || v === 1) delete r.distance; else r.distance = v; }, `${dev.name}: route ${r.dst} distance ${v ?? 1}`), '1');
             d.title = 'Distance (administrative distance): lower wins. A backup route with e.g. 200 is only used when the main route is gone.'; d.setAttribute('aria-label', 'Distance'); return d; })(),
           h('button', { class: 'btn icon ghost', title: 'Remove route', html: I.trash, onclick: () => { upd(() => c.routes.splice(idx, 1), `${dev.name}: route removed`); draw(); } })),
@@ -8207,6 +9277,7 @@ function routesEditor(dev, upd) {
         act && !act.dev ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, act.bfdDown ? 'Inactive: BFD says the next hop is gone' : 'Inactive: the next hop is not in any directly connected network') : null));
     });
     if (!c.routes.length) list.append(h('div', { class: 'empty' }, 'None. The device knows directly connected networks on its own.'));
+    if (c.ipv6?.enabled) list.append(h('div', { class: 'small muted', style: { marginTop: '4px' } }, 'IPv6 routes go here too: 2001:db8:2::/64 via 2001:db8:12::2, or ::/0 for the default route.'));
     wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Add route',
       onclick: () => { c.routes.push({ dst: '0.0.0.0/0', via: '' }); draw(); } }));
   };
@@ -8456,6 +9527,54 @@ function ospfEditor(dev, upd, rerender) {
 }
 
 // ---------------------------------------------------------------- Tables
+const addrList = v => (Array.isArray(v) ? v : String(v || '').split(/[\s,]+/)).filter(Boolean).join(', ');
+function addrInput(ifc, dev, upd, ifname) {
+  const i = h('input', { class: 'input mono', value: addrList(ifc.ip6), placeholder: '2001:db8:1::1/64', spellcheck: 'false' });
+  i.addEventListener('change', () => {
+    const parts = i.value.split(/[\s,]+/).filter(Boolean);
+    if (parts.some(x => !parseCidr6(x.includes('/') ? x : x + '/64') || !isIp6(x.split('/')[0]))) { i.classList.add('bad'); return; }
+    i.classList.remove('bad');
+    upd(() => { ifc.ip6 = parts.map(x => `${norm6(x.split('/')[0])}/${x.split('/')[1] || 64}`); }, `${dev.name} ${ifname}: IPv6 ${parts.join(', ') || 'removed'}`);
+  });
+  return i;
+}
+function v6AddrTable(dev, names) {
+  const rows = names.flatMap(n => dev.l3.v6.addrs(n).map(a => [n, `${a.ip}/${a.len}`, a.scope === 'link' ? 'link-local' : a.origin === 'slaac' ? 'SLAAC' : 'static', a.state === 'preferred' ? 'ok' : a.state === 'duplicate' ? 'duplicate!' : 'testing (DAD)']));
+  return rows.length ? h('table', { class: 'tbl' }, h('tr', {}, ['Port', 'Address', 'From', 'State'].map(x => h('th', {}, x))), rows.map(r => h('tr', {}, r.map(x => h('td', { class: 'mono small' }, x))))) : h('div', { class: 'empty' }, 'No addresses yet');
+}
+function ipv6HostEditor(dev, upd, rerender) {
+  const c = dev.cfg, v6 = dev.l3.v6, ifc = c.ifaces.eth1;
+  const r = [...v6.routers.values()][0];
+  return h('div', {},
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: c.ipv6.enabled ? true : null, onchange: e => { upd(() => c.ipv6.enabled = e.target.checked, `${dev.name}: IPv6 ${e.target.checked ? 'on' : 'off'}`); rerender?.(); } }), 'IPv6 on'),
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: c.ipv6.slaac !== false ? true : null, onchange: e => upd(() => c.ipv6.slaac = e.target.checked, `${dev.name}: SLAAC ${e.target.checked ? 'on' : 'off'}`) }), 'Take an address from router advertisements (SLAAC)'),
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr', marginTop: '6px' } },
+      h('span', {}, 'Static addresses'), addrInput(ifc, dev, upd, 'eth1'),
+      h('span', {}, 'IPv6 gateway'), ipInput(c.ipv6.gw, v => { if (v && !isIp6(v)) return; upd(() => c.ipv6.gw = v, `${dev.name}: IPv6 gateway ${v || 'removed'}`); }, 'from the RA, or e.g. 2001:db8:1::1', true)),
+    h('p', { class: 'small muted', style: { margin: '6px 0' } }, 'Every IPv6 interface has a link-local address fe80::… from its MAC. With SLAAC the host builds a global address from the prefix in the router advertisement and the same interface ID (EUI-64).'),
+    v6AddrTable(dev, v6.ifnames()),
+    h('dl', { class: 'kv', style: { marginTop: '8px' } }, h('dt', {}, 'Default router'), h('dd', { class: 'mono' }, r ? `${r.ip} (RA)` : c.ipv6.gw || 'none'),
+      h('dt', {}, 'DNS from RA'), h('dd', { class: 'mono' }, v6.rdnss.join(', ') || 'none')));
+}
+function ipv6RouterEditor(dev, upd, sim, rerender) {
+  const c = dev.cfg, v6 = c.ipv6;
+  const names = PORTS.router.filter(n => sim.linkAt(dev.id, n) || staticAddrs(c.ifaces[n]).length);
+  const g = h('div', { class: 'list' });
+  for (const n of names) {
+    const ra = h('input', { type: 'checkbox', checked: (v6.ra || []).includes(n) ? true : null });
+    ra.addEventListener('change', () => upd(() => { v6.ra = (v6.ra || []).filter(x => x !== n); if (ra.checked) v6.ra.push(n); }, `${dev.name} ${n}: router advertisements ${ra.checked ? 'on' : 'off'}`));
+    g.append(h('div', { class: 'item' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('span', { class: 'if mono', style: { width: '44px' } }, n), addrInput(c.ifaces[n], dev, upd, n),
+      h('label', { class: 'row small', title: 'Send router advertisements on this port: hosts take the prefix (SLAAC) and this router as their gateway' }, ra, 'RA'))));
+  }
+  const rd = h('input', { class: 'input mono', value: v6.rdnss || '', placeholder: 'optional, e.g. 2001:db8:2::53', spellcheck: 'false' });
+  rd.addEventListener('change', () => upd(() => v6.rdnss = rd.value.trim(), `${dev.name}: RDNSS ${rd.value.trim() || 'removed'}`));
+  return h('div', {},
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: v6.enabled ? true : null, onchange: e => { upd(() => v6.enabled = e.target.checked, `${dev.name}: IPv6 ${e.target.checked ? 'on' : 'off'}`); rerender?.(); } }), 'IPv6 on (routes IPv6 too)'),
+    h('p', { class: 'small muted', style: { margin: '6px 0' } }, 'Addresses per port, separated by commas. Check RA to advertise the /64 prefixes of that port to the hosts (SLAAC). IPv6 routes go into the static routes above.'),
+    g, h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr', marginTop: '6px' } }, h('span', {}, 'DNS in the RA'), rd),
+    h('div', { style: { marginTop: '8px' } }, v6AddrTable(dev, dev.l3.v6.ifnames())));
+}
+
 export function tablesPanel(dev, sim) {
   const box = h('div');
   const tbl = (head, rows) => {
@@ -8465,6 +9584,10 @@ export function tablesPanel(dev, sim) {
   if (dev.l3) {
     box.append(h('h4', {}, 'Routing table'),
       tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.dhcp ? 'DHCP' : (r.dev ? (r.bfd ? 'S, BFD' : 'S') : r.bfdDown ? 'S, BFD down' : 'S inactive')])));
+    if (dev.l3.v6.on) {
+      box.append(h('h4', {}, 'IPv6 routes'), tbl(['Destination', 'via', 'dev', ''], dev.l3.v6.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', { C: 'C', K: 'C (SLAAC)', S: r.dev ? 'S' : 'S inactive', RA: 'RA' }[r.proto]])));
+      box.append(h('h4', {}, 'IPv6 neighbors (NDP)'), tbl(['IPv6', 'MAC', 'dev', 'State'], dev.l3.v6.neighborTable().map(e => [e.ip, e.mac || '–', e.ifname, e.state + (e.router ? ', router' : '')])));
+    }
     box.append(h('h4', {}, 'ARP table'),
       tbl(['IP', 'MAC', 'dev', 'State'], dev.l3.arpTable().map(e => [e.ip, e.mac || '–', e.ifname, e.state])));
     if (dev.l3.pmtu.size) box.append(h('h4', {}, 'Learned path MTU'), tbl(['Destination', 'MTU'], [...dev.l3.pmtu].map(([k, v]) => [k, v])));
@@ -8844,6 +9967,9 @@ export const PRESETS = [
   { id: 'dnstree', title: 'DNS from the root down', topics: ['DNS', 'Resolver', 'Delegation', 'Caching'],
     text: 'A resolver asks the root, the TLD server and the authoritative server one after the other, and caches the answers. Try dig www.firma.lab, dig +trace and unbound-control dump_cache.',
     make: () => dnsTopo() },
+  { id: 'ipv6', title: 'Dual stack: IPv4 and IPv6', topics: ['IPv6', 'SLAAC', 'NDP', 'Dual stack'],
+    text: 'The PCs get their IPv6 address from the router advertisement of r1 (SLAAC) and their DNS server too. Try ping -6, ip -6 neigh and curl http://www.lab/: the name has an A and an AAAA record.',
+    make: () => ipv6Topo() },
   { id: 'failover', title: 'Failover with gratuitous ARP', topics: ['ARP', 'GARP', 'Failover'],
     text: 'The service address 10.0.0.100 moves from srvA to srvB. Try it with and without gratuitous ARP.',
     make: () => failoverTopo() },
@@ -8995,6 +10121,29 @@ export function dnsTopo() {
   [{ x: 20, y: 50, w: 420, h: 380, label: 'Own network with a resolver', color: 'blue' },
     { x: 470, y: 10, w: 160, h: 120, label: 'Root', color: 'gray' }, { x: 690, y: 30, w: 180, h: 120, label: 'TLD lab.', color: 'gray' },
     { x: 690, y: 160, w: 330, h: 370, label: 'Hosting provider', color: 'green' }]);
+}
+/** Dual stack: SLAAC and RDNSS from r1, static IPv6 routes between the routers, a server with A and AAAA */
+export function ipv6Topo({ ra = true, rdnss = true, routes6 = true, v4 = true } = {}) {
+  const v6 = (d, extra = {}) => { d.ipv6 = { enabled: true, ...extra }; return d; };
+  const r1 = v6(router('r1', 420, 230, { eth1: '10.1.0.1/24', eth2: '10.0.12.1/24' }, v4 ? [['10.2.0.0/24', '10.0.12.2']] : []), { ra: ra ? ['eth1'] : [], rdnss: rdnss ? '2001:db8:2::53' : '' });
+  r1.ifaces.eth1.ip6 = ['2001:db8:1::1/64']; r1.ifaces.eth2.ip6 = ['2001:db8:12::1/64'];
+  if (routes6) r1.routes.push({ dst: '2001:db8:2::/64', via: '2001:db8:12::2' });
+  const r2 = v6(router('r2', 620, 230, { eth1: '10.0.12.2/24', eth2: '10.2.0.1/24' }, v4 ? [['10.1.0.0/24', '10.0.12.1']] : []));
+  r2.ifaces.eth1.ip6 = ['2001:db8:12::2/64']; r2.ifaces.eth2.ip6 = ['2001:db8:2::1/64'];
+  if (routes6) r2.routes.push({ dst: '2001:db8:1::/64', via: '2001:db8:12::1' });
+  const pc = (name, y, ip) => { const d = v6(host(name, 170, y, v4 ? ip : '', 24, v4 ? '10.1.0.1' : ''), { slaac: true }); return d; };
+  const web = v6(server('web', 880, 140, '10.2.0.80', 24, '10.2.0.1'), { slaac: false, gw: '2001:db8:2::1' });
+  web.ifaces.eth1.ip6 = ['2001:db8:2::80/64'];
+  web.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  const dns = v6(server('dns', 880, 330, '10.2.0.53', 24, '10.2.0.1'), { slaac: false, gw: '2001:db8:2::1' });
+  dns.ifaces.eth1.ip6 = ['2001:db8:2::53/64'];
+  dns.services = [{ proto: 'udp', port: 53, name: 'dns' }];
+  dns.dns = [{ name: 'www.lab', type: 'A', ip: '10.2.0.80', ttl: 300 }, { name: 'www.lab', type: 'AAAA', ip: '2001:db8:2::80', ttl: 300 },
+    { name: 'legacy.lab', type: 'A', ip: '10.2.0.80', ttl: 300 }];
+  return topo('Dual stack: IPv4 and IPv6', [pc('pc1', 120, '10.1.0.10'), pc('pc2', 340, '10.1.0.11'), sw('sw1', 290, 230), r1, r2, sw('sw2', 750, 230), web, dns],
+    [link('pc1', 'eth1', 'sw1', 'eth1'), link('pc2', 'eth1', 'sw1', 'eth2'), link('sw1', 'eth8', 'r1', 'eth1'), link('r1', 'eth2', 'r2', 'eth1'),
+      link('r2', 'eth2', 'sw2', 'eth8'), link('web', 'eth1', 'sw2', 'eth1'), link('dns', 'eth1', 'sw2', 'eth2')],
+    [{ x: 30, y: 50, w: 460, h: 380, label: 'LAN 2001:db8:1::/64, SLAAC', color: 'blue' }, { x: 690, y: 50, w: 300, h: 380, label: 'Servers 2001:db8:2::/64', color: 'green' }]);
 }
 export function failoverTopo() {
   const a = server('srvA', 600, 110, '10.0.0.100'), b = server('srvB', 600, 330, '10.0.0.12');
@@ -10381,6 +11530,9 @@ export const BUILD_BLOCKS = {
   stp: { name: 'BPDU', kind: 'stp', fields: [['root', 'Root ID', 'bid'], ['cost', 'Root path cost', 'num'], ['bridge', 'Bridge ID (sender)', 'bid']] },
   ip: { name: 'IPv4', kind: 'ip', fields: [['src', 'Source IP', 'ip'], ['dst', 'Destination IP', 'ip'], ['proto', 'Protocol', [['1', '1 ICMP'], ['6', '6 TCP'], ['17', '17 UDP']]], ['ttl', 'TTL', 'num']] },
   icmp: { name: 'ICMP', kind: 'icmp', fields: [['type', 'Type', [['8', '8 Echo Request'], ['0', '0 Echo Reply'], ['3', '3 Destination Unreachable'], ['11', '11 Time Exceeded']]]] },
+  ipv6: { name: 'IPv6', kind: 'ip', fields: [['src', 'Source address', 'ip6'], ['dst', 'Destination address', 'ip6'], ['proto', 'Next header', [['58', '58 ICMPv6'], ['6', '6 TCP'], ['17', '17 UDP']]], ['ttl', 'Hop limit', 'num']] },
+  icmp6: { name: 'ICMPv6', kind: 'icmp', fields: [['type', 'Type', [['128', '128 Echo Request'], ['129', '129 Echo Reply'], ['133', '133 Router Solicitation'], ['134', '134 Router Advertisement'],
+    ['135', '135 Neighbor Solicitation'], ['136', '136 Neighbor Advertisement'], ['1', '1 Destination Unreachable'], ['2', '2 Packet Too Big'], ['3', '3 Time Exceeded']]], ['target', 'Target address (NS/NA only)', 'ip6']] },
   udp: { name: 'UDP', kind: 'udp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num']] },
   tcp: { name: 'TCP', kind: 'tcp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num'], ['flags', 'Flags', [['SYN', 'SYN'], ['SYN,ACK', 'SYN, ACK'], ['ACK', 'ACK'], ['PSH,ACK', 'PSH, ACK'], ['FIN,ACK', 'FIN, ACK'], ['RST', 'RST'], ['RST,ACK', 'RST, ACK']]]] },
   dns: { name: 'DNS', kind: 'udp', fields: [['qr', 'Kind', [['0', 'Query (QR 0)'], ['1', 'Response (QR 1)']]], ['name', 'Queried name', 'name'],
@@ -10421,7 +11573,7 @@ function build(step, el, done, saved, save) {
   const addr = step.addresses || {};
   const macs = [...(addr.mac || []), ['ff:ff:ff:ff:ff:ff', 'Broadcast'], ['00:00:00:00:00:00', 'unknown (zeros)'], ['01:80:c2:00:00:00', 'STP multicast']];
   const ips = [...(addr.ip || []), ['0.0.0.0', 'no address'], ['255.255.255.255', 'broadcast']];
-  const optsFor = t => t === 'mac' ? macs.map(([v, l]) => [v, `${v}  ${l}`]) : t === 'ip' ? ips.map(([v, l]) => [v, `${v}  ${l}`]) : t === 'bid' ? (addr.bid || []).map(([v, l]) => [v, `${v}  ${l}`]) : t === 'name' ? (addr.name || []).map(n => [n, n]) : null;
+  const optsFor = t => t === 'mac' ? macs.map(([v, l]) => [v, `${v}  ${l}`]) : t === 'ip' ? ips.map(([v, l]) => [v, `${v}  ${l}`]) : t === 'ip6' ? (addr.ip6 || []).map(([v, l]) => [v, `${v}  ${l}`]) : t === 'bid' ? (addr.bid || []).map(([v, l]) => [v, `${v}  ${l}`]) : t === 'name' ? (addr.name || []).map(n => [n, n]) : null;
   const pal = h('div', { class: 'fb-pal bld-pal' });
   for (const k of allowed) {
     const b = BUILD_BLOCKS[k];

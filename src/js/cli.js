@@ -1,5 +1,5 @@
 // Small command line per device, modeled on iproute2 and FRR
-import { isIp, parseCidr } from './net.js';
+import { isIp, parseCidr, isIp6, isAnyIp, parseCidr6, norm6, isLinkLocal6 } from './net.js';
 import { PORTS } from './engine.js';
 import { resolverOf, fqdn } from './dns.js';
 
@@ -25,7 +25,12 @@ export function helpFor(dev) {
     'dig +trace <name>     follow the delegation from the root yourself',
     'dig +norec / +short   no recursion wanted / only the answer',
     'curl http://<name>/   DNS first, then TCP (DNS server in the configuration)',
-    'ss -tan / ss -tuln    TCP connections / open ports');
+    'ss -tan / ss -tuln    TCP connections / open ports',
+    'ping -6 <addr|name> / ping6   ping over IPv6 (link-local: fe80::1%eth1)',
+    'ip -6 addr / route / neigh     IPv6 addresses, routes, neighbor cache',
+    'ip -6 addr add 2001:db8::1/64 dev eth1   add an IPv6 address',
+    'ip -6 route add <net>|default via <addr> [dev eth1]   static IPv6 route',
+    'traceroute -6 <addr>  path over IPv6');
   if (dev.type === 'router') l.push(
     'ip link add link eth1 name eth1.10 type vlan id 10   create a subinterface',
     'ip addr add 10.10.0.1/24 dev eth1.10   set an address',
@@ -37,7 +42,8 @@ export function helpFor(dev) {
     'show ip ospf neighbor / database / interface   OSPF state', 'show vrrp             VRRP groups and who is master', 'conntrack -L          NAT translations (also: show ip nat)');
   if (dev.cfg.recursion?.enabled) l.push('unbound-control dump_cache     what the resolver has cached, with TTL left', 'unbound-control flush_all      empty the cache (flush <name>: one name)');
   if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
-  if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)');
+  if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)', 'rdisc6 [eth1]         ask the routers for their advertisement (IPv6)');
+  if (dev.type === 'router') l.push('show ipv6 route / show ipv6 neighbors   IPv6 state in FRR style');
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
   if (dev.type === 'switch') l.push('show spanning-tree    STP status: root, roles, states',
     'spanning-tree on|off  turn STP on or off',
@@ -56,35 +62,40 @@ export function runCommand(dev, line) {
   const sim = dev.sim;
   const say = t => dev.print(t);
   const cmd = p.join(' ');
-  const own = ['ping', 'traceroute', 'arping', 'curl', 'nc', 'dig', 'nslookup', 'dhclient'];
+  const own = ['ping', 'ping6', 'traceroute', 'traceroute6', 'arping', 'curl', 'nc', 'dig', 'nslookup', 'dhclient', 'rdisc6'];
   if (!own.includes(p[0]) || !dev.l3) say(`$ ${cmd}`);
   try {
     if (p[0] === 'help' || p[0] === '?') return helpFor(dev).forEach(say);
     if (p[0] === 'clear' && !p[1]) { dev.consoleLines.length = 0; sim.emit('console', { devId: dev.id, clear: true }); return; }
 
-    if (p[0] === 'ping') {
+    if (p[0] === 'ping' || p[0] === 'ping6') {
+      const p0 = p[0];
       if (!dev.l3) return say('This device has no IP address. Pings can be sent from PCs, servers, routers and VTEPs.');
-      const o = { count: 4 }; let dst = null;
+      const o = { count: 4 }; let dst = null, family = p0 === 'ping6' ? 6 : 0;
       for (let i = 1; i < p.length; i++) {
-        if (p[i] === '-c') o.count = Math.min(100, Math.max(1, Number(p[++i]) || 4));
+        if (p[i] === '-6' || p[i] === '-4') family = Number(p[i][1]);
+        else if (p[i] === '-c') o.count = Math.min(100, Math.max(1, Number(p[++i]) || 4));
         else if (p[i] === '-s') o.size = Math.min(9000, Math.max(0, Number(p[++i]) || 56));
         else if (p[i] === '-M') o.df = p[++i] === 'do';
         else if (p[i] === '-t') o.ttl = Math.min(255, Math.max(1, Number(p[++i]) || 64));
         else dst = p[i];
       }
-      if (dst && !isIp(dst) && /^[a-zA-Z][a-zA-Z0-9.-]*$/.test(dst)) {
+      if (dst && !isAnyIp(dst) && /^[a-zA-Z][a-zA-Z0-9.-]*$/.test(dst)) {
         say(`$ ${cmd}`);
-        return dev.resolve(dst, ip => ip ? dev.ping(ip, { ...o, noEcho: true }) : say(`ping: ${dst}: Name or service not known`));
+        if (!dev.resolve) return say(`ping: ${dst}: no DNS on this device, use an address`);
+        return dev.resolve(dst, ip => ip ? dev.ping(ip, { ...o, noEcho: true }) : say(`ping: ${dst}: Name or service not known`), { family });
       }
-      if (!isIp(dst)) return say('ping: please enter a valid IPv4 address, e.g. ping 10.0.0.2');
-      dev.ping(dst, o); return;
+      if (!isAnyIp(dst)) return say('ping: please enter a valid address, e.g. ping 10.0.0.2 or ping 2001:db8::1');
+      if (family === 4 && isIp6(dst)) return say(`ping: ${dst}: Address family for hostname not supported`);
+      dev.ping(isIp6(dst) ? norm6(dst) + (dst.includes('%') ? '%' + dst.split('%')[1] : '') : dst, o); return;
     }
-    if (p[0] === 'traceroute' || p[0] === 'tracert') {
+    if (p[0] === 'traceroute' || p[0] === 'tracert' || p[0] === 'traceroute6') {
       if (!dev.l3) return say('This device has no IP address.');
-      const dst = p.find((x, i) => i > 0 && isIp(x));
-      if (!dst) return say('traceroute: please enter an IPv4 address.');
-      dev.traceroute(dst); return;
+      const dst = p.find((x, i) => i > 0 && isAnyIp(x));
+      if (!dst) return say('traceroute: please enter an IPv4 or IPv6 address.');
+      dev.traceroute(isIp6(dst) ? norm6(dst) : dst); return;
     }
+    if (p[0] === 'ip' && dev.l3 && p.includes('-6')) return ip6Command(dev, p.filter(x => x !== '-6'), say);
     if (p[0] === 'ip' && dev.l3 && p[1] !== 'link') {
       const sub = p.filter(x => !x.startsWith('-'))[1] || '';
       const brief = p.includes('-br');
@@ -115,6 +126,7 @@ export function runCommand(dev, line) {
             if (addr) say(`    inet ${addr}${c.dhcp ? ` dynamic valid_lft ${dev.l3.lease?.lease ?? 0}sec` : ''}`);
             else if (c.dhcp) say('    (DHCP: no lease yet, try dhclient)');
             for (const g of dev.vrrp?.table() || []) if (g.ifname === n && g.state === 'master') say(`    inet ${g.vip}/32 (VRRP ${g.vrid} virtual address)`);
+            for (const a of dev.l3.v6.ifnames().includes(n) ? dev.l3.v6.addrs(n) : []) say(inet6Line(a));
           }
         }
         return;
@@ -177,9 +189,10 @@ export function runCommand(dev, line) {
       }
       if (/^n(eigh|eighbor)?$/.test(sub)) {
         if (p[2] === 'flush') { dev.l3.arp.clear(); sim.record(dev, 'info', 'ARP table flushed', { tag: 'arp-flushed' }); return say('OK'); }
-        const t = dev.l3.arpTable();
-        if (!t.length) return say('(empty)');
+        const t = dev.l3.arpTable(), t6 = dev.l3.v6.neighborTable();
+        if (!t.length && !t6.length) return say('(empty)');
         for (const e of t) say(`${e.ip} dev ${e.ifname}${e.mac ? ' lladdr ' + e.mac : ''} ${e.state}`);
+        for (const e of t6) say(`${e.ip} dev ${e.ifname}${e.mac ? ' lladdr ' + e.mac : ''}${e.router ? ' router' : ''} ${e.state}`);
         return;
       }
       return say('Unknown ip command. Type help.');
@@ -237,12 +250,16 @@ export function runCommand(dev, line) {
     }
     if (p[0] === 'curl' && dev.l3) {
       const u = p.slice(1).find(x => !x.startsWith('-')) || '';
-      const m = u.match(/^(?:http:\/\/)?([a-zA-Z0-9.-]+)(?::(\d+))?\/?$/);
-      if (!m) { say(`$ ${cmd}`); return say('Syntax: curl http://10.0.0.10/ or curl http://web.lab:8080/'); }
+      const m = u.match(/^(?:http:\/\/)?(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(?::(\d+))?\/?$/);
+      if (!m) { say(`$ ${cmd}`); return say('Syntax: curl http://10.0.0.10/, curl http://[2001:db8::80]/ or curl http://web.lab:8080/'); }
       const port = m[2] ? Number(m[2]) : 80;
-      if (isIp(m[1])) { dev.curl(m[1], port); return; }
+      const host = m[1].replace(/^\[|\]$/g, '');
+      const family = p.includes('-6') ? 6 : p.includes('-4') ? 4 : 0;
+      if (isIp(host)) { dev.curl(host, port); return; }
+      if (isIp6(host)) { dev.curl(norm6(host), port); return; }
       say(`$ ${cmd}`);
-      dev.resolve(m[1], ip => ip ? dev.curl(ip, port, { noEcho: true }) : say(`curl: (6) Could not resolve host: ${m[1]}`)); return;
+      if (!dev.resolve) return say(`curl: (6) Could not resolve host: ${host} (no DNS on this device)`);
+      dev.resolve(host, ip => ip ? dev.curl(ip, port, { noEcho: true }) : say(`curl: (6) Could not resolve host: ${host}`), { family }); return;
     }
     if (p[0] === 'nc' && dev.l3) {
       const args = p.slice(1).filter(x => !x.startsWith('-'));
@@ -285,6 +302,23 @@ export function runCommand(dev, line) {
       if (sub === 'flush_all') { const n = r.flush(); dev.record('info', `cache flushed (${n} entr${n === 1 ? 'y' : 'ies'} removed)`, { tag: 'dns-flush' }); return say(`ok removed ${n} rrsets`); }
       if (sub === 'flush' && p[2]) { const n = r.flush(p[2]); dev.record('info', `cache entries for ${fqdn(p[2])} removed`, { tag: 'dns-flush', data: { name: p[2] } }); return say(`ok removed ${n} rrsets`); }
       return say('Syntax: unbound-control dump_cache | flush_all | flush <name>');
+    }
+    if (p[0] === 'show' && p[1] === 'ipv6' && dev.l3) {
+      if (p[2] === 'route') return showIpv6Route(dev, say);
+      if (/^neigh/.test(p[2] || '')) return ip6Command(dev, ['ip', 'neigh'], say);
+      return say('Syntax: show ipv6 route | show ipv6 neighbors');
+    }
+    if (p[0] === 'rdisc6' && dev.l3) {
+      const ifn = p[1] || 'eth1';
+      if (!dev.l3.v6.on) { say(`$ ${cmd}`); return say('rdisc6: IPv6 is turned off on this device'); }
+      if (!dev.l3.v6.ifnames().includes(ifn)) { say(`$ ${cmd}`); return say(`rdisc6: ${ifn}: no such IPv6 interface`); }
+      dev.rdisc6(ifn); return;
+    }
+    if (p[0] === 'sysctl' && /^net\.ipv6\.conf\.(all|default)\.disable_ipv6=[01]$/.test(p[1] || '') && dev.cfg.ipv6) {
+      dev.cfg.ipv6.enabled = p[1].endsWith('=0');
+      sim.record(dev, 'info', `IPv6 ${dev.cfg.ipv6.enabled ? 'turned on' : 'turned off'}`, { tag: 'v6-toggle' });
+      sim.configChanged(dev.id);
+      return say(p[1].replace('=', ' = '));
     }
     if (p[0] === 'ss' && dev.l3) {
       const f = p.slice(1).join('');
@@ -459,3 +493,96 @@ export function runCommand(dev, line) {
 }
 
 export { PORTS };
+
+// ---------------------------------------------------------------- IPv6 commands
+function inet6Line(a) {
+  const flags = a.state === 'duplicate' ? ' dadfailed tentative' : a.state === 'tentative' ? ' tentative' : '';
+  return `    inet6 ${a.ip}/${a.len} scope ${a.scope}${a.origin === 'slaac' ? ' dynamic mngtmpaddr' : ''}${flags}`;
+}
+function route6Text(r, dev) {
+  const dst = r.len === 0 ? 'default' : `${r.net}/${r.len}`;
+  if (r.proto === 'C' || r.proto === 'K') return `${dst} dev ${r.dev} proto kernel metric 256`;
+  if (r.proto === 'RA') return `${dst} via ${r.via} dev ${r.dev} proto ra metric 1024 expires ${Math.max(0, Math.round((r.until - dev.sim.time) / 1000))}sec`;
+  if (!r.dev) return `${dst} via ${r.via}  (inactive: next hop not on any connected link${isLinkLocal6(r.via) ? ', a link-local next hop needs "dev"' : ''})`;
+  return `${dst} via ${r.via} dev ${r.dev} metric 1024`;
+}
+function showIpv6Route(dev, say) {
+  if (!dev.l3.v6.on) return say('IPv6 is turned off on this device');
+  say('Codes: K - kernel route, C - connected, S - static, R - router advertisement');
+  for (const r of dev.l3.v6.routes()) {
+    const code = { C: 'C>*', K: 'K>*', S: r.dev ? 'S>*' : 'S  ', RA: 'R>*' }[r.proto];
+    const dst = `${r.net}/${r.len}`;
+    say(r.via ? `${code} ${dst} [${r.proto === 'S' ? (r.distance || 1) + '/0' : '0/1024'}] via ${r.via}, ${r.dev || 'inactive'}` : `${code} ${dst} is directly connected, ${r.dev}`);
+  }
+}
+function ip6Command(dev, p, say) {
+  const sim = dev.sim, v6 = dev.l3.v6;
+  const sub = p[1] || '';
+  if (!v6.on && !/^a(ddr|ddress)?$/.test(sub)) return say('IPv6 is turned off on this device (Configuration, Add a feature, IPv6, or sysctl net.ipv6.conf.all.disable_ipv6=0)');
+  if (/^a(ddr|ddress)?$/.test(sub)) {
+    const act = p[2];
+    if (act === 'add' || act === 'del') {
+      const raw = p[3] || '', ifn = p[p.indexOf('dev') + 1];
+      const c = parseCidr6(raw.includes('/') ? raw : raw + '/64');
+      if (!c || !isIp6(raw.split('/')[0]) || p.indexOf('dev') < 0 || !dev.cfg.ifaces?.[ifn]) return say(`Syntax: ip -6 addr ${act} 2001:db8:1::1/64 dev eth1`);
+      const addr = `${norm6(raw.split('/')[0])}/${c.len}`;
+      const ifc = dev.cfg.ifaces[ifn];
+      ifc.ip6 = (Array.isArray(ifc.ip6) ? ifc.ip6 : []).filter(x => norm6(x.split('/')[0]) !== norm6(raw.split('/')[0]));
+      if (act === 'add') { ifc.ip6.push(addr); dev.cfg.ipv6.enabled = true; }
+      sim.record(dev, 'info', `IPv6 address ${addr} ${act === 'add' ? 'set on ' + ifn : 'removed from ' + ifn}`, { tag: 'addr-changed', data: { ifname: ifn, v6: true } });
+      sim.configChanged(dev.id);
+      return say('OK');
+    }
+    if (!v6.on) return say('(IPv6 is turned off)');
+    for (const n of v6.ifnames()) {
+      say(`${n}: <${dev.l3.linkUp(n) ? 'UP,LOWER_UP' : 'NO-CARRIER'}> mtu ${dev.l3.mtu(n)}`);
+      for (const a of v6.addrs(n)) say(inet6Line(a));
+    }
+    return;
+  }
+  if (/^r(oute)?$/.test(sub)) {
+    const act = p[2];
+    if (act === 'get') {
+      const dst = p[3];
+      if (!isIp6(dst)) return say('Please enter an IPv6 address.');
+      if (v6.isOwn(dst)) return say(`local ${norm6(dst)} dev lo  (own address)`);
+      const r = v6.lookup(norm6(dst));
+      if (!r) return say('RTNETLINK answers: Network is unreachable');
+      return say(`${norm6(dst)} from :: ${r.via ? 'via ' + r.via + ' ' : ''}dev ${r.dev} src ${v6.srcFor(norm6(dst))}   [match: ${r.net}/${r.len}]`);
+    }
+    if (act === 'add' || act === 'del' || act === 'delete') {
+      const net = p[3] === 'default' ? { net: '::', len: 0 } : parseCidr6(p[3] || '');
+      if (!net) return say('Syntax: ip -6 route add 2001:db8:2::/64 via 2001:db8:12::2   or   ip -6 route add default via fe80::1 dev eth1');
+      const key = `${net.net}/${net.len}`;
+      const same = r => { const c = parseCidr6(r.dst === 'default6' ? '::/0' : r.dst); return c && `${c.net}/${c.len}` === key; };
+      dev.cfg.routes ??= [];
+      if (act === 'add') {
+        const via = p[p.indexOf('via') + 1];
+        if (p.indexOf('via') < 0 || !isIp6(via)) return say('Syntax: ip -6 route add 2001:db8:2::/64 via 2001:db8:12::2 [dev eth2]');
+        if (dev.cfg.routes.some(same)) return say('RTNETLINK answers: File exists');
+        const ifn = p.indexOf('dev') > 0 ? p[p.indexOf('dev') + 1] : null;
+        if (isLinkLocal6(via) && !ifn && v6.ifnames().length > 1) return say('RTNETLINK answers: No route to host (a link-local next hop needs "dev eth1")');
+        dev.cfg.routes.push({ dst: key, via: norm6(via), ...(ifn ? { dev: ifn } : {}) });
+      } else {
+        const before = dev.cfg.routes.length;
+        dev.cfg.routes = dev.cfg.routes.filter(r => !same(r));
+        if (before === dev.cfg.routes.length) return say('RTNETLINK answers: No such process');
+      }
+      sim.record(dev, 'info', `IPv6 route ${key} ${act === 'add' ? 'added' : 'removed'}`, { tag: 'route-changed', data: { dst: key, act, v6: true } });
+      sim.configChanged(dev.id);
+      return say('OK');
+    }
+    const rs = v6.routes();
+    if (!rs.length) return say('(no IPv6 routes)');
+    for (const r of rs) say(route6Text(r, dev));
+    return;
+  }
+  if (/^n(eigh|eighbor)?$/.test(sub)) {
+    if (p[2] === 'flush') { v6.nd.clear(); sim.record(dev, 'info', 'IPv6 neighbor cache flushed', { tag: 'nd-flushed' }); return say('OK'); }
+    const t = v6.neighborTable();
+    if (!t.length) return say('(empty)');
+    for (const e of t) say(`${e.ip} dev ${e.ifname}${e.mac ? ' lladdr ' + e.mac : ''}${e.router ? ' router' : ''} ${e.state}`);
+    return;
+  }
+  return say('Unknown ip -6 command. Try ip -6 addr, ip -6 route, ip -6 neigh.');
+}

@@ -7,7 +7,10 @@ const BLOCKS = {
   arp: { name: 'ARP', size: 28, kind: 'arp', note: 'Request or reply' },
   stp: { name: 'BPDU (with LLC)', size: 38, kind: 'stp', note: 'Spanning tree: root ID, cost, bridge ID, timers' },
   ip: { name: 'IPv4', size: 20, kind: 'ip', note: 'TTL, protocol, addresses' },
+  ipv6: { name: 'IPv6', size: 40, kind: 'ip', note: 'Fixed 40 bytes: hop limit, next header, 128-bit addresses, no checksum' },
   icmp: { name: 'ICMP', size: 8, kind: 'icmp', note: 'Echo, Unreachable, Time Exceeded' },
+  icmp6: { name: 'ICMPv6', size: 8, kind: 'icmp', note: 'Echo, Unreachable, Packet Too Big, Time Exceeded (next header 58)' },
+  ndp: { name: 'NDP (NS/NA)', size: 32, kind: 'icmp', in: ['ipv6'], last: true, note: 'Neighbor Solicitation or Advertisement: target address and MAC option. Replaces ARP' },
   udp: { name: 'UDP', size: 8, kind: 'udp', note: 'Ports, length, checksum' },
   tcp: { name: 'TCP', size: 20, kind: 'tcp', note: 'Ports, sequence, flags (without options)' },
   vxlan: { name: 'VXLAN', size: 8, kind: 'vxlan', note: 'Flags, VNI' },
@@ -20,9 +23,12 @@ const BLOCKS = {
   data: { name: 'Data', size: null, kind: 'data', note: 'Application payload' }
 };
 // Headings in the palette, so the growing list stays easy to scan
-const GROUP = { eth: 'Layer 2', vlan: 'Layer 2', arp: 'Layer 2', stp: 'Layer 2', ip: 'Layer 3', icmp: 'Layer 3', udp: 'Transport', tcp: 'Transport', vxlan: 'Tunnels' };
+const GROUP = { eth: 'Layer 2', vlan: 'Layer 2', arp: 'Layer 2', stp: 'Layer 2', ip: 'Layer 3', ipv6: 'Layer 3', icmp: 'Layer 3', icmp6: 'Layer 3', ndp: 'Layer 3', udp: 'Transport', tcp: 'Transport', vxlan: 'Tunnels' };
 const PRESETS = {
   'Ping': ['eth', 'ip', 'icmp', 'data'],
+  'Ping over IPv6': ['eth', 'ipv6', 'icmp6', 'data'],
+  'Neighbor Solicitation': ['eth', 'ipv6', 'ndp'],
+  'TCP SYN over IPv6': ['eth', 'ipv6', 'tcp'],
   'ARP request': ['eth', 'arp'],
   'Ping in VLAN 10': ['eth', 'vlan', 'ip', 'icmp', 'data'],
   'DNS over UDP': ['eth', 'ip', 'udp', 'data'],
@@ -46,14 +52,17 @@ function validate(seq) {
     const b = seq[i], prev = seq[i - 1], next = seq[i + 1];
     if (b === 'vlan' && prev !== 'eth') err(i, 'The 802.1Q tag follows directly after the Ethernet header (after the source MAC).');
     if (b === 'eth' && i > 0 && prev !== 'vxlan') err(i, 'A second Ethernet header only makes sense after a VXLAN header (inner frame).');
-    if ((b === 'ip' || b === 'arp') && !['eth', 'vlan'].includes(prev)) err(i, `${BLOCKS[b].name} belongs directly in the Ethernet frame (EtherType).`);
+    if ((b === 'ip' || b === 'ipv6' || b === 'arp') && !['eth', 'vlan'].includes(prev)) err(i, `${BLOCKS[b].name} belongs directly in the Ethernet frame (EtherType).`);
+    if (b === 'icmp' && prev === 'ipv6') err(i, 'IPv6 uses ICMPv6 (next header 58), not ICMP.');
+    if (b === 'icmp6' && prev !== 'ipv6') err(i, 'ICMPv6 is carried in IPv6 (next header 58).');
     if (b === 'arp' && next) err(i + 1, 'ARP has no further payload, nothing follows it.');
     if (b === 'stp' && !['eth', 'vlan'].includes(prev)) err(i, 'A BPDU sits directly in the Ethernet frame (802.3 with LLC).');
     if (b === 'stp' && next) err(i + 1, 'Nothing follows the BPDU.');
-    if (['icmp', 'udp', 'tcp'].includes(b) && prev !== 'ip') err(i, `${BLOCKS[b].name} is carried in an IP packet (protocol field).`);
+    if (['udp', 'tcp'].includes(b) && prev !== 'ip' && prev !== 'ipv6') err(i, `${BLOCKS[b].name} is carried in an IP packet (protocol field).`);
+    if (b === 'icmp' && prev !== 'ip' && prev !== 'ipv6') err(i, 'ICMP is carried in an IPv4 packet (protocol 1).');
     if (b === 'vxlan' && prev !== 'udp') err(i, 'VXLAN is carried in UDP (destination port 4789).');
     if (b === 'vxlan' && next !== 'eth') err(i, 'The inner Ethernet frame follows the VXLAN header.');
-    if (b === 'data' && !['udp', 'tcp', 'icmp'].includes(prev)) err(i, 'Application data is carried in UDP, TCP or ICMP.');
+    if (b === 'data' && !['udp', 'tcp', 'icmp', 'icmp6'].includes(prev)) err(i, 'Application data is carried in UDP, TCP or ICMP.');
     if (b === 'data' && next) err(i + 1, 'Only the FCS comes after the data.');
     if (b === 'vlan' && seq.filter(x => x === 'vlan').length > 2) err(i, 'More than two tags (QinQ) are unusual.');
     const B = BLOCKS[b];

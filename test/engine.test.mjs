@@ -1,4 +1,7 @@
 import { Sim } from '../src/js/engine.js';
+import { ipv6Topo, dnsTopo } from '../src/js/presets.js';
+import { runCommand } from '../src/js/cli.js';
+import { slaacFor } from '../src/js/net.js';
 import assert from 'node:assert/strict';
 
 let passed = 0;
@@ -613,6 +616,56 @@ test('RSTP: indirect failure, a classic STP neighbor and switching back', () => 
   // Edge port forwards at once
   const e = rtriangle(); e.dev('s2').cfg.ports.eth5.edge = true; e.reset(); e.runFor(10);
   assert.equal(e.dev('s2').bridge.stateOf('eth5'), 'forwarding');
+});
+
+test('IPv6: SLAAC from the router advertisement, NDP and forwarding', () => {
+  const sim = new Sim(ipv6Topo());
+  sim.runFor(4000);
+  const pc1 = sim.dev('pc1');
+  const a = pc1.l3.v6.allAddrs().find(x => x.origin === 'slaac');
+  assert.equal(a.ip, slaacFor('2001:db8:1::', pc1.mac('eth1')));
+  assert.equal(a.state, 'preferred');
+  assert.ok(pc1.l3.v6.routes().some(r => r.len === 0 && r.via.startsWith('fe80::')), 'default route via the link-local address of r1');
+  assert.deepEqual(pc1.l3.v6.rdnss, ['2001:db8:2::53']);
+  pc1.ping('2001:db8:2::80', { count: 1 }); sim.runFor(3000);
+  assert.match(out(sim, 'pc1'), /1 received/);
+  assert.ok(sim.log.some(e => e.dev === 'r1' && e.tag === 'ns-sent' && e.data.ip === '2001:db8:12::2'));
+  assert.ok(sim.log.some(e => e.dev === 'pc1' && e.tag === 'echo-reply-received' && e.frame.payload.ttl === 62));
+});
+
+test('IPv6: duplicate address detection and Packet Too Big', () => {
+  const sim = new Sim(ipv6Topo());
+  sim.runFor(4000);
+  runCommand(sim.dev('pc2'), 'ip -6 addr add 2001:db8:1::99/64 dev eth1'); sim.runFor(2000);
+  runCommand(sim.dev('pc1'), 'ip -6 addr add 2001:db8:1::99/64 dev eth1'); sim.runFor(2000);
+  assert.ok(sim.log.some(e => e.dev === 'pc1' && e.tag === 'dad-failed' && e.data.ip === '2001:db8:1::99'), 'pc1 notices the duplicate');
+  assert.equal(sim.dev('pc1').l3.v6.addrs('eth1').find(x => x.ip === '2001:db8:1::99').state, 'duplicate');
+  sim.topo.links.find(l => l.a.dev === 'r1' && l.b.dev === 'r2').mtu = 1400;
+  sim.dev('pc1').ping('2001:db8:2::80', { count: 2, size: 1400, df: true }); sim.runFor(4000);
+  assert.ok(sim.log.some(e => e.dev === 'r1' && e.tag === 'frag-needed-sent' && e.data.v6), 'r1 sends Packet Too Big');
+  assert.equal(sim.dev('pc1').l3.pmtu.get('2001:db8:2::80'), 1400);
+  // The first reply of the server hits the same link: it learns the MTU from its own Packet Too Big
+  sim.dev('pc1').ping('2001:db8:2::80', { count: 2, size: 1400 }); sim.runFor(6000);
+  assert.ok(sim.log.some(e => e.dev === 'pc1' && e.tag === 'fragmented' && e.data.v6), 'the sender fragments');
+  assert.equal(sim.dev('web').l3.pmtu.get('2001:db8:1:0:' + sim.dev('pc1').l3.v6.allAddrs().find(x => x.origin === 'slaac').ip.split(':').slice(4).join(':')), 1400);
+  assert.match(out(sim, 'pc1'), /2 packets transmitted, 1 received/);
+});
+
+test('DNS: iterative resolution, cache with TTL and negative caching', () => {
+  const sim = new Sim(dnsTopo());
+  const dig = n => { runCommand(sim.dev('client'), 'dig ' + n); sim.runFor(3000); };
+  dig('www.firma.lab');
+  assert.deepEqual(sim.log.filter(e => e.tag === 'dns-iter').map(e => e.data.server), ['198.41.0.4', '192.0.2.53', '203.0.113.53']);
+  dig('www.firma.lab');
+  assert.ok(sim.hasTag('dns-cache-hit'));
+  assert.equal(sim.log.filter(e => e.tag === 'dns-iter').length, 3, 'second answer from the cache');
+  sim.runFor(60000); dig('www.firma.lab');
+  assert.ok(sim.hasTag('dns-expired'));
+  assert.equal(sim.log.filter(e => e.tag === 'dns-iter').length, 4, 'after the TTL only ns1 is asked again (delegation cached)');
+  dig('nothere.firma.lab'); dig('nothere.firma.lab');
+  assert.equal(sim.log.filter(e => e.tag === 'dns-nxdomain').length, 1, 'NXDOMAIN cached');
+  dig('shop.firma.lab');
+  assert.match(out(sim, 'client'), /shop\.firma\.lab\.\t3600\tIN\tCNAME\twww\.firma\.lab\./);
 });
 
 console.log(`\n${passed} tests passed`);

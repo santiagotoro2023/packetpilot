@@ -1,15 +1,16 @@
 // Side panel: configuration, tables and console of a device
 import { h } from './ui.js';
 import { I } from './icons.js';
-import { isIp, parseCidr } from './net.js';
+import { isIp, parseCidr, isAnyIp, isIp6, parseCidr6, norm6 } from './net.js';
+import { staticAddrs } from './ipv6.js';
 import { PORTS, STP_TEXT } from './engine.js';
 import { runCommand } from './cli.js';
 
-function ipInput(value, onChange, placeholder = '') {
+function ipInput(value, onChange, placeholder = '', any = false) {
   const i = h('input', { class: 'input mono', value: value || '', placeholder, spellcheck: 'false' });
   i.addEventListener('change', () => {
     const v = i.value.trim();
-    if (v && !isIp(v)) { i.classList.add('bad'); return; }
+    if (v && !(any ? isAnyIp(v) : isIp(v))) { i.classList.add('bad'); return; }
     i.classList.remove('bad'); onChange(v);
   });
   return i;
@@ -90,7 +91,7 @@ export function configPanel(dev, ctx) {
     box.append(h('h4', {}, 'Network card eth1'),
       h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } },
         h('span', {}, 'Address'), mode, ...addrRows,
-        ...(i.dhcp ? [] : [h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for names, optional')])),
+        ...(i.dhcp ? [] : [h('span', {}, 'DNS server'), ipInput(c.resolver, v => upd(() => c.resolver = v, `${dev.name}: DNS server ${v || 'removed'}`), 'for names, optional', true)])),
       i.dhcp ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('button', { class: 'btn', onclick: () => { dev.dhclient('eth1'); } }, 'Ask again (dhclient)'),
         lease ? h('button', { class: 'btn ghost', onclick: () => { dev.dhcpRelease('eth1'); rerender?.(); } }, 'Release') : null) : '',
       h('dl', { class: 'kv', style: { marginTop: '10px' } }, h('dt', {}, 'MAC'), h('dd', {}, dev.mac('eth1'))));
@@ -106,6 +107,9 @@ export function configPanel(dev, ctx) {
         onAdd: () => upd(() => { c.recursion.enabled = true; if (!hasDnsSvc()) c.services.push({ proto: 'udp', port: 53, name: 'dns' }); }, `${dev.name}: recursive resolver`) },
       ...(c.type === 'server' ? [{ id: 'dhcpd', title: 'DHCP server', desc: 'Hand out addresses to other devices',
         inUse: c.dhcpServer.enabled, status: c.dhcpServer.enabled ? `on, ${plural(dev.l3.dhcpLeases.size, 'lease')}` : 'off', render: () => dhcpServerEditor(dev, upd) }] : []),
+      { id: 'ipv6', title: 'IPv6', desc: 'A second address family: link-local, addresses from router advertisements (SLAAC), static addresses',
+        inUse: !!c.ipv6?.enabled, status: c.ipv6?.enabled ? plural(dev.l3.v6.allAddrs().filter(a => a.scope === 'global').length, 'global address') : 'off', render: () => ipv6HostEditor(dev, upd, rerender),
+        onAdd: () => upd(() => { c.ipv6.enabled = true; }, `${dev.name}: IPv6 on`) },
       { id: 'vlan', title: 'VLAN tag', desc: 'Send every frame with an 802.1Q tag, like eth1.10 on Linux',
         inUse: !!i.vlan, status: i.vlan ? `VLAN ${i.vlan}` : '', render: () => h('div', {},
           h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } }, h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
@@ -139,6 +143,9 @@ export function configPanel(dev, ctx) {
       const fullNbrs = (dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length;
       box.append(features(dev, [
         { id: 'subif', title: 'Subinterfaces', desc: 'One cable, several VLANs: router on a stick', inUse: subs.length > 0, status: subs.join(', '), render: () => subifEditor(dev, upd, sim, rerender) },
+        { id: 'ipv6', title: 'IPv6', desc: 'IPv6 addresses per interface, router advertisements for SLAAC, a DNS server for the clients (RDNSS)',
+          inUse: !!c.ipv6?.enabled, status: c.ipv6?.enabled ? `on${(c.ipv6.ra || []).length ? ', RA on ' + c.ipv6.ra.join(', ') : ''}` : 'off', render: () => ipv6RouterEditor(dev, upd, sim, rerender),
+          onAdd: () => upd(() => { c.ipv6.enabled = true; }, `${dev.name}: IPv6 on`) },
         { id: 'rules', title: 'Rules', desc: 'Allow, drop or reject forwarded packets (firewall)', inUse: c.acl.length > 0, status: plural(c.acl.length, 'rule'), render: () => aclEditor(dev, upd) },
         { id: 'nat', title: 'NAT', desc: 'Inside hosts share the outside address, port forwards', inUse: !!c.nat.outside, status: c.nat.outside ? `outside ${c.nat.outside}` : 'off', render: () => natEditor(dev, upd, rerender) },
         { id: 'dhcp', title: 'DHCP', desc: 'Hand out addresses, or relay requests to a DHCP server', inUse: c.dhcpServer.enabled || relay,
@@ -357,11 +364,13 @@ function routesEditor(dev, upd) {
     const list = h('div', { class: 'list' });
     c.routes.forEach((r, idx) => {
       const dst = h('input', { class: 'input mono', value: r.dst, placeholder: '10.0.0.0/24' });
-      dst.addEventListener('change', () => { if (!parseCidr(dst.value)) return dst.classList.add('bad'); dst.classList.remove('bad'); upd(() => r.dst = dst.value.trim(), `${dev.name}: route ${dst.value}`); });
-      const act = dev.l3.routes().find(x => x.proto === 'S' && x.via === r.via && parseCidr(r.dst) && x.net === parseCidr(r.dst).net);
+      dst.addEventListener('change', () => { if (!parseCidr(dst.value) && !parseCidr6(dst.value)) return dst.classList.add('bad'); dst.classList.remove('bad'); upd(() => r.dst = dst.value.trim(), `${dev.name}: route ${dst.value}`); });
+      const six = !!parseCidr6(r.dst) && !parseCidr(r.dst);
+      const act = six ? dev.l3.v6.routes().find(x => x.proto === 'S' && x.via === (isIp6(r.via) ? norm6(r.via) : r.via) && x.net === parseCidr6(r.dst).net)
+        : dev.l3.routes().find(x => x.proto === 'S' && x.via === r.via && parseCidr(r.dst) && x.net === parseCidr(r.dst).net);
       list.append(h('div', { class: 'item' },
         h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, dst, h('span', { class: 'small muted' }, 'via'),
-          ipInput(r.via, v => upd(() => r.via = v, `${dev.name}: next hop ${v}`), 'Next hop'),
+          ipInput(r.via, v => upd(() => r.via = v, `${dev.name}: next hop ${v}`), 'Next hop', true),
           (() => { const d = numInput(r.distance ?? '', 1, 255, v => upd(() => { if (!v || v === 1) delete r.distance; else r.distance = v; }, `${dev.name}: route ${r.dst} distance ${v ?? 1}`), '1');
             d.title = 'Distance (administrative distance): lower wins. A backup route with e.g. 200 is only used when the main route is gone.'; d.setAttribute('aria-label', 'Distance'); return d; })(),
           h('button', { class: 'btn icon ghost', title: 'Remove route', html: I.trash, onclick: () => { upd(() => c.routes.splice(idx, 1), `${dev.name}: route removed`); draw(); } })),
@@ -371,6 +380,7 @@ function routesEditor(dev, upd) {
         act && !act.dev ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, act.bfdDown ? 'Inactive: BFD says the next hop is gone' : 'Inactive: the next hop is not in any directly connected network') : null));
     });
     if (!c.routes.length) list.append(h('div', { class: 'empty' }, 'None. The device knows directly connected networks on its own.'));
+    if (c.ipv6?.enabled) list.append(h('div', { class: 'small muted', style: { marginTop: '4px' } }, 'IPv6 routes go here too: 2001:db8:2::/64 via 2001:db8:12::2, or ::/0 for the default route.'));
     wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Add route',
       onclick: () => { c.routes.push({ dst: '0.0.0.0/0', via: '' }); draw(); } }));
   };
@@ -620,6 +630,54 @@ function ospfEditor(dev, upd, rerender) {
 }
 
 // ---------------------------------------------------------------- Tables
+const addrList = v => (Array.isArray(v) ? v : String(v || '').split(/[\s,]+/)).filter(Boolean).join(', ');
+function addrInput(ifc, dev, upd, ifname) {
+  const i = h('input', { class: 'input mono', value: addrList(ifc.ip6), placeholder: '2001:db8:1::1/64', spellcheck: 'false' });
+  i.addEventListener('change', () => {
+    const parts = i.value.split(/[\s,]+/).filter(Boolean);
+    if (parts.some(x => !parseCidr6(x.includes('/') ? x : x + '/64') || !isIp6(x.split('/')[0]))) { i.classList.add('bad'); return; }
+    i.classList.remove('bad');
+    upd(() => { ifc.ip6 = parts.map(x => `${norm6(x.split('/')[0])}/${x.split('/')[1] || 64}`); }, `${dev.name} ${ifname}: IPv6 ${parts.join(', ') || 'removed'}`);
+  });
+  return i;
+}
+function v6AddrTable(dev, names) {
+  const rows = names.flatMap(n => dev.l3.v6.addrs(n).map(a => [n, `${a.ip}/${a.len}`, a.scope === 'link' ? 'link-local' : a.origin === 'slaac' ? 'SLAAC' : 'static', a.state === 'preferred' ? 'ok' : a.state === 'duplicate' ? 'duplicate!' : 'testing (DAD)']));
+  return rows.length ? h('table', { class: 'tbl' }, h('tr', {}, ['Port', 'Address', 'From', 'State'].map(x => h('th', {}, x))), rows.map(r => h('tr', {}, r.map(x => h('td', { class: 'mono small' }, x))))) : h('div', { class: 'empty' }, 'No addresses yet');
+}
+function ipv6HostEditor(dev, upd, rerender) {
+  const c = dev.cfg, v6 = dev.l3.v6, ifc = c.ifaces.eth1;
+  const r = [...v6.routers.values()][0];
+  return h('div', {},
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: c.ipv6.enabled ? true : null, onchange: e => { upd(() => c.ipv6.enabled = e.target.checked, `${dev.name}: IPv6 ${e.target.checked ? 'on' : 'off'}`); rerender?.(); } }), 'IPv6 on'),
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: c.ipv6.slaac !== false ? true : null, onchange: e => upd(() => c.ipv6.slaac = e.target.checked, `${dev.name}: SLAAC ${e.target.checked ? 'on' : 'off'}`) }), 'Take an address from router advertisements (SLAAC)'),
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr', marginTop: '6px' } },
+      h('span', {}, 'Static addresses'), addrInput(ifc, dev, upd, 'eth1'),
+      h('span', {}, 'IPv6 gateway'), ipInput(c.ipv6.gw, v => { if (v && !isIp6(v)) return; upd(() => c.ipv6.gw = v, `${dev.name}: IPv6 gateway ${v || 'removed'}`); }, 'from the RA, or e.g. 2001:db8:1::1', true)),
+    h('p', { class: 'small muted', style: { margin: '6px 0' } }, 'Every IPv6 interface has a link-local address fe80::… from its MAC. With SLAAC the host builds a global address from the prefix in the router advertisement and the same interface ID (EUI-64).'),
+    v6AddrTable(dev, v6.ifnames()),
+    h('dl', { class: 'kv', style: { marginTop: '8px' } }, h('dt', {}, 'Default router'), h('dd', { class: 'mono' }, r ? `${r.ip} (RA)` : c.ipv6.gw || 'none'),
+      h('dt', {}, 'DNS from RA'), h('dd', { class: 'mono' }, v6.rdnss.join(', ') || 'none')));
+}
+function ipv6RouterEditor(dev, upd, sim, rerender) {
+  const c = dev.cfg, v6 = c.ipv6;
+  const names = PORTS.router.filter(n => sim.linkAt(dev.id, n) || staticAddrs(c.ifaces[n]).length);
+  const g = h('div', { class: 'list' });
+  for (const n of names) {
+    const ra = h('input', { type: 'checkbox', checked: (v6.ra || []).includes(n) ? true : null });
+    ra.addEventListener('change', () => upd(() => { v6.ra = (v6.ra || []).filter(x => x !== n); if (ra.checked) v6.ra.push(n); }, `${dev.name} ${n}: router advertisements ${ra.checked ? 'on' : 'off'}`));
+    g.append(h('div', { class: 'item' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('span', { class: 'if mono', style: { width: '44px' } }, n), addrInput(c.ifaces[n], dev, upd, n),
+      h('label', { class: 'row small', title: 'Send router advertisements on this port: hosts take the prefix (SLAAC) and this router as their gateway' }, ra, 'RA'))));
+  }
+  const rd = h('input', { class: 'input mono', value: v6.rdnss || '', placeholder: 'optional, e.g. 2001:db8:2::53', spellcheck: 'false' });
+  rd.addEventListener('change', () => upd(() => v6.rdnss = rd.value.trim(), `${dev.name}: RDNSS ${rd.value.trim() || 'removed'}`));
+  return h('div', {},
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: v6.enabled ? true : null, onchange: e => { upd(() => v6.enabled = e.target.checked, `${dev.name}: IPv6 ${e.target.checked ? 'on' : 'off'}`); rerender?.(); } }), 'IPv6 on (routes IPv6 too)'),
+    h('p', { class: 'small muted', style: { margin: '6px 0' } }, 'Addresses per port, separated by commas. Check RA to advertise the /64 prefixes of that port to the hosts (SLAAC). IPv6 routes go into the static routes above.'),
+    g, h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr', marginTop: '6px' } }, h('span', {}, 'DNS in the RA'), rd),
+    h('div', { style: { marginTop: '8px' } }, v6AddrTable(dev, dev.l3.v6.ifnames())));
+}
+
 export function tablesPanel(dev, sim) {
   const box = h('div');
   const tbl = (head, rows) => {
@@ -629,6 +687,10 @@ export function tablesPanel(dev, sim) {
   if (dev.l3) {
     box.append(h('h4', {}, 'Routing table'),
       tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.dhcp ? 'DHCP' : (r.dev ? (r.bfd ? 'S, BFD' : 'S') : r.bfdDown ? 'S, BFD down' : 'S inactive')])));
+    if (dev.l3.v6.on) {
+      box.append(h('h4', {}, 'IPv6 routes'), tbl(['Destination', 'via', 'dev', ''], dev.l3.v6.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', { C: 'C', K: 'C (SLAAC)', S: r.dev ? 'S' : 'S inactive', RA: 'RA' }[r.proto]])));
+      box.append(h('h4', {}, 'IPv6 neighbors (NDP)'), tbl(['IPv6', 'MAC', 'dev', 'State'], dev.l3.v6.neighborTable().map(e => [e.ip, e.mac || '–', e.ifname, e.state + (e.router ? ', router' : '')])));
+    }
     box.append(h('h4', {}, 'ARP table'),
       tbl(['IP', 'MAC', 'dev', 'State'], dev.l3.arpTable().map(e => [e.ip, e.mac || '–', e.ifname, e.state])));
     if (dev.l3.pmtu.size) box.append(h('h4', {}, 'Learned path MTU'), tbl(['Destination', 'MTU'], [...dev.l3.pmtu].map(([k, v]) => [k, v])));

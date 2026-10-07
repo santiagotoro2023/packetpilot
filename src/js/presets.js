@@ -85,6 +85,9 @@ export const PRESETS = [
   { id: 'dnstree', title: 'DNS from the root down', topics: ['DNS', 'Resolver', 'Delegation', 'Caching'],
     text: 'A resolver asks the root, the TLD server and the authoritative server one after the other, and caches the answers. Try dig www.firma.lab, dig +trace and unbound-control dump_cache.',
     make: () => dnsTopo() },
+  { id: 'ipv6', title: 'Dual stack: IPv4 and IPv6', topics: ['IPv6', 'SLAAC', 'NDP', 'Dual stack'],
+    text: 'The PCs get their IPv6 address from the router advertisement of r1 (SLAAC) and their DNS server too. Try ping -6, ip -6 neigh and curl http://www.lab/: the name has an A and an AAAA record.',
+    make: () => ipv6Topo() },
   { id: 'failover', title: 'Failover with gratuitous ARP', topics: ['ARP', 'GARP', 'Failover'],
     text: 'The service address 10.0.0.100 moves from srvA to srvB. Try it with and without gratuitous ARP.',
     make: () => failoverTopo() },
@@ -236,6 +239,29 @@ export function dnsTopo() {
   [{ x: 20, y: 50, w: 420, h: 380, label: 'Own network with a resolver', color: 'blue' },
     { x: 470, y: 10, w: 160, h: 120, label: 'Root', color: 'gray' }, { x: 690, y: 30, w: 180, h: 120, label: 'TLD lab.', color: 'gray' },
     { x: 690, y: 160, w: 330, h: 370, label: 'Hosting provider', color: 'green' }]);
+}
+/** Dual stack: SLAAC and RDNSS from r1, static IPv6 routes between the routers, a server with A and AAAA */
+export function ipv6Topo({ ra = true, rdnss = true, routes6 = true, v4 = true } = {}) {
+  const v6 = (d, extra = {}) => { d.ipv6 = { enabled: true, ...extra }; return d; };
+  const r1 = v6(router('r1', 420, 230, { eth1: '10.1.0.1/24', eth2: '10.0.12.1/24' }, v4 ? [['10.2.0.0/24', '10.0.12.2']] : []), { ra: ra ? ['eth1'] : [], rdnss: rdnss ? '2001:db8:2::53' : '' });
+  r1.ifaces.eth1.ip6 = ['2001:db8:1::1/64']; r1.ifaces.eth2.ip6 = ['2001:db8:12::1/64'];
+  if (routes6) r1.routes.push({ dst: '2001:db8:2::/64', via: '2001:db8:12::2' });
+  const r2 = v6(router('r2', 620, 230, { eth1: '10.0.12.2/24', eth2: '10.2.0.1/24' }, v4 ? [['10.1.0.0/24', '10.0.12.1']] : []));
+  r2.ifaces.eth1.ip6 = ['2001:db8:12::2/64']; r2.ifaces.eth2.ip6 = ['2001:db8:2::1/64'];
+  if (routes6) r2.routes.push({ dst: '2001:db8:1::/64', via: '2001:db8:12::1' });
+  const pc = (name, y, ip) => { const d = v6(host(name, 170, y, v4 ? ip : '', 24, v4 ? '10.1.0.1' : ''), { slaac: true }); return d; };
+  const web = v6(server('web', 880, 140, '10.2.0.80', 24, '10.2.0.1'), { slaac: false, gw: '2001:db8:2::1' });
+  web.ifaces.eth1.ip6 = ['2001:db8:2::80/64'];
+  web.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  const dns = v6(server('dns', 880, 330, '10.2.0.53', 24, '10.2.0.1'), { slaac: false, gw: '2001:db8:2::1' });
+  dns.ifaces.eth1.ip6 = ['2001:db8:2::53/64'];
+  dns.services = [{ proto: 'udp', port: 53, name: 'dns' }];
+  dns.dns = [{ name: 'www.lab', type: 'A', ip: '10.2.0.80', ttl: 300 }, { name: 'www.lab', type: 'AAAA', ip: '2001:db8:2::80', ttl: 300 },
+    { name: 'legacy.lab', type: 'A', ip: '10.2.0.80', ttl: 300 }];
+  return topo('Dual stack: IPv4 and IPv6', [pc('pc1', 120, '10.1.0.10'), pc('pc2', 340, '10.1.0.11'), sw('sw1', 290, 230), r1, r2, sw('sw2', 750, 230), web, dns],
+    [link('pc1', 'eth1', 'sw1', 'eth1'), link('pc2', 'eth1', 'sw1', 'eth2'), link('sw1', 'eth8', 'r1', 'eth1'), link('r1', 'eth2', 'r2', 'eth1'),
+      link('r2', 'eth2', 'sw2', 'eth8'), link('web', 'eth1', 'sw2', 'eth1'), link('dns', 'eth1', 'sw2', 'eth2')],
+    [{ x: 30, y: 50, w: 460, h: 380, label: 'LAN 2001:db8:1::/64, SLAAC', color: 'blue' }, { x: 690, y: 50, w: 300, h: 380, label: 'Servers 2001:db8:2::/64', color: 'green' }]);
 }
 export function failoverTopo() {
   const a = server('srvA', 600, 110, '10.0.0.100'), b = server('srvB', 600, 330, '10.0.0.12');

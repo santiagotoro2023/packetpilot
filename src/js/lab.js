@@ -364,15 +364,18 @@ export class Lab {
   }
   /** Address lines under a device: one for hosts, one per configured interface for routers and VTEPs */
   addrLines(d) {
+    // IPv6: the global addresses (static or from SLAAC) once they are usable
+    const v6 = this.sim.dev(d.id)?.l3?.v6;
+    const six = n => v6?.on ? v6.addrs(n).filter(a => a.scope === 'global' && a.state !== 'duplicate').map(a => `${a.ip}/${a.len}${a.origin === 'slaac' ? ' (SLAAC)' : ''}`) : [];
     if (d.type === 'pc' || d.type === 'server') {
       const i = d.ifaces.eth1;
-      if (i.dhcp) { const l = this.sim.dev(d.id)?.l3?.lease; return [l ? `${l.ip}/${l.prefix} (DHCP)` : 'DHCP …']; }
-      return isIp(i.ip) ? [`${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}`] : [];
+      if (i.dhcp) { const l = this.sim.dev(d.id)?.l3?.lease; return [l ? `${l.ip}/${l.prefix} (DHCP)` : 'DHCP …', ...six('eth1')]; }
+      return [...(isIp(i.ip) ? [`${i.ip}/${i.prefix}${i.vlan ? ', VLAN ' + i.vlan : ''}`] : []), ...six('eth1')];
     }
     if (d.type === 'router' || d.type === 'vtep') {
-      return Object.entries(d.ifaces).filter(([, i]) => isIp(i.ip))
+      return Object.entries(d.ifaces).filter(([n, i]) => isIp(i.ip) || six(n).length)
         .sort(([a], [b]) => (a === 'lo') - (b === 'lo') || a.localeCompare(b, 'en', { numeric: true }))
-        .map(([n, i]) => `${n} ${i.ip}/${i.prefix}`);
+        .flatMap(([n, i]) => [...(isIp(i.ip) ? [`${n} ${i.ip}/${i.prefix}`] : []), ...six(n).map(x => `${n} ${x}`)]);
     }
     return [];
   }
@@ -675,7 +678,7 @@ export class Lab {
           h('li', {}, 'Ctrl+Z undoes a change, Ctrl+Y redoes it. Right-click on a device, cable, area or packet shows what you can do with it.'),
           h('li', {}, 'Clicking a packet takes it apart into its layers in the packet inspector.')),
         h('h4', {}, 'Layer colors'),
-        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'Routing (OSPF, VRRP, BFD)']]
+        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4, IPv6'], ['icmp', 'ICMP, ICMPv6, NDP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'Routing (OSPF, VRRP, BFD)']]
           .map(([k, n]) => h('span', { class: 'chip' }, h('i', { class: `bg-${k}`, style: { width: '10px', height: '10px', borderRadius: '2px', display: 'inline-block' } }), n)))));
       return;
     }

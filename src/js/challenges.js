@@ -1,6 +1,6 @@
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo, ipv6Topo } from './presets.js';
 import { macFor } from './net.js';
 
 const preset = id => PRESETS.find(p => p.id === id).make();
@@ -174,6 +174,41 @@ export const CHALLENGES = [
     goals: [{ text: 'client opens http://www.firma.lab/ on the new server.', check: sim => sim.log.some(e => e.dev === 'client' && e.tag === 'dns-done' && e.data.name === 'www.firma.lab' && e.data.answer === '203.0.113.81') && curlOk('client')(sim) }],
     hints: ['dig www.firma.lab on the client: which address, and which TTL?', 'Compare with what the authoritative server says: dig @203.0.113.53 www.firma.lab', 'unbound-control dump_cache on the resolver shows what it remembers.'],
     presets: { client: ['curl http://www.firma.lab/', 'dig www.firma.lab', 'dig @203.0.113.53 www.firma.lab'], resolver: ['unbound-control dump_cache', 'unbound-control flush_all'] } },
+
+  { id: 'ipv6slaac', level: 1, title: 'The PCs have no IPv6 address', topics: ['IPv6', 'SLAAC', 'Router advertisement'],
+    symptom: '<p>The office was switched to dual stack yesterday. IPv4 works, but <code>ip -6 addr</code> on pc1 only shows an fe80:: address, and <code>ping -6 2001:db8:2::80</code> says "Network is unreachable".</p>',
+    topo: () => ipv6Topo(),
+    variants: [
+      { fault: t => { dev(t, 'r1').ipv6.ra = []; }, cause: 'r1 did not send router advertisements on eth1. Without an RA the PCs got neither a prefix nor a default router, only their link-local addresses.' },
+      { fault: t => { dev(t, 'r1').ipv6.ra = ['eth2']; }, cause: 'Router advertisements were turned on for eth2, the link to r2, instead of eth1 towards the LAN.' },
+      { fault: t => { dev(t, 'r1').ifaces.eth1.ip6 = ['2001:db8:1::1/56']; }, cause: 'r1 had a /56 on its LAN port. SLAAC only works with a /64: the RA contained the prefix, but without permission to form addresses from it.' },
+      { fault: t => { dev(t, 'pc1').ipv6.slaac = false; }, cause: 'SLAAC was turned off on pc1 (accept_ra 0). pc1 ignored every router advertisement. pc2 worked fine.' }],
+    goals: [{ text: 'pc1 pings the web server over IPv6 (2001:db8:2::80).', check: pingAfterStart('pc1', '2001:db8:2::80') }],
+    hints: ['rdisc6 eth1 on pc1 shows whether a router advertises anything, and what.', 'Look at the IPv6 section of r1: which ports send RAs, with which prefix length?'],
+    presets: { pc1: ['ip -6 addr', 'ip -6 route', 'rdisc6 eth1', 'ping -6 -c 2 2001:db8:2::80'], pc2: ['ip -6 addr'], r1: ['show ipv6 route', 'ip -6 addr'] } },
+
+  { id: 'ipv6route', level: 2, title: 'IPv6 stops at the router', topics: ['IPv6', 'Routing', 'NDP'],
+    symptom: '<p>pc1 has its IPv6 address and pings r1 over IPv6 just fine. The web server 2001:db8:2::80 does not answer over IPv6, over IPv4 everything works.</p>',
+    topo: () => ipv6Topo(),
+    variants: [
+      { fault: t => { dev(t, 'r2').routes = dev(t, 'r2').routes.filter(r => !String(r.dst).includes(':')); }, cause: 'r2 had no IPv6 route back to 2001:db8:1::/64. The requests reached the server, the replies died at r2.' },
+      { fault: t => { dev(t, 'r1').routes.find(r => String(r.dst).includes(':')).via = '2001:db8:12::3'; }, cause: 'The IPv6 route on r1 pointed to 2001:db8:12::3, which does not exist. r1 asked for it with Neighbor Solicitations that nobody answered (address unreachable).' },
+      { fault: t => { dev(t, 'web').ipv6.gw = ''; }, cause: 'The web server had a static IPv6 address but no IPv6 gateway. It could only answer inside its own network.' },
+      { fault: t => { dev(t, 'r2').ipv6.enabled = false; }, cause: 'IPv6 was turned off on r2. It routed IPv4 but dropped every IPv6 packet.' }],
+    goals: [{ text: 'pc1 pings 2001:db8:2::80 over IPv6.', check: pingAfterStart('pc1', '2001:db8:2::80') }],
+    hints: ['traceroute -6 2001:db8:2::80 shows how far the packets get.', 'Check every router on the way, in both directions: show ipv6 route and ip -6 neigh.'],
+    presets: { pc1: ['ping -6 -c 2 2001:db8:2::80', 'traceroute -6 2001:db8:2::80'], r1: ['show ipv6 route', 'ip -6 neigh'], r2: ['show ipv6 route', 'ip -6 neigh'], web: ['ip -6 route'] } },
+
+  { id: 'ipv6dual', level: 2, title: 'www.lab is broken, but only for the new PCs', topics: ['IPv6', 'Dual stack', 'DNS'],
+    symptom: '<p>Since the PCs got IPv6, <code>curl http://www.lab/</code> fails on pc1. <code>curl -4 http://www.lab/</code> still works. Old devices without IPv6 have no problem at all.</p>',
+    topo: () => ipv6Topo(),
+    variants: [
+      { fault: t => { dev(t, 'dns').dns.find(r => r.type === 'AAAA').ip = '2001:db8:2::81'; }, cause: 'The AAAA record of www.lab pointed to 2001:db8:2::81 instead of ::80. The PCs prefer IPv6 and tried an address nobody has. IPv4 clients only asked for the A record.' },
+      { fault: t => { dev(t, 'web').ifaces.eth1.ip6 = []; dev(t, 'web').ipv6.enabled = false; }, cause: 'The web server had no IPv6 at all, but DNS published an AAAA record for it. Every dual-stack client tried IPv6 first. Either give the server its IPv6 address or remove the AAAA record.' },
+      { fault: t => { dev(t, 'web').ipv6.gw = '2001:db8:2::2'; }, cause: 'The IPv6 gateway of the web server was 2001:db8:2::2, a router that does not exist. The SYN arrived, but the SYN/ACK never left the server network.' }],
+    goals: [{ text: 'pc1 opens http://www.lab/ over IPv6.', check: sim => sim.log.some(e => e.dev === 'pc1' && e.tag === 'tcp-done' && e.data.ok && String(e.data.dst).includes(':')) }],
+    hints: ['dig www.lab AAAA and dig www.lab A on pc1: which addresses does DNS give out?', 'Does the web server answer ping -6 at that address? Look at its IPv6 configuration.'],
+    presets: { pc1: ['curl http://www.lab/', 'curl -4 http://www.lab/', 'dig www.lab AAAA', 'ping -6 -c 2 2001:db8:2::80'], web: ['ip -6 addr', 'ip -6 route'] } },
 
   { id: 'ospf', level: 2, title: 'One site is missing from the map', topics: ['OSPF'],
     symptom: '<p>Three sites run OSPF. pc1 cannot reach the server srv3 at site 3.</p>',

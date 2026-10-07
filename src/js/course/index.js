@@ -9,11 +9,11 @@ import m8 from './m8.js';
 import m9 from './m9.js';
 import m10 from './m10.js';
 import m11 from './m11.js';
+import m12 from './m12.js';
 
 // Display order: all of layer 2, then layer 3, VLAN/VXLAN, transport, then the network services
-export const MODULES = [m1, m4, m2, m3, m5, m11, m6, m7, m8, m9, m10];
+export const MODULES = [m1, m4, m2, m12, m3, m5, m11, m6, m7, m8, m9, m10];
 export const UPCOMING = [
-  { title: 'IPv6', text: 'Addresses, Neighbor Discovery instead of ARP, SLAAC and dual stack.' },
   { title: 'VPN', text: 'WireGuard and IPsec between sites, MTU with a double envelope.' },
   { title: 'BGP and EVPN', text: 'Routing between networks and a real control plane for VXLAN.' }
 ]
