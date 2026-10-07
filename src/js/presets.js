@@ -82,6 +82,9 @@ export const PRESETS = [
   { id: 'services', title: 'Web and DNS', topics: ['TCP', 'UDP', 'DNS', 'Rules'],
     text: 'A client, a web server, a DNS server. curl http://web.lab/ first resolves the name and then opens a TCP connection.',
     make: () => servicesTopo() },
+  { id: 'dnstree', title: 'DNS from the root down', topics: ['DNS', 'Resolver', 'Delegation', 'Caching'],
+    text: 'A resolver asks the root, the TLD server and the authoritative server one after the other, and caches the answers. Try dig www.firma.lab, dig +trace and unbound-control dump_cache.',
+    make: () => dnsTopo() },
   { id: 'failover', title: 'Failover with gratuitous ARP', topics: ['ARP', 'GARP', 'Failover'],
     text: 'The service address 10.0.0.100 moves from srvA to srvB. Try it with and without gratuitous ARP.',
     make: () => failoverTopo() },
@@ -192,6 +195,47 @@ export function servicesTopo({ acl = [] } = {}) {
   return topo('Web and DNS', [c1, router('r1', 300, 220, { eth1: '10.10.0.1/24', eth2: '10.20.0.1/24' }, [], { acl }), sw('sw1', 470, 220), web, dns],
     [link('client', 'eth1', 'r1', 'eth1'), link('r1', 'eth2', 'sw1', 'eth1'), link('web', 'eth1', 'sw1', 'eth2'), link('dns', 'eth1', 'sw1', 'eth3')],
     [{ x: 400, y: 40, w: 340, h: 380, label: 'Server network 10.20.0.0/24', color: 'green' }]);
+}
+/** DNS from the root down: a resolver in the own network, root, TLD and two authoritative servers on the internet */
+export function dnsTopo() {
+  const auth = (name, x, y, ip, gw, zone, dns) => {
+    const d = server(name, x, y, ip, 24, gw);
+    d.services = [{ proto: 'udp', port: 53, name: 'dns' }];
+    d.dnsZone = zone; d.dns = dns;
+    return d;
+  };
+  const client = host('client', 80, 130, '10.1.0.10', 24, '10.1.0.1');
+  client.resolver = '10.1.0.53';
+  const resolver = server('resolver', 80, 330, '10.1.0.53', 24, '10.1.0.1');
+  resolver.services = [{ proto: 'udp', port: 53, name: 'dns' }];
+  resolver.recursion = { enabled: true, roots: '198.41.0.4' };
+  const web = server('web', 930, 330, '203.0.113.80', 24, '203.0.113.1');
+  web.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  return topo('DNS from the root down', [client, resolver, sw('sw1', 220, 230),
+    router('r1', 370, 230, { eth1: '10.1.0.1/24', eth2: '10.0.12.1/24' }, [['0.0.0.0/0', '10.0.12.2']]),
+    router('isp', 560, 230, { eth1: '10.0.12.2/24', eth2: '198.41.0.1/24', eth3: '192.0.2.1/24', eth4: '203.0.113.1/24' }, [['10.1.0.0/24', '10.0.12.1']]),
+    auth('root', 560, 60, '198.41.0.4', '198.41.0.1', '.', [
+      { name: '.', type: 'NS', value: 'a.root-servers.lab', ttl: 518400 }, { name: 'a.root-servers.lab', type: 'A', ip: '198.41.0.4', ttl: 518400 },
+      { name: 'lab', type: 'NS', value: 'ns1.nic.lab', ttl: 172800 }, { name: 'ns1.nic.lab', type: 'A', ip: '192.0.2.53', ttl: 172800 }]),
+    auth('nic', 780, 90, '192.0.2.53', '192.0.2.1', 'lab', [
+      { name: 'lab', type: 'NS', value: 'ns1.nic.lab', ttl: 172800 }, { name: 'ns1.nic.lab', type: 'A', ip: '192.0.2.53', ttl: 172800 },
+      { name: 'firma.lab', type: 'NS', value: 'ns1.firma.lab', ttl: 86400 }, { name: 'ns1.firma.lab', type: 'A', ip: '203.0.113.53', ttl: 86400 },
+      { name: 'partner.lab', type: 'NS', value: 'ns.partner.lab', ttl: 86400 }, { name: 'ns.partner.lab', type: 'A', ip: '203.0.113.153', ttl: 86400 }]),
+    sw('sw2', 760, 330),
+    auth('ns1', 930, 200, '203.0.113.53', '203.0.113.1', 'firma.lab', [
+      { name: 'firma.lab', type: 'NS', value: 'ns1.firma.lab', ttl: 86400 }, { name: 'ns1.firma.lab', type: 'A', ip: '203.0.113.53', ttl: 86400 },
+      { name: 'www.firma.lab', type: 'A', ip: '203.0.113.80', ttl: 60 }, { name: 'shop.firma.lab', type: 'CNAME', value: 'www.firma.lab', ttl: 3600 },
+      { name: 'mail.firma.lab', type: 'A', ip: '203.0.113.25', ttl: 3600 }]),
+    web,
+    auth('partner', 930, 460, '203.0.113.153', '203.0.113.1', 'partner.lab', [
+      { name: 'partner.lab', type: 'NS', value: 'ns.partner.lab', ttl: 86400 }, { name: 'ns.partner.lab', type: 'A', ip: '203.0.113.153', ttl: 86400 },
+      { name: 'portal.partner.lab', type: 'A', ip: '203.0.113.80', ttl: 300 }])],
+  [link('client', 'eth1', 'sw1', 'eth1'), link('resolver', 'eth1', 'sw1', 'eth2'), link('sw1', 'eth8', 'r1', 'eth1'), link('r1', 'eth2', 'isp', 'eth1'),
+    link('isp', 'eth2', 'root', 'eth1'), link('isp', 'eth3', 'nic', 'eth1'), link('isp', 'eth4', 'sw2', 'eth8'),
+    link('ns1', 'eth1', 'sw2', 'eth1'), link('web', 'eth1', 'sw2', 'eth2'), link('partner', 'eth1', 'sw2', 'eth3')],
+  [{ x: 20, y: 50, w: 420, h: 380, label: 'Own network with a resolver', color: 'blue' },
+    { x: 470, y: 10, w: 160, h: 120, label: 'Root', color: 'gray' }, { x: 690, y: 30, w: 180, h: 120, label: 'TLD lab.', color: 'gray' },
+    { x: 690, y: 160, w: 330, h: 370, label: 'Hosting provider', color: 'green' }]);
 }
 export function failoverTopo() {
   const a = server('srvA', 600, 110, '10.0.0.100'), b = server('srvB', 600, 330, '10.0.0.12');

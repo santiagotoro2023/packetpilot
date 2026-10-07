@@ -1,6 +1,6 @@
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo } from './presets.js';
 import { macFor } from './net.js';
 
 const preset = id => PRESETS.find(p => p.id === id).make();
@@ -11,6 +11,7 @@ const link = (t, a, b) => t.links.find(l => (l.a.dev === a && l.b.dev === b) || 
 const pingAfterStart = (from, to) => sim => sim.log.some(e => e.tag === 'ping-done' && e.dev === from && e.data.dst === to && e.data.received > 0);
 const curlOk = (from, port = 80) => sim => sim.log.some(e => e.dev === from && e.tag === 'tcp-done' && e.data.ok && e.data.mode === 'http' && (!port || e.data.port === port));
 const leased = d => sim => !!sim.dev(d)?.l3?.lease;
+const dnsOk = (from, name) => sim => sim.log.some(e => e.dev === from && e.tag === 'dns-done' && e.data.ok && e.data.answer && e.data.name === name);
 
 // In the ring, sw3 reaches the root via sw2 or sw4 at equal cost: the lower bridge MAC wins
 const ringBackup = () => [['sw2', macFor('sw2/bridge')], ['sw4', macFor('sw4/bridge')]].sort((a, b) => b[1].localeCompare(a[1]))[0][0];
@@ -145,6 +146,34 @@ export const CHALLENGES = [
     goals: [{ text: 'client fetches http://web.lab/.', check: sim => sim.log.some(e => e.dev === 'client' && e.tag === 'dns-done' && e.data.ok && e.data.name === 'web.lab') && curlOk('client')(sim) }],
     hints: ['Try dig web.lab on the client and read the answer.', 'Is the DNS server reachable at all? Is there a record for web.lab?'],
     presets: { client: ['curl http://web.lab/', 'dig web.lab', 'dig @10.20.0.53 web.lab'], dns: ['ss -tuln'] } },
+
+  { id: 'dnstree', level: 2, title: 'Names on the internet stopped working', topics: ['DNS', 'Resolver', 'Delegation'],
+    symptom: '<p>The web server 203.0.113.80 answers <code>curl http://203.0.113.80/</code> just fine. But the client can no longer open <code>http://www.firma.lab/</code>, or cannot resolve <code>portal.partner.lab</code>, or both. The client uses the resolver 10.1.0.53 in its own network.</p>',
+    topo: () => dnsTopo(),
+    variants: [
+      { fault: t => { dev(t, 'nic').dns = dev(t, 'nic').dns.filter(r => !(r.name === 'firma.lab' && r.type === 'NS')); }, cause: 'The TLD server of lab. had lost the delegation of firma.lab (the NS record). For the TLD, firma.lab simply did not exist: NXDOMAIN, which the resolver then also cached for 60 seconds.' },
+      { fault: t => { dev(t, 'nic').dns.find(r => r.name === 'ns1.firma.lab').ip = '203.0.113.35'; }, cause: 'The glue record on the TLD server pointed to 203.0.113.35 instead of 203.0.113.53. The resolver asked a machine that does not exist, timed out and answered SERVFAIL. After the fix, the wrong glue stays in the cache of the resolver until it is flushed or expires.' },
+      { fault: t => { dev(t, 'resolver').recursion.roots = '198.41.0.40'; }, cause: 'The root hints of the resolver were wrong (198.41.0.40). Without a working root server it could not start anywhere: SERVFAIL for every name it did not have cached.' },
+      { fault: t => { dev(t, 'r1').acl = [{ action: 'drop', proto: 'udp', port: 53, src: '10.1.0.53', dst: 'any' }]; }, cause: 'A rule on r1 dropped DNS queries from the resolver to the internet. The client reached the resolver just fine, but the resolver could not reach a single server: SERVFAIL.' },
+      { fault: t => { dev(t, 'ns1').dnsZone = 'firma.lan'; }, cause: 'ns1 was configured for the zone firma.lan instead of firma.lab. It refused every question for firma.lab (REFUSED), so the delegation was lame.' },
+      { fault: t => { dev(t, 'client').resolver = '203.0.113.53'; }, cause: 'The client used ns1.firma.lab (203.0.113.53) as its DNS server instead of the resolver. ns1 is authoritative for firma.lab and answered www.firma.lab, but it is no resolver and refused everything else.' }],
+    goals: [{ text: 'client opens http://www.firma.lab/.', check: sim => dnsOk('client', 'www.firma.lab')(sim) && curlOk('client')(sim) },
+      { text: 'client resolves portal.partner.lab.', check: dnsOk('client', 'portal.partner.lab') }],
+    hints: ['Start on the client: dig www.firma.lab shows the status (NXDOMAIN, SERVFAIL, REFUSED?) and which server answered.', 'dig +trace www.firma.lab walks the tree step by step and shows where it breaks. The log of the resolver tells the same story.', 'After a fix, think of the cache of the resolver: unbound-control flush_all.'],
+    presets: { client: ['curl http://www.firma.lab/', 'dig www.firma.lab', 'dig +trace www.firma.lab', 'dig portal.partner.lab'], resolver: ['unbound-control dump_cache', 'unbound-control flush_all'] } },
+
+  { id: 'dnsstale', level: 1, title: 'The new web server never gets visitors', topics: ['DNS', 'Caching', 'TTL'],
+    symptom: '<p>Last night the web site moved to a new server with the address 203.0.113.81, the old one at .80 was switched off. This morning the client still cannot open <code>http://www.firma.lab/</code>.</p>',
+    topo: () => { const t = dnsTopo(); dev(t, 'web').ifaces.eth1.ip = '203.0.113.81'; return t; },
+    variants: [
+      { fault: t => { dev(t, 'ns1').dns.find(r => r.name === 'www.firma.lab').ttl = 86400; dev(t, 'resolver').recursion.seed = [{ name: 'www.firma.lab', type: 'A', data: '203.0.113.80', ttl: 86400 }]; dev(t, 'ns1').dns.find(r => r.name === 'www.firma.lab').ip = '203.0.113.81'; },
+        cause: 'The record had been updated, but its TTL was a whole day. The resolver had cached the old address yesterday and kept handing it out. Flushing the cache helped; next time, lower the TTL before the move.' },
+      { fault: t => { dev(t, 'ns1').dns.find(r => r.name === 'www.firma.lab').ip = '203.0.113.80'; }, cause: 'Nobody had updated the record on the authoritative server ns1: www.firma.lab still pointed to the old address .80.' },
+      { fault: t => { const d = dev(t, 'ns1').dns; d.find(r => r.name === 'www.firma.lab').ip = '203.0.113.81'; d.push({ name: 'www.firma.lab', type: 'A', ip: '203.0.113.80', ttl: 60 }); },
+        cause: 'ns1 had two A records for www.firma.lab: the new one and the old one, which nobody deleted. Clients picked one of them, and the old server was off.' }],
+    goals: [{ text: 'client opens http://www.firma.lab/ on the new server.', check: sim => sim.log.some(e => e.dev === 'client' && e.tag === 'dns-done' && e.data.name === 'www.firma.lab' && e.data.answer === '203.0.113.81') && curlOk('client')(sim) }],
+    hints: ['dig www.firma.lab on the client: which address, and which TTL?', 'Compare with what the authoritative server says: dig @203.0.113.53 www.firma.lab', 'unbound-control dump_cache on the resolver shows what it remembers.'],
+    presets: { client: ['curl http://www.firma.lab/', 'dig www.firma.lab', 'dig @203.0.113.53 www.firma.lab'], resolver: ['unbound-control dump_cache', 'unbound-control flush_all'] } },
 
   { id: 'ospf', level: 2, title: 'One site is missing from the map', topics: ['OSPF'],
     symptom: '<p>Three sites run OSPF. pc1 cannot reach the server srv3 at site 3.</p>',

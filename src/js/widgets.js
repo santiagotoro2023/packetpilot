@@ -278,7 +278,9 @@ export const BUILD_BLOCKS = {
   icmp: { name: 'ICMP', kind: 'icmp', fields: [['type', 'Type', [['8', '8 Echo Request'], ['0', '0 Echo Reply'], ['3', '3 Destination Unreachable'], ['11', '11 Time Exceeded']]]] },
   udp: { name: 'UDP', kind: 'udp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num']] },
   tcp: { name: 'TCP', kind: 'tcp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num'], ['flags', 'Flags', [['SYN', 'SYN'], ['SYN,ACK', 'SYN, ACK'], ['ACK', 'ACK'], ['PSH,ACK', 'PSH, ACK'], ['FIN,ACK', 'FIN, ACK'], ['RST', 'RST'], ['RST,ACK', 'RST, ACK']]]] },
-  dns: { name: 'DNS', kind: 'udp', fields: [['qr', 'Kind', [['0', 'Query (QR 0)'], ['1', 'Response (QR 1)']]], ['name', 'Queried name', 'name']] },
+  dns: { name: 'DNS', kind: 'udp', fields: [['qr', 'Kind', [['0', 'Query (QR 0)'], ['1', 'Response (QR 1)']]], ['name', 'Queried name', 'name'],
+    ['qtype', 'Type', [['A', 'A (IPv4 address)'], ['AAAA', 'AAAA (IPv6 address)'], ['NS', 'NS (name server)'], ['CNAME', 'CNAME (alias)']]],
+    ['rd', 'Recursion desired (RD)', [['1', '1: find the answer for me'], ['0', '0: only tell me what you know']]]] },
   dhcp: { name: 'DHCP', kind: 'data', fields: [['op', 'Message type', [['DISCOVER', 'Discover'], ['OFFER', 'Offer'], ['REQUEST', 'Request'], ['ACK', 'ACK']]], ['chaddr', 'Client MAC (chaddr)', 'mac'], ['yiaddr', 'Your IP (yiaddr)', 'ip']] },
   http: { name: 'HTTP', kind: 'data', fields: [['msg', 'Message', [['GET', 'GET / HTTP/1.1'], ['200', 'HTTP/1.1 200 OK']]]] },
   data: { name: 'Data', kind: 'data', fields: [] }

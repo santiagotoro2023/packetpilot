@@ -80,9 +80,18 @@ export function ospfLen(o) {
   return 24 + 4 + (o.lsas || []).reduce((s, l) => s + 24 + 12 * l.links.length, 0);
 }
 export function tcpHdrLen(t) { return TCP_HDR + (t.mss ? 4 : 0); }
+// DNS: 12 byte header, the question, then every record: name (compressed to 2 bytes when it
+// repeats an earlier name), type, class, TTL, length (10 bytes) and the data
 export function dnsLen(d) {
-  const q = 12 + (d.qname.length + 2) + 4;
-  return q + (d.answers || []).length * 16;
+  const nameLen = n => (n ? n.replace(/\.$/, '').length + 2 : 1);
+  const seen = new Set([String(d.qname || '').toLowerCase()]);
+  const rr = r => {
+    const short = seen.has(r.name); seen.add(r.name);
+    const data = r.type === 'A' ? 4 : r.type === 'AAAA' ? 16 : r.type === 'SOA' ? 22 + nameLen(r.name) : nameLen(r.data);
+    return (short ? 2 : nameLen(r.name)) + 10 + data;
+  };
+  const all = [...(d.answers || []), ...(d.authority || []), ...(d.additional || [])];
+  return 12 + nameLen(d.qname) + 4 + all.reduce((s, r) => s + rr(r), 0);
 }
 export function udpPayloadLen(udp) {
   const p = udp.payload;

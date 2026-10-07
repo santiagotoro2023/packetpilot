@@ -13,7 +13,7 @@ const BLOCKS = {
   vxlan: { name: 'VXLAN', size: 8, kind: 'vxlan', note: 'Flags, VNI' },
   // Protocols on top: where they may sit (in) and whether anything may follow (last)
   dhcp: { name: 'DHCP', size: 300, kind: 'data', in: ['udp'], last: true, note: 'Discover, Offer, Request, ACK on UDP 67/68' },
-  dns: { name: 'DNS', size: 32, kind: 'data', in: ['udp'], last: true, note: 'Query or answer on UDP 53 (size depends on the name)' },
+  dns: { name: 'DNS', size: 32, kind: 'data', in: ['udp', 'tcp'], last: true, note: 'Query or answer on port 53, usually UDP, TCP for large answers (size depends on the name)' },
   vrrp: { name: 'VRRP', size: 12, kind: 'rt', in: ['ip'], last: true, note: 'Advertisement: group, priority, virtual IP (protocol 112)' },
   ospf: { name: 'OSPF Hello', size: 48, kind: 'rt', in: ['ip'], last: true, note: 'Router ID, area, timers, neighbors (protocol 89)' },
   bfd: { name: 'BFD', size: 24, kind: 'rt', in: ['udp'], last: true, note: 'Control packet: state, discriminators, intervals (UDP 3784)' },
@@ -30,6 +30,7 @@ const PRESETS = {
   'BPDU': ['eth', 'stp'],
   'DHCP Discover': ['eth', 'ip', 'udp', 'dhcp'],
   'DNS query': ['eth', 'ip', 'udp', 'dns'],
+  'DNS over TCP': ['eth', 'ip', 'tcp', 'dns'],
   'OSPF Hello': ['eth', 'ip', 'ospf'],
   'VRRP': ['eth', 'ip', 'vrrp'],
   'BFD': ['eth', 'ip', 'udp', 'bfd'],

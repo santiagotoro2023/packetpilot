@@ -59,7 +59,7 @@ Each browser stores progress, partial answers (including the network you edited 
 
 ## What's inside
 
-**Course with ten modules and 52 lessons**
+**Course with eleven modules and 56 lessons**
 
 | Module | Contents |
 |---|---|
@@ -68,11 +68,12 @@ Each browser stores progress, partial answers (including the network you edited 
 | 3. IP and routing | IPv4 header, longest prefix match, TTL and traceroute, the return path, MTU and Path MTU Discovery, rules and the PMTUD blackhole, control plane and data plane |
 | 4. VLAN and VXLAN | 802.1Q tag, access and trunk, router on a stick with subinterfaces, VXLAN encapsulation, VXLAN in the underlay, troubleshooting the overlay, the MTU trap |
 | 5. Transport: UDP, TCP and services | Ports and sockets, DNS over UDP, three-way handshake, refused and filtered connections, MSS, path MTU and MSS clamping |
-| 6. DHCP | Discover, Offer, Request, ACK, leases, DORA in the lab, the DHCP relay with giaddr across routers |
-| 7. NAT | Private addresses, masquerading (PAT) and the translation table in the lab, port forwarding |
-| 8. Dynamic routing with OSPF | How link-state routing works (hellos, LSAs, SPF), turning OSPF on, failover and costs, neighbors that don't get along |
-| 9. VRRP | One gateway address shared by two routers, failover in the lab, configuring the second router (priority, preemption) |
-| 10. ECMP and BFD | Equal-cost multipath with per-flow hashing (layer 3 and layer 4 hash policy), maximum paths, failover of one path; BFD sessions (Down, Init, Up, discriminators, detection time), BFD for OSPF and static routes, measuring failover through a provider switch |
+| 6. DNS in depth | The DNS tree (root, TLD, zones), referrals and glue, recursive resolver and stub, iterative queries with RD 0, dig +trace, REFUSED from authoritative servers, caching with TTL, negative caching, moving a record and why the old address lives on |
+| 7. DHCP | Discover, Offer, Request, ACK, leases, DORA in the lab, the DHCP relay with giaddr across routers |
+| 8. NAT | Private addresses, masquerading (PAT) and the translation table in the lab, port forwarding |
+| 9. Dynamic routing with OSPF | How link-state routing works (hellos, LSAs, SPF), turning OSPF on, failover and costs, neighbors that don't get along |
+| 10. VRRP | One gateway address shared by two routers, failover in the lab, configuring the second router (priority, preemption) |
+| 11. ECMP and BFD | Equal-cost multipath with per-flow hashing (layer 3 and layer 4 hash policy), maximum paths, failover of one path; BFD sessions (Down, Init, Up, discriminators, detection time), BFD for OSPF and static routes, measuring failover through a provider switch |
 
 Theory terms are underlined quietly: hovering, focusing or tapping one shows a short explanation from the glossary. Theory pages can be printed or saved as a PDF, one lesson or any selection of modules (print button on a lesson, or **Print theory** on the home page).
 
@@ -80,7 +81,7 @@ Exercise types: theory, quizzes with explanations, labeling headers by drag and 
 
 **Fix it: troubleshooting challenges**
 
-Fourteen broken networks in three levels, each with a symptom, goals, hints and a timer: wrong gateway, missing return route, broadcast storm, slow RSTP failover, VLAN trunk, DHCP relay, NAT, DNS, OSPF, an idle ECMP path, BFD that does not speed anything up, VRRP failover, a slow lossy link and the MTU blackhole. Every challenge has several variants with different causes, so it can be played more than once. Your best time is saved.
+Sixteen broken networks in three levels, each with a symptom, goals, hints and a timer: wrong gateway, missing return route, broadcast storm, slow RSTP failover, VLAN trunk, DHCP relay, NAT, DNS, a broken DNS delegation (six causes), a web server move that nobody sees, OSPF, an idle ECMP path, BFD that does not speed anything up, VRRP failover, a slow lossy link and the MTU blackhole. Every challenge has several variants with different causes, so it can be played more than once. Your best time is saved.
 
 **Subnets: subnetting trainer**
 
@@ -94,6 +95,7 @@ Endless random questions in five kinds (network and broadcast, prefix and mask, 
 - **DHCP** server and relay, clients with static or DHCP addresses; **NAT** with masquerading and port forwards; **OSPF** (single area, cost, passive interfaces, fast or standard timers); **VRRP** with priority and preemption; **ECMP** (per-flow hash over layer 3 or layer 4, maximum paths) for OSPF and static routes with several next hops, floating static routes with their own distance; **BFD** for OSPF neighbors and static routes
 - **Line quality per cable**: latency in milliseconds and packet loss in percent, with TCP retransmissions (exponential backoff, duplicate ACKs) you can watch
 - Services per server (TCP and UDP, freely chosen ports) and DNS records, DNS server per host
+- **DNS in depth**: authoritative zones with A, AAAA, NS and CNAME records and TTLs, delegation with glue, recursive resolvers with root hints and a cache (negative caching too), dig with +trace, +norec, +short and record types, unbound-control dump_cache and flush
 - Slow motion with a speed slider (remembered), pause, single step and fast-forward, BPDUs and hellos can be shown or hidden
 - Resizable panels: drag the edges of the side panel, the event log and the packet inspector (double-click resets), sizes are remembered
 - Packets as envelopes with colored stripes per layer, a click takes them apart in the packet inspector

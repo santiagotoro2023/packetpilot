@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.3.0
+#  PacketPilot 2.4.0
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -31,7 +31,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.3.0"
+PP_VERSION="2.4.0"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -1147,7 +1147,7 @@ __PACKETPILOT_FILE_END__
   cat > "$W/js/challenges.js" <<'__PACKETPILOT_FILE_END__'
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo, dnsTopo } from './presets.js';
 import { macFor } from './net.js';
 
 const preset = id => PRESETS.find(p => p.id === id).make();
@@ -1158,6 +1158,7 @@ const link = (t, a, b) => t.links.find(l => (l.a.dev === a && l.b.dev === b) || 
 const pingAfterStart = (from, to) => sim => sim.log.some(e => e.tag === 'ping-done' && e.dev === from && e.data.dst === to && e.data.received > 0);
 const curlOk = (from, port = 80) => sim => sim.log.some(e => e.dev === from && e.tag === 'tcp-done' && e.data.ok && e.data.mode === 'http' && (!port || e.data.port === port));
 const leased = d => sim => !!sim.dev(d)?.l3?.lease;
+const dnsOk = (from, name) => sim => sim.log.some(e => e.dev === from && e.tag === 'dns-done' && e.data.ok && e.data.answer && e.data.name === name);
 
 // In the ring, sw3 reaches the root via sw2 or sw4 at equal cost: the lower bridge MAC wins
 const ringBackup = () => [['sw2', macFor('sw2/bridge')], ['sw4', macFor('sw4/bridge')]].sort((a, b) => b[1].localeCompare(a[1]))[0][0];
@@ -1293,6 +1294,34 @@ export const CHALLENGES = [
     hints: ['Try dig web.lab on the client and read the answer.', 'Is the DNS server reachable at all? Is there a record for web.lab?'],
     presets: { client: ['curl http://web.lab/', 'dig web.lab', 'dig @10.20.0.53 web.lab'], dns: ['ss -tuln'] } },
 
+  { id: 'dnstree', level: 2, title: 'Names on the internet stopped working', topics: ['DNS', 'Resolver', 'Delegation'],
+    symptom: '<p>The web server 203.0.113.80 answers <code>curl http://203.0.113.80/</code> just fine. But the client can no longer open <code>http://www.firma.lab/</code>, or cannot resolve <code>portal.partner.lab</code>, or both. The client uses the resolver 10.1.0.53 in its own network.</p>',
+    topo: () => dnsTopo(),
+    variants: [
+      { fault: t => { dev(t, 'nic').dns = dev(t, 'nic').dns.filter(r => !(r.name === 'firma.lab' && r.type === 'NS')); }, cause: 'The TLD server of lab. had lost the delegation of firma.lab (the NS record). For the TLD, firma.lab simply did not exist: NXDOMAIN, which the resolver then also cached for 60 seconds.' },
+      { fault: t => { dev(t, 'nic').dns.find(r => r.name === 'ns1.firma.lab').ip = '203.0.113.35'; }, cause: 'The glue record on the TLD server pointed to 203.0.113.35 instead of 203.0.113.53. The resolver asked a machine that does not exist, timed out and answered SERVFAIL. After the fix, the wrong glue stays in the cache of the resolver until it is flushed or expires.' },
+      { fault: t => { dev(t, 'resolver').recursion.roots = '198.41.0.40'; }, cause: 'The root hints of the resolver were wrong (198.41.0.40). Without a working root server it could not start anywhere: SERVFAIL for every name it did not have cached.' },
+      { fault: t => { dev(t, 'r1').acl = [{ action: 'drop', proto: 'udp', port: 53, src: '10.1.0.53', dst: 'any' }]; }, cause: 'A rule on r1 dropped DNS queries from the resolver to the internet. The client reached the resolver just fine, but the resolver could not reach a single server: SERVFAIL.' },
+      { fault: t => { dev(t, 'ns1').dnsZone = 'firma.lan'; }, cause: 'ns1 was configured for the zone firma.lan instead of firma.lab. It refused every question for firma.lab (REFUSED), so the delegation was lame.' },
+      { fault: t => { dev(t, 'client').resolver = '203.0.113.53'; }, cause: 'The client used ns1.firma.lab (203.0.113.53) as its DNS server instead of the resolver. ns1 is authoritative for firma.lab and answered www.firma.lab, but it is no resolver and refused everything else.' }],
+    goals: [{ text: 'client opens http://www.firma.lab/.', check: sim => dnsOk('client', 'www.firma.lab')(sim) && curlOk('client')(sim) },
+      { text: 'client resolves portal.partner.lab.', check: dnsOk('client', 'portal.partner.lab') }],
+    hints: ['Start on the client: dig www.firma.lab shows the status (NXDOMAIN, SERVFAIL, REFUSED?) and which server answered.', 'dig +trace www.firma.lab walks the tree step by step and shows where it breaks. The log of the resolver tells the same story.', 'After a fix, think of the cache of the resolver: unbound-control flush_all.'],
+    presets: { client: ['curl http://www.firma.lab/', 'dig www.firma.lab', 'dig +trace www.firma.lab', 'dig portal.partner.lab'], resolver: ['unbound-control dump_cache', 'unbound-control flush_all'] } },
+
+  { id: 'dnsstale', level: 1, title: 'The new web server never gets visitors', topics: ['DNS', 'Caching', 'TTL'],
+    symptom: '<p>Last night the web site moved to a new server with the address 203.0.113.81, the old one at .80 was switched off. This morning the client still cannot open <code>http://www.firma.lab/</code>.</p>',
+    topo: () => { const t = dnsTopo(); dev(t, 'web').ifaces.eth1.ip = '203.0.113.81'; return t; },
+    variants: [
+      { fault: t => { dev(t, 'ns1').dns.find(r => r.name === 'www.firma.lab').ttl = 86400; dev(t, 'resolver').recursion.seed = [{ name: 'www.firma.lab', type: 'A', data: '203.0.113.80', ttl: 86400 }]; dev(t, 'ns1').dns.find(r => r.name === 'www.firma.lab').ip = '203.0.113.81'; },
+        cause: 'The record had been updated, but its TTL was a whole day. The resolver had cached the old address yesterday and kept handing it out. Flushing the cache helped; next time, lower the TTL before the move.' },
+      { fault: t => { dev(t, 'ns1').dns.find(r => r.name === 'www.firma.lab').ip = '203.0.113.80'; }, cause: 'Nobody had updated the record on the authoritative server ns1: www.firma.lab still pointed to the old address .80.' },
+      { fault: t => { const d = dev(t, 'ns1').dns; d.find(r => r.name === 'www.firma.lab').ip = '203.0.113.81'; d.push({ name: 'www.firma.lab', type: 'A', ip: '203.0.113.80', ttl: 60 }); },
+        cause: 'ns1 had two A records for www.firma.lab: the new one and the old one, which nobody deleted. Clients picked one of them, and the old server was off.' }],
+    goals: [{ text: 'client opens http://www.firma.lab/ on the new server.', check: sim => sim.log.some(e => e.dev === 'client' && e.tag === 'dns-done' && e.data.name === 'www.firma.lab' && e.data.answer === '203.0.113.81') && curlOk('client')(sim) }],
+    hints: ['dig www.firma.lab on the client: which address, and which TTL?', 'Compare with what the authoritative server says: dig @203.0.113.53 www.firma.lab', 'unbound-control dump_cache on the resolver shows what it remembers.'],
+    presets: { client: ['curl http://www.firma.lab/', 'dig www.firma.lab', 'dig @203.0.113.53 www.firma.lab'], resolver: ['unbound-control dump_cache', 'unbound-control flush_all'] } },
+
   { id: 'ospf', level: 2, title: 'One site is missing from the map', topics: ['OSPF'],
     symptom: '<p>Three sites run OSPF. pc1 cannot reach the server srv3 at site 3.</p>',
     topo: () => ospfTopo(),
@@ -1351,6 +1380,7 @@ __PACKETPILOT_FILE_END__
 // Small command line per device, modeled on iproute2 and FRR
 import { isIp, parseCidr } from './net.js';
 import { PORTS } from './engine.js';
+import { resolverOf, fqdn } from './dns.js';
 
 const pad = (s, n) => String(s).padEnd(n);
 
@@ -1370,7 +1400,9 @@ export function helpFor(dev) {
     'curl http://<ip>[:port]/         fetch HTTP over TCP',
     'nc -zv <ip> <port>    check whether a TCP port is open',
     'nc -u <ip> <port>     send a UDP datagram',
-    'dig [@server] <name>  DNS query over UDP 53',
+    'dig [@server] <name> [A|AAAA|NS|CNAME]   DNS query over UDP 53',
+    'dig +trace <name>     follow the delegation from the root yourself',
+    'dig +norec / +short   no recursion wanted / only the answer',
     'curl http://<name>/   DNS first, then TCP (DNS server in the configuration)',
     'ss -tan / ss -tuln    TCP connections / open ports');
   if (dev.type === 'router') l.push(
@@ -1382,6 +1414,7 @@ export function helpFor(dev) {
     'maximum-paths <n>     ECMP: how many equal paths are used (1 = off)', 'sysctl net.ipv4.fib_multipath_hash_policy=0|1   ECMP hash: addresses / with ports',
     'show bfd peers        BFD sessions and their state',
     'show ip ospf neighbor / database / interface   OSPF state', 'show vrrp             VRRP groups and who is master', 'conntrack -L          NAT translations (also: show ip nat)');
+  if (dev.cfg.recursion?.enabled) l.push('unbound-control dump_cache     what the resolver has cached, with TTL left', 'unbound-control flush_all      empty the cache (flush <name>: one name)');
   if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
   if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)');
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
@@ -1406,7 +1439,7 @@ export function runCommand(dev, line) {
   if (!own.includes(p[0]) || !dev.l3) say(`$ ${cmd}`);
   try {
     if (p[0] === 'help' || p[0] === '?') return helpFor(dev).forEach(say);
-    if (p[0] === 'clear') { dev.consoleLines.length = 0; sim.emit('console', { devId: dev.id, clear: true }); return; }
+    if (p[0] === 'clear' && !p[1]) { dev.consoleLines.length = 0; sim.emit('console', { devId: dev.id, clear: true }); return; }
 
     if (p[0] === 'ping') {
       if (!dev.l3) return say('This device has no IP address. Pings can be sent from PCs, servers, routers and VTEPs.');
@@ -1599,12 +1632,38 @@ export function runCommand(dev, line) {
       return;
     }
     if ((p[0] === 'dig' || p[0] === 'nslookup') && dev.l3) {
-      let server = null, name = null;
-      for (const x of p.slice(1)) { if (x.startsWith('@')) server = x.slice(1); else if (isIp(x) && p[0] === 'nslookup') server = x; else if (!x.startsWith('+')) name = x; }
-      server ??= (dev.cfg.resolver || '');
-      if (!name) { say(`$ ${cmd}`); return say('Syntax: dig @<server-ip> <name>   e.g. dig @10.0.2.53 web.lab'); }
+      let server = null, name = null, type = 'A';
+      const o = {};
+      for (const x of p.slice(1)) {
+        if (x.startsWith('@')) server = x.slice(1);
+        else if (x === '+trace') o.trace = true;
+        else if (x === '+norec' || x === '+norecurse') o.rd = false;
+        else if (x === '+short') o.short = true;
+        else if (/^(A|AAAA|NS|CNAME)$/i.test(x) && name) type = x.toUpperCase();
+        else if (x.startsWith('-type=') || x.startsWith('-q=')) type = x.split('=')[1].toUpperCase();
+        else if (isIp(x) && p[0] === 'nslookup' && name) server = x;
+        else if (!x.startsWith('+') && !x.startsWith('-')) name = x;
+      }
+      server ??= dev.l3.resolver();
+      if (!name) { say(`$ ${cmd}`); return say('Syntax: dig [@server] <name> [A|AAAA|NS|CNAME] [+trace] [+norec] [+short]   e.g. dig @10.0.2.53 web.lab'); }
       if (!isIp(server)) { say(`$ ${cmd}`); return say(';; No DNS server configured. Specify one with @<ip> or enter it in the configuration.'); }
-      dev.dig(server, name); return;
+      if (!['A', 'AAAA', 'NS', 'CNAME'].includes(type)) { say(`$ ${cmd}`); return say(`;; unsupported query type ${type}: A, AAAA, NS or CNAME`); }
+      dev.dig(server, name, { ...o, type }); return;
+    }
+    if (p[0] === 'unbound-control' || (p[0] === 'show' && p[1] === 'dns' && p[2] === 'cache') || (p[0] === 'clear' && p[1] === 'dns')) {
+      if (!dev.cfg.recursion?.enabled) return say('unbound-control: this device is not a recursive resolver (Configuration, Add a feature, Recursive resolver)');
+      const r = resolverOf(dev.l3);
+      const sub = p[0] === 'show' ? 'dump_cache' : p[0] === 'clear' ? 'flush_all' : p[1];
+      if (sub === 'dump_cache') {
+        const rows = r.dump();
+        if (!rows.length) return say('(cache empty)');
+        say(`${pad('Name', 26)}${pad('TTL left', 10)}${pad('Type', 7)}Data`);
+        for (const e of rows) say(`${pad(fqdn(e.name), 26)}${pad(e.ttl + ' s', 10)}${pad(e.type, 7)}${e.type === 'NS' || e.type === 'CNAME' ? fqdn(e.data) : e.data}`);
+        return;
+      }
+      if (sub === 'flush_all') { const n = r.flush(); dev.record('info', `cache flushed (${n} entr${n === 1 ? 'y' : 'ies'} removed)`, { tag: 'dns-flush' }); return say(`ok removed ${n} rrsets`); }
+      if (sub === 'flush' && p[2]) { const n = r.flush(p[2]); dev.record('info', `cache entries for ${fqdn(p[2])} removed`, { tag: 'dns-flush', data: { name: p[2] } }); return say(`ok removed ${n} rrsets`); }
+      return say('Syntax: unbound-control dump_cache | flush_all | flush <name>');
     }
     if (p[0] === 'ss' && dev.l3) {
       const f = p.slice(1).join('');
@@ -1823,12 +1882,12 @@ import m7 from './m7.js';
 import m8 from './m8.js';
 import m9 from './m9.js';
 import m10 from './m10.js';
+import m11 from './m11.js';
 
 // Display order: all of layer 2, then layer 3, VLAN/VXLAN, transport, then the network services
-export const MODULES = [m1, m4, m2, m3, m5, m6, m7, m8, m9, m10];
+export const MODULES = [m1, m4, m2, m3, m5, m11, m6, m7, m8, m9, m10];
 export const UPCOMING = [
   { title: 'IPv6', text: 'Addresses, Neighbor Discovery instead of ARP, SLAAC and dual stack.' },
-  { title: 'DNS in depth', text: 'The DNS hierarchy, recursive resolution and caching.' },
   { title: 'VPN', text: 'WireGuard and IPsec between sites, MTU with a double envelope.' },
   { title: 'BGP and EVPN', text: 'Routing between networks and a real control plane for VXLAN.' }
 ]
@@ -2183,6 +2242,146 @@ ${note('BFD decides nothing itself: it only says "neighbor reachable" or "neighb
           { text: 'BFD on r1 runs with interval 300 ms and multiplier 3. After how many milliseconds did it give up the neighbor?', ask: true, expect: () => ['900'], placeholder: 'ms' }],
         hints: ['The fast-forward button helps while OSPF waits its 40 seconds; the ping keeps counting.', 'BFD is under Configuration on each router: Add a feature, BFD. Check "BFD enabled" and "Watch the OSPF neighbors".', 'The loss is in the cable settings: click the cable, Line quality.'],
         outro: '<p>Without BFD the ping lost about 40 replies: OSPF had to wait for its dead interval, because the port of r1 never went down. With BFD the failure was noticed after 900 ms, OSPF dropped the neighbor at once and rerouted via r3.</p>' }
+    ] }
+  ]
+};
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/course"
+  cat > "$W/js/course/m11.js" <<'__PACKETPILOT_FILE_END__'
+import { note, tag } from './helpers.js';
+import { dnsTopo } from '../presets.js';
+import { macFor } from '../net.js';
+
+const M = id => macFor(id + '/eth1');
+const EPHEMERAL = { range: [1024, 65535] };
+const ADDR = {
+  mac: [[M('client'), 'client'], [M('resolver'), 'resolver'], [M('r1'), 'r1 eth1 (gateway)']],
+  ip: [['10.1.0.10', 'client'], ['10.1.0.53', 'resolver'], ['10.1.0.1', 'r1 eth1'], ['198.41.0.4', 'root (a.root-servers.lab)'], ['192.0.2.53', 'ns1.nic.lab (TLD lab.)'], ['203.0.113.53', 'ns1.firma.lab']],
+  name: ['www.firma.lab', 'firma.lab', 'lab', '.']
+};
+const done = (pred = () => true) => tag('client', 'dns-done', pred);
+
+// A change in the configuration of ns1 is noticed at the next evaluation; answers after that count
+const since = new WeakMap();
+const after = (key, cond) => sim => {
+  const m = since.get(sim) || {}; since.set(sim, m);
+  if (!cond(sim)) { delete m[key]; return null; }
+  return m[key] ??= sim.logSeq;
+};
+const recIs = (name, ip) => sim => (sim.dev('ns1')?.cfg.dns || []).some(r => r.name === name && (r.type || 'A') === 'A' && r.ip === ip);
+const moved = after('moved', recIs('www.firma.lab', '203.0.113.81'));
+const blogAdded = after('blog', sim => (sim.dev('ns1')?.cfg.dns || []).some(r => r.name === 'blog.firma.lab'));
+const answerAfter = (mark, name, pred) => sim => {
+  const s = mark(sim);
+  return s !== null && sim.log.some(e => e.seq > s && e.dev === 'client' && e.tag === 'dns-done' && e.data.name === name && pred(e.data));
+};
+const lastTtl = sim => { const d = sim.log.filter(e => e.dev === 'client' && e.tag === 'dns-done' && e.data.name === 'www.firma.lab' && e.data.ttl != null).pop(); return d ? [String(d.data.ttl)] : []; };
+const flushedThenResolved = sim => {
+  const f = sim.log.filter(e => e.dev === 'resolver' && e.tag === 'dns-flush').pop();
+  return !!f && sim.log.some(e => e.seq > f.seq && e.dev === 'resolver' && e.tag === 'dns-answered' && e.data.name === 'www.firma.lab' && !e.data.cached);
+};
+
+export default {
+  id: 'm11', title: 'DNS in depth', bands: ['udp', 'data'],
+  text: 'Who knows the answer? The hierarchy from the root down, resolvers that ask on your behalf, and caches that remember for exactly as long as the TTL allows.',
+  lessons: [
+    { id: 'm11-l1', title: 'From the root down', minutes: 14, steps: [
+      { type: 'theory', title: 'Nobody knows every name', html: `
+<p>No server in the world knows all names. DNS is a tree, read from right to left. Each level only knows who is responsible for the next level down:</p>
+<pre>.                    the root: 13 server names, hundreds of machines (anycast)
+└── lab.             a top-level domain (TLD), like com. or ch.
+    ├── firma.lab.   a zone of a company, on its own name servers
+    │   └── www.firma.lab.  →  203.0.113.80
+    └── partner.lab.</pre>
+<p>A part of the tree that one server is responsible for is a <b>zone</b>. A server that holds a zone answers for it <b>authoritatively</b> (flag <code>aa</code>). For a part it has handed off, it answers with a <b>referral</b>: "ask those servers", as NS records in the authority section.</p>
+<table><tr><th>Record</th><th>Meaning</th><th>Example</th></tr>
+<tr><td>A</td><td>name to IPv4 address</td><td><code>www.firma.lab. 60 IN A 203.0.113.80</code></td></tr>
+<tr><td>AAAA</td><td>name to IPv6 address</td><td><code>www.firma.lab. 60 IN AAAA 2001:db8:80::80</code></td></tr>
+<tr><td>NS</td><td>who is responsible for a zone</td><td><code>firma.lab. 86400 IN NS ns1.firma.lab.</code></td></tr>
+<tr><td>CNAME</td><td>this name is an alias</td><td><code>shop.firma.lab. 3600 IN CNAME www.firma.lab.</code></td></tr></table>
+<h2>Glue</h2>
+<p>The TLD server says: firma.lab is served by <code>ns1.firma.lab</code>. But to find the address of ns1.firma.lab you would have to ask … ns1.firma.lab. To break that circle, the parent zone also sends the address of the name server along, in the additional section. That is a <b>glue record</b>.</p>
+<h2>Resolver and stub</h2>
+<p>Your PC does none of this work. It has a tiny <b>stub resolver</b> that sends one question with the flag <code>rd</code> (recursion desired) to a <b>recursive resolver</b>: the DNS server from DHCP, of your provider, or 1.1.1.1. The resolver asks <b>iteratively</b> (<code>rd 0</code>): root, then TLD, then the authoritative server, until it has the answer, and sends only the result back.</p>
+${note('Authoritative servers usually refuse to resolve for strangers (status REFUSED). A resolver that answers anyone on the internet is an "open resolver" and gets abused for amplification attacks.')}` },
+      { type: 'stack', title: 'Put the queries in order', hint: 'The client asks for www.firma.lab, the resolver has an empty cache. The top is the first message.',
+        items: [{ name: 'client → resolver: A www.firma.lab? (rd 1)', kind: 'udp' }, { name: 'resolver → root: A www.firma.lab? (rd 0)', kind: 'udp' },
+          { name: 'root → resolver: referral, lab. is at ns1.nic.lab', kind: 'data' }, { name: 'resolver → ns1.nic.lab: A www.firma.lab?', kind: 'udp' },
+          { name: 'ns1.nic.lab → resolver: referral, firma.lab. is at ns1.firma.lab', kind: 'data' }, { name: 'resolver → ns1.firma.lab: A www.firma.lab?', kind: 'udp' },
+          { name: 'ns1.firma.lab → resolver: 203.0.113.80 (aa)', kind: 'data' }, { name: 'resolver → client: 203.0.113.80', kind: 'data' }],
+        explain: 'The client only sees the first and the last message. In between, the resolver walks down the tree, and every server only names the next one. Only the last answer is authoritative.' },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'Which server can answer "www.firma.lab is 203.0.113.80" authoritatively?', options: ['A root server', 'The TLD server of lab.', 'The name server of the zone firma.lab', 'Any resolver'], correct: 2 },
+        { q: 'What does the root server answer when asked for www.firma.lab?', options: ['The address', 'NXDOMAIN, it does not know the name', 'A referral to the servers of lab.', 'Nothing'], correct: 2,
+          explain: 'The root only knows who is responsible for each TLD and refers there.' },
+        { q: 'Why does the TLD server send the address of ns1.firma.lab along with the referral?', options: ['To save one query', 'Without it, nobody could find ns1.firma.lab, because its address is in the zone it serves', 'So that the client can ask directly', 'It does not'], correct: 1,
+          explain: 'This is the glue record. It is only needed when the name server sits inside the zone it serves.' },
+        { q: 'Which flag tells a server "please resolve completely for me"?', input: ['rd', 'RD', 'recursion desired'] }] }
+    ] },
+
+    { id: 'm11-l2', title: 'Watching a resolver work', minutes: 18, steps: [
+      { type: 'build', title: 'The resolver asks the root', blocks: ['eth', 'vlan', 'arp', 'ip', 'icmp', 'udp', 'tcp', 'dns'],
+        task: '<p>The client asked the <b>resolver</b> (10.1.0.53) for <code>www.firma.lab</code>. The cache of the resolver is empty, so it asks the root server 198.41.0.4 first. The root is on the internet, behind the gateway r1. Build the frame as it leaves the resolver\'s cable.</p>',
+        addresses: ADDR,
+        expected: [
+          { block: 'eth', fields: { dst: M('r1'), src: M('resolver'), type: '0x0800' } },
+          { block: 'ip', fields: { src: '10.1.0.53', dst: '198.41.0.4', proto: '17', ttl: '64' } },
+          { block: 'udp', fields: { sport: EPHEMERAL, dport: '53' } },
+          { block: 'dns', fields: { qr: '0', name: 'www.firma.lab', qtype: 'A', rd: '0' } }],
+        explain: 'The resolver asks with its own address, not the client\'s: the root never learns who wanted to know. It asks for the full name, even though the root will only answer with a referral, and it clears RD: it does not want the root to resolve anything for it.' },
+      { type: 'lab', title: 'From the root down', topo: () => dnsTopo(), edit: 'config',
+        intro: '<p>The client uses the resolver 10.1.0.53 in its own network. On the internet there are a root server, the TLD server of <code>lab.</code> and two authoritative servers. All caches are empty.</p>',
+        presets: { client: ['dig www.firma.lab', 'dig +trace portal.partner.lab', 'dig @203.0.113.53 portal.partner.lab', 'dig shop.firma.lab'], resolver: ['unbound-control dump_cache'], ns1: ['dig @203.0.113.53 www.firma.lab'] },
+        goals: [
+          { text: 'Resolve <code>www.firma.lab</code> on the client with dig.', check: done(d => d.ok && d.name === 'www.firma.lab' && !d.trace) },
+          { text: 'Which server did the resolver ask first? Filter the log to "Only resolver".', ask: true, expect: () => ['198.41.0.4', 'root', 'a.root-servers.lab', 'a.root-servers.lab.', 'the root'], placeholder: 'IP or name' },
+          { text: 'How many servers did the resolver ask before it could answer?', ask: true, expect: () => ['3', 'three'] },
+          { text: 'The client\'s answer: does it carry the flag <code>aa</code> (authoritative)? yes or no', ask: true, expect: () => ['no'] },
+          { text: 'Walk the tree yourself: <code>dig +trace portal.partner.lab</code>.', check: done(d => d.trace && d.ok) },
+          { text: 'Which name server is responsible for partner.lab?', ask: true, expect: () => ['ns.partner.lab', 'ns.partner.lab.', '203.0.113.153'] },
+          { text: 'Ask the server of firma.lab directly about a name in another zone: <code>dig @203.0.113.53 portal.partner.lab</code>. Which status comes back?', ask: true, expect: () => ['refused'] }],
+        hints: ['The console presets of the client contain all commands.', 'In the log of the resolver, every outgoing question starts with "asks". Referrals say "refers to".', 'Click the client\'s answer in the log: the packet inspector shows the flags AA, RD and RA.'],
+        outro: '<p>The client received a non-authoritative answer: it came from the resolver, which had asked the authoritative server on the client\'s behalf. With <code>+trace</code> you did the resolver\'s work yourself. And ns1.firma.lab only answers for its own zone: everything else is REFUSED.</p>' }
+    ] },
+
+    { id: 'm11-l3', title: 'Caching and TTL', minutes: 12, steps: [
+      { type: 'theory', title: 'Remember, but not forever', html: `
+<p>If every query walked the whole tree, the root servers would collapse. So the resolver keeps every answer it gets, the referrals too, in its <b>cache</b>. How long is decided by the owner of the record, with the <b>TTL</b> (time to live, in seconds):</p>
+<pre>www.firma.lab.   60     IN A   203.0.113.80     cached for 1 minute
+firma.lab.       86400  IN NS  ns1.firma.lab.   cached for 1 day
+lab.             172800 IN NS  ns1.nic.lab.     cached for 2 days</pre>
+<p>When the resolver answers from its cache, it hands out the <b>remaining</b> TTL: a second query after 20 seconds shows 40 instead of 60. Because the delegations of lab. and firma.lab. stay cached much longer, the next question for another name in firma.lab goes straight to ns1.firma.lab.</p>
+<h2>Negative caching</h2>
+<p>"This name does not exist" (NXDOMAIN) is cached too, for the time given in the SOA record of the zone. If you create a name that someone has just asked for, they will keep getting NXDOMAIN until that time is over.</p>
+<h2>Changing a record</h2>
+<table><tr><th>When</th><th>What</th></tr>
+<tr><td>A day before</td><td>lower the TTL, e.g. from 86400 to 60</td></tr>
+<tr><td>Wait</td><td>at least the old TTL, until every cache has the short one</td></tr>
+<tr><td>Move</td><td>change the address: after at most 60 s everyone has the new one</td></tr>
+<tr><td>Afterwards</td><td>raise the TTL again</td></tr></table>
+${note('"DNS propagation" is not a process that pushes changes around. Nothing is propagated: caches simply expire. The longest TTL decides how long old data can live.')}` },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'A record has TTL 300. The resolver cached it 120 s ago. Which TTL does the client see?', input: ['180'], unit: 's' },
+        { q: 'You change the address of www from 1.1.1.1 to 2.2.2.2. The TTL was 86400. How long can clients still get 1.1.1.1?', options: ['Not at all', 'Up to 5 minutes', 'Up to one day', 'Forever'], correct: 2 },
+        { q: 'The resolver has firma.lab. NS in its cache, but not mail.firma.lab. Whom does it ask for mail.firma.lab?', options: ['The root', 'The TLD server of lab.', 'ns1.firma.lab directly', 'The client'], correct: 2,
+          explain: 'The cached delegation is a shortcut: the resolver starts as far down the tree as it already knows.' },
+        { q: 'Someone asked for blog.firma.lab a second ago (NXDOMAIN). Now you create the record. What does the next query through the same resolver return?', options: ['The new address', 'NXDOMAIN, until the negative cache entry expires', 'SERVFAIL', 'REFUSED'], correct: 1 }] }
+    ] },
+
+    { id: 'm11-l4', title: 'Cache and TTL in the lab', minutes: 20, steps: [
+      { type: 'lab', title: 'The web server moves', topo: () => dnsTopo(), edit: 'config',
+        intro: '<p>The same network as before. The record <code>www.firma.lab</code> has a TTL of 60 seconds. The fast-forward button helps when you have to wait for a TTL.</p>',
+        presets: { client: ['dig www.firma.lab', 'dig blog.firma.lab', 'curl http://www.firma.lab/'], resolver: ['unbound-control dump_cache', 'unbound-control flush_all'] },
+        goals: [
+          { text: 'Resolve <code>www.firma.lab</code> twice on the client. The second answer comes from the cache of the resolver.', check: tag('resolver', 'dns-cache-hit', d => d.name === 'www.firma.lab') },
+          { text: 'Which TTL does your latest answer show? (seconds)', ask: true, expect: lastTtl, placeholder: 'seconds' },
+          { text: 'The web server gets the new address 203.0.113.81. On <b>ns1</b>, under Configuration, DNS records, change www.firma.lab to 203.0.113.81. Then resolve again right away: the client still gets the old address.', check: answerAfter(moved, 'www.firma.lab', d => d.answer === '203.0.113.80') },
+          { text: 'Wait until the TTL is over (fast-forward) and resolve again: now the new address arrives.', check: answerAfter(moved, 'www.firma.lab', d => d.answer === '203.0.113.81') },
+          { text: 'For how many seconds at most could a client still get the old address after your change?', ask: true, expect: () => ['60'], placeholder: 'seconds' },
+          { text: 'Resolve <code>blog.firma.lab</code> (it does not exist). Then create it on ns1 (A 203.0.113.80) and resolve again at once: NXDOMAIN, from the cache.', check: answerAfter(blogAdded, 'blog.firma.lab', d => d.rcode === 'NXDOMAIN') },
+          { text: 'Flush the cache of the resolver (<code>unbound-control flush_all</code>) and resolve www.firma.lab again. It has to start at the root.', check: flushedThenResolved }],
+        hints: ['Changing a record: click ns1, Configuration, DNS records, and edit the address in the www.firma.lab row.', 'unbound-control dump_cache on the resolver shows every cache entry with the TTL that is left.', 'The negative entry for blog.firma.lab lives as long as the SOA of firma.lab says: 60 seconds here.'],
+        outro: '<p>The cache made the second answer instant, and the same cache delivered the old address after the move, for at most the TTL. That is why operators lower the TTL before a move. Flushing helps on your own resolver, but not on the thousands of resolvers of other people.</p>' }
     ] }
   ]
 };
@@ -3315,12 +3514,315 @@ ${note('Linux implements VRRP with keepalived, Cisco has its own HSRP that works
 
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
+  cat > "$W/js/dns.js" <<'__PACKETPILOT_FILE_END__'
+// DNS in depth: authoritative zones with delegation (NS and glue), a recursive resolver
+// with a cache and TTLs, and the answers of a server. No DOM, used by the engine.
+import { isIp, PROTO } from './net.js';
+import { ipPacket, udp } from './packets.js';
+
+export const DNS_TYPES = ['A', 'AAAA', 'NS', 'CNAME'];
+export const DEFAULT_TTL = 300;
+export const NEG_TTL = 60;
+export const ROOT_TTL = 518400;
+const QUERY_TIMEOUT = 1500;
+const MAX_QUERIES = 20;
+
+/** Names are compared without the final dot and in lower case; the root is '' */
+export const norm = n => String(n ?? '').trim().toLowerCase().replace(/\.+$/, '');
+export const fqdn = n => (norm(n) ? norm(n) + '.' : '.');
+export const under = (name, zone) => !zone || name === zone || name.endsWith('.' + zone);
+export const parentOf = z => z.includes('.') ? z.slice(z.indexOf('.') + 1) : '';
+const isAddr = t => t === 'A' || t === 'AAAA';
+
+/** The zone a server is authoritative for: null (simple server, answers what it knows), '' the root, or e.g. 'lab' */
+export function zoneOf(cfg) {
+  const z = cfg.dnsZone;
+  if (z == null || String(z).trim() === '') return null;
+  return norm(z);
+}
+/** The records of a server in one shape: name, type, data, ttl */
+export function records(cfg) {
+  return (cfg.dns || []).map(r => {
+    const type = DNS_TYPES.includes(r.type) ? r.type : 'A';
+    return { name: norm(r.name), type, data: isAddr(type) ? String(r.ip ?? '').trim() : norm(r.value), ttl: Number(r.ttl) > 0 ? Number(r.ttl) : DEFAULT_TTL };
+  }).filter(r => r.data);
+}
+const rr = r => ({ name: r.name, type: r.type, ttl: r.ttl, data: r.data, ...(isAddr(r.type) ? { ip: r.data } : {}) });
+export const rrText = r => `${fqdn(r.name)}\t${r.ttl}\tIN\t${r.type}\t${r.type === 'NS' || r.type === 'CNAME' ? fqdn(r.data) : r.data}`;
+const soaOf = zone => ({ name: zone, type: 'SOA', ttl: NEG_TTL, data: `ns1.${fqdn(zone).replace(/^\.$/, '')} hostmaster ${NEG_TTL}` });
+export const rootName = i => `${'abcdefghijklm'[i] || 'x'}.root-servers.lab`;
+
+/** What a server answers from its own data. null: the name is outside its zone. */
+export function authLookup(cfg, q, qtype) {
+  const zone = zoneOf(cfg), recs = records(cfg);
+  if (zone !== null && !under(q, zone)) return null;
+  if (zone !== null) {
+    // A delegation below the own zone: answer with a referral to the child zone's servers
+    const cuts = recs.filter(r => r.type === 'NS' && r.name !== zone && under(q, r.name));
+    if (cuts.length) {
+      const cut = cuts.reduce((a, b) => b.name.length > a.name.length ? b : a).name;
+      const ns = recs.filter(r => r.type === 'NS' && r.name === cut);
+      const glue = recs.filter(r => isAddr(r.type) && ns.some(n => n.data === r.name));
+      return { referral: cut, aa: 0, rcode: 'NOERROR', answers: [], authority: ns.map(rr), additional: glue.map(rr) };
+    }
+  }
+  const answers = [];
+  let name = q;
+  for (let i = 0; i < 8; i++) {
+    const here = recs.filter(r => r.name === name);
+    const hit = here.filter(r => r.type === qtype);
+    if (hit.length) { answers.push(...hit.map(rr)); break; }
+    const cn = qtype !== 'CNAME' && here.find(r => r.type === 'CNAME');
+    if (cn) {
+      answers.push(rr(cn));
+      name = cn.data;
+      if (zone === null ? !recs.some(r => r.name === name) : !under(name, zone)) break;
+      continue;
+    }
+    if (!answers.length) {
+      const exists = recs.some(r => under(r.name, name));
+      return { aa: 1, rcode: exists ? 'NOERROR' : 'NXDOMAIN', answers: [], authority: zone !== null ? [soaOf(zone)] : [], additional: [] };
+    }
+    break;
+  }
+  return { aa: 1, rcode: 'NOERROR', answers, authority: [], additional: [] };
+}
+
+/** A DNS query arrived on UDP 53 of a host with a DNS service */
+export function serveDns(l3, ip, frame) {
+  const dev = l3.dev, cfg = l3.cfg, q = ip.l4.payload;
+  const qname = norm(q.qname), qtype = q.qtype || 'A';
+  const rec = !!cfg.recursion?.enabled;
+  const reply = (p, kind, text, data = {}) => {
+    const ans = { kind: 'dns', id: q.id, qr: 1, aa: p.aa ? 1 : 0, rd: q.rd ? 1 : 0, ra: rec ? 1 : 0, qname: q.qname, qtype,
+      rcode: p.rcode, answers: p.answers || [], authority: p.authority || [], additional: p.additional || [] };
+    dev.record(kind, text, { frame, tag: data.tag || 'dns-answered', data: { name: qname, qtype, found: !!ans.answers.length, rcode: ans.rcode, ...data } });
+    l3.output(ipPacket({ src: ip.dst, dst: ip.src, proto: PROTO.UDP, trace: ip.trace, l4: udp(ip.l4.dport, ip.l4.sport, ans) }), {});
+  };
+  const list = a => {
+    const addr = a.filter(r => r.type !== 'CNAME').map(r => r.data), cn = a.filter(r => r.type === 'CNAME');
+    return (addr.join(', ') || cn.map(r => r.data).join(', ')) + (addr.length && cn.length ? ` (via the alias ${cn.map(r => r.data).join(' → ')})` : '');
+  };
+  // Priming: a stub (or dig +trace) asks the resolver for the servers of the root
+  if (rec && q.rd && qname === '' && qtype === 'NS') {
+    const roots = resolverOf(l3).roots();
+    return reply({ rcode: roots.length ? 'NOERROR' : 'SERVFAIL', answers: roots.map((_, i) => ({ name: '', type: 'NS', ttl: ROOT_TTL, data: rootName(i) })),
+      additional: roots.map((r, i) => ({ name: rootName(i), type: 'A', ttl: ROOT_TTL, data: r, ip: r })) },
+      'ok', `answers the question for the root servers from its root hints: ${roots.join(', ') || 'none configured'}`, { tag: 'dns-priming' });
+  }
+  let auth = authLookup(cfg, qname, qtype);
+  // A resolver without an own zone only answers itself for names it has records for (like local-data in unbound)
+  if (auth && zoneOf(cfg) === null && rec && q.rd && !auth.answers.length) auth = null;
+  if (auth && !(auth.referral !== undefined && rec && q.rd)) {
+    if (auth.referral !== undefined) {
+      const ns = auth.authority.map(n => `${n.data}${auth.additional.find(g => g.name === n.data) ? ' ' + auth.additional.find(g => g.name === n.data).data : ''}`).join(', ');
+      return reply(auth, 'info', `does not know ${fqdn(qname)} itself, but knows who is responsible: refers to the servers of ${fqdn(auth.referral)} (${ns})`, { tag: 'dns-referral', zone: auth.referral });
+    }
+    if (auth.answers.length) return reply(auth, 'ok', `answers the query for ${fqdn(qname)} ${qtype} authoritatively: ${list(auth.answers)} (TTL ${auth.answers[auth.answers.length - 1].ttl} s)`);
+    return reply(auth, 'ok', auth.rcode === 'NXDOMAIN' ? `answers the query for ${fqdn(qname)}: NXDOMAIN, the name does not exist${zoneOf(cfg) !== null ? ' in its zone ' + fqdn(zoneOf(cfg)) : ''}`
+      : `answers the query for ${fqdn(qname)} ${qtype}: the name exists, but has no ${qtype} record (NODATA)`);
+  }
+  if (rec && q.rd) {
+    return resolverOf(l3).resolve(qname, qtype, res => {
+      const how = res.cached ? `from its cache (TTL left ${res.answers[res.answers.length - 1]?.ttl ?? res.ttlLeft ?? 0} s)` : `after ${res.queries} quer${res.queries === 1 ? 'y' : 'ies'} to other servers`;
+      if (res.rcode === 'NOERROR' && res.answers.length) reply(res, 'ok', `answers ${ip.src}: ${fqdn(qname)} ${qtype} is ${list(res.answers)}, ${how}`, { cached: !!res.cached });
+      else if (res.rcode === 'SERVFAIL') reply(res, 'err', `cannot resolve ${fqdn(qname)} and answers ${ip.src} with SERVFAIL`, { tag: 'dns-servfail' });
+      else reply(res, 'ok', `answers ${ip.src}: ${fqdn(qname)} ${res.rcode === 'NXDOMAIN' ? 'does not exist (NXDOMAIN)' : 'has no ' + qtype + ' record'}, ${how}`, { cached: !!res.cached });
+    });
+  }
+  reply({ rcode: 'REFUSED', aa: 0 }, 'err', `refuses the query for ${fqdn(qname)} (REFUSED): ${zoneOf(cfg) !== null ? 'it is only responsible for ' + fqdn(zoneOf(cfg)) : 'it does not know the name'}${q.rd ? ' and does not resolve for others (no recursion)' : ''}`, { tag: 'dns-refused' });
+}
+
+export const resolverOf = l3 => (l3.resolverSvc ??= new Resolver(l3));
+
+/** Recursive resolver: asks root, TLD and authoritative servers one after the other and caches every answer for its TTL */
+export class Resolver {
+  constructor(l3) { this.l3 = l3; this.dev = l3.dev; this.sim = l3.sim; this.cache = new Map(); this.jobs = new Map(); this.open = new Map(); }
+  get cfg() { return this.l3.cfg.recursion || {}; }
+  roots() { return String(this.cfg.roots || '').split(/[\s,]+/).filter(isIp); }
+  put(name, type, rrs, ttl, extra = {}) {
+    this.cache.set(name + '|' + type, { name, type, rrs: rrs.map(r => ({ ...r })), ttl, exp: this.sim.time + ttl * 1000, ...extra });
+  }
+  get(name, type) {
+    const k = name + '|' + type, e = this.cache.get(k);
+    if (!e) return null;
+    if (e.exp <= this.sim.time) {
+      this.cache.delete(k);
+      this.dev.record('info', `cache entry ${fqdn(name)} ${type} has expired (TTL ${e.ttl} s over): next time it asks again`, { tag: 'dns-expired', data: { name, type } });
+      return null;
+    }
+    return e;
+  }
+  left(e) { return Math.max(0, Math.ceil((e.exp - this.sim.time) / 1000)); }
+  dump() {
+    const out = [];
+    for (const [k, e] of [...this.cache]) {
+      if (e.exp <= this.sim.time) { this.cache.delete(k); continue; }
+      const ttl = this.left(e);
+      if (e.neg) out.push({ name: e.name, type: e.type, ttl, data: e.rcode === 'NXDOMAIN' ? 'NXDOMAIN (negative)' : 'NODATA (negative)', neg: true });
+      else for (const r of e.rrs) out.push({ name: e.name, type: e.type, ttl, data: r.data });
+    }
+    return out.sort((a, b) => a.name.split('.').reverse().join('.').localeCompare(b.name.split('.').reverse().join('.')) || a.type.localeCompare(b.type));
+  }
+  flush(name = null) {
+    if (name === null) { const n = this.cache.size; this.cache.clear(); return n; }
+    let n = 0;
+    for (const k of [...this.cache.keys()]) if (k.split('|')[0] === norm(name)) { this.cache.delete(k); n++; }
+    return n;
+  }
+  /** Cache content at the start of a scenario (e.g. an old answer with a long TTL) */
+  seed(list = []) {
+    for (const s of list) this.put(norm(s.name), s.type || 'A', [{ name: norm(s.name), type: s.type || 'A', data: s.data, ttl: Number(s.ttl) || DEFAULT_TTL, ...(isAddr(s.type || 'A') ? { ip: s.data } : {}) }], Number(s.ttl) || DEFAULT_TTL);
+  }
+
+  resolve(qname, qtype, cb) {
+    const chain = [];
+    let name = qname;
+    for (let i = 0; i < 8; i++) {
+      const hit = this.get(name, qtype);
+      if (hit) {
+        const ttl = this.left(hit);
+        if (hit.neg) return cb({ rcode: hit.rcode, answers: chain, cached: true, ttlLeft: ttl, queries: 0 });
+        this.dev.record('ok', `finds ${fqdn(name)} ${qtype} in its cache (TTL left ${ttl} s): no need to ask anyone`, { tag: 'dns-cache-hit', data: { name, qtype, ttl } });
+        return cb({ rcode: 'NOERROR', answers: [...chain, ...hit.rrs.map(r => ({ ...r, ttl }))], cached: true, queries: 0 });
+      }
+      const cn = qtype !== 'CNAME' && this.get(name, 'CNAME');
+      if (!cn) break;
+      chain.push({ ...cn.rrs[0], ttl: this.left(cn) });
+      name = cn.rrs[0].data;
+    }
+    const key = name + '|' + qtype;
+    const done = res => cb({ ...res, answers: [...chain, ...res.answers] });
+    if (this.jobs.has(key)) { this.jobs.get(key).waiters.push(done); return; }
+    const job = { key, name, qtype, waiters: [done], queries: 0, chain: [], depth: 0 };
+    this.jobs.set(key, job);
+    this.start(job);
+  }
+  /** The closest zone whose servers are known (from the cache), otherwise the root */
+  closest(name) {
+    for (let z = name; ; z = parentOf(z)) {
+      const d = z ? this.get(z, 'NS') : null;
+      if (d) {
+        const ips = d.rrs.flatMap(r => (this.get(r.data, 'A')?.rrs || []).map(x => x.data));
+        if (ips.length) return { zone: z, ips, names: d.rrs.map(r => r.data) };
+      }
+      if (!z) break;
+    }
+    const roots = this.roots();
+    return { zone: '', ips: roots, names: roots.map((_, i) => rootName(i)) };
+  }
+  start(job) {
+    const c = this.closest(job.name);
+    if (!c.ips.length) return this.finish(job, 'SERVFAIL', [], 'it has no root hints, so it does not know where to start');
+    Object.assign(job, { zone: c.zone, ips: c.ips, names: c.names, idx: 0 });
+    if (c.zone) this.dev.record('info', `already knows the servers of ${fqdn(c.zone)} from its cache and starts there instead of at the root`, { tag: 'dns-shortcut', data: { name: job.name, zone: c.zone } });
+    this.send(job);
+  }
+  send(job) {
+    if (job.idx >= job.ips.length) return this.finish(job, 'SERVFAIL', [], `none of the servers of ${fqdn(job.zone)} answered`);
+    if (++job.queries > MAX_QUERIES) return this.finish(job, 'SERVFAIL', [], 'too many queries, gives up');
+    const server = job.ips[job.idx];
+    const sport = 49152 + Math.floor(this.sim.random() * 16000), id = Math.floor(this.sim.random() * 65535);
+    const who = job.zone === '' ? 'a root server' : `a server of ${fqdn(job.zone)}`;
+    this.dev.record('info', `asks ${server} (${who}) for ${fqdn(job.name)} ${job.qtype}, iteratively: "tell me what you know"`, { tag: 'dns-iter', data: { name: job.name, server, zone: job.zone } });
+    const res = this.l3.output(ipPacket({ src: this.l3.srcFor(server), dst: server, proto: PROTO.UDP, l4: udp(sport, 53, { kind: 'dns', id, qr: 0, rd: 0, qname: job.name, qtype: job.qtype }) }), {});
+    const k = sport + '|' + id;
+    const next = why => { this.open.delete(k); this.dev.record('err', `${why} from ${server}, tries the next server`, { tag: 'dns-iter-fail', data: { server } }); job.idx++; this.send(job); };
+    if (!res.ok) return next(`cannot send the query (${res.error})`);
+    job.timer = this.sim.schedule(QUERY_TIMEOUT, () => { if (this.open.get(k) === job) next('no answer'); });
+    this.open.set(k, job);
+  }
+  onUdp(ip) {
+    const l4 = ip.l4, d = l4.payload;
+    if (d?.kind !== 'dns' || !d.qr) return false;
+    const k = l4.dport + '|' + d.id, job = this.open.get(k);
+    if (!job) return false;
+    this.open.delete(k);
+    this.sim.cancel(job.timer);
+    this.handle(job, d, ip.src);
+    return true;
+  }
+  handle(job, d, from) {
+    const ttlOf = rrs => Math.min(...rrs.map(r => r.ttl));
+    if (d.rcode === 'NXDOMAIN') {
+      const ttl = d.authority?.find(r => r.type === 'SOA')?.ttl ?? NEG_TTL;
+      this.put(job.name, job.qtype, [], ttl, { neg: true, rcode: 'NXDOMAIN' });
+      this.dev.record('learn', `${from}: ${fqdn(job.name)} does not exist (NXDOMAIN). Remembers that for ${ttl} s (negative caching)`, { tag: 'dns-nxdomain', data: { name: job.name, server: from } });
+      return this.finish(job, 'NXDOMAIN', []);
+    }
+    if (d.rcode !== 'NOERROR') { this.dev.record('err', `${from} answers ${d.rcode} for ${fqdn(job.name)}, tries the next server`, { tag: 'dns-iter-fail', data: { server: from, rcode: d.rcode } }); job.idx++; return this.send(job); }
+    if (d.answers.length) {
+      const groups = new Map();
+      for (const a of d.answers) { const g = a.name + '|' + a.type; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(a); }
+      for (const rrs of groups.values()) this.put(rrs[0].name, rrs[0].type, rrs, ttlOf(rrs));
+      const out = [];
+      let name = job.name, found = false;
+      for (let i = 0; i < 8; i++) {
+        const direct = d.answers.filter(a => a.name === name && a.type === job.qtype);
+        if (direct.length) { out.push(...direct); found = true; break; }
+        const cn = d.answers.find(a => a.name === name && a.type === 'CNAME');
+        if (!cn) break;
+        out.push(cn); name = cn.data;
+      }
+      if (found) {
+        this.dev.record('ok', `${from} answers authoritatively: ${out.map(r => `${fqdn(r.name)} ${r.type} ${r.data}`).join(', ')}. Cached for ${ttlOf(out)} s`, { tag: 'dns-resolved', data: { name: job.name, server: from, ttl: ttlOf(out) } });
+        return this.finish(job, 'NOERROR', out);
+      }
+      if (out.length && ++job.depth < 8) {
+        // A CNAME that points elsewhere: resolve the target from the start (or from the cache)
+        this.dev.record('info', `${from} answers with an alias: ${fqdn(job.name)} is a CNAME for ${fqdn(name)}. Follows it`, { tag: 'dns-cname', data: { name: job.name, target: name } });
+        job.chain.push(...out);
+        job.name = name;
+        const hit = this.get(name, job.qtype);
+        if (hit) return this.finish(job, 'NOERROR', hit.rrs.map(r => ({ ...r, ttl: this.left(hit) })));
+        return this.start(job);
+      }
+      return this.finish(job, 'NOERROR', []);
+    }
+    const ns = (d.authority || []).filter(r => r.type === 'NS');
+    if (!d.aa && ns.length) {
+      const zone = ns[0].name;
+      const closer = zone.length > job.zone.length || (job.zone === '' && zone !== '');
+      if (!closer || !under(job.name, zone)) {
+        this.dev.record('err', `${from} refers back to ${fqdn(zone)} instead of further down (lame delegation), tries the next server`, { tag: 'dns-lame', data: { server: from, zone } });
+        job.idx++; return this.send(job);
+      }
+      this.put(zone, 'NS', ns, ttlOf(ns));
+      const glue = (d.additional || []).filter(r => r.type === 'A' && ns.some(n => n.data === r.name));
+      for (const g of glue) this.put(g.name, 'A', [g], g.ttl);
+      const names = ns.map(n => n.data);
+      this.dev.record('learn', `${from} refers to ${fqdn(zone)}: ${names.map(n => n + (glue.find(g => g.name === n) ? ' ' + glue.find(g => g.name === n).data : ' (no address)')).join(', ')}. Caches the delegation`,
+        { tag: 'dns-referral-rx', data: { name: job.name, server: from, zone } });
+      Object.assign(job, { zone, names, idx: 0, ips: glue.map(g => g.data) });
+      if (job.ips.length) return this.send(job);
+      // No glue: the address of the name server has to be resolved first
+      if (++job.depth > 4) return this.finish(job, 'SERVFAIL', [], 'the name servers have no addresses');
+      this.dev.record('info', `the referral has no glue: first resolves the address of ${names[0]}`, { tag: 'dns-glueless', data: { ns: names[0] } });
+      return this.resolve(names[0], 'A', r => {
+        const ips = r.answers.filter(a => a.type === 'A').map(a => a.data);
+        if (!ips.length) return this.finish(job, 'SERVFAIL', [], `the address of the name server ${names[0]} cannot be resolved`);
+        job.ips = ips; job.idx = 0; this.send(job);
+      });
+    }
+    // Authoritative, no answer: the name exists but not with this type
+    this.put(job.name, job.qtype, [], NEG_TTL, { neg: true, rcode: 'NOERROR' });
+    return this.finish(job, 'NOERROR', []);
+  }
+  finish(job, rcode, answers, why = '') {
+    this.jobs.delete(job.key);
+    if (rcode === 'SERVFAIL') this.dev.record('err', `cannot resolve ${fqdn(job.name)}: ${why}`, { tag: 'dns-servfail', data: { name: job.name } });
+    for (const w of job.waiters) w({ rcode, answers: [...job.chain, ...answers], queries: job.queries });
+  }
+}
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js"
   cat > "$W/js/engine.js" <<'__PACKETPILOT_FILE_END__'
 // PacketPilot simulation engine: event-driven, no DOM
 import { BCAST, VXLAN_PORT, PROTO, STP_MAC, isGroupMac, macFor, inNet, parseCidr, isIp,
-  netOf, intToIp, ipToInt, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp } from './net.js';
+  netOf, intToIp, ipToInt, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp, dnsLen } from './net.js';
 const ipCmp = (a, b) => (ipToInt(a) ?? 0) - (ipToInt(b) ?? 0);
 import { ethFrame, arpPacket, ipPacket, icmp, udp, tcp, ipChecksum, summary, icmpName, fmtBid } from './packets.js';
+import { serveDns, rrText, fqdn, resolverOf } from './dns.js';
 import { dhcpOn67, natIn, natOut, Vrrp, Ospf, Bfd, BFD_PORT, DHCP_TIMING, vrrpMac } from './services.js';
 
 export const PORTS = {
@@ -3520,6 +4022,8 @@ export function normalizeDevice(cfg) {
     cfg.services ??= clone(DEFAULT_SERVICES[t]);
     cfg.dns ??= [];
     cfg.resolver ??= '';
+    cfg.dnsZone ??= '';
+    cfg.recursion = { enabled: false, roots: '', ...(cfg.recursion || {}) };
   }
   if (t === 'router') {
     for (const p of PORTS.router) cfg.ifaces[p] ??= { ip: '', prefix: 24 };
@@ -3596,7 +4100,7 @@ class L3 {
   resetState() {
     this.arp = new Map(); this.pending = new Map(); this.pmtu = new Map();
     this.reasm = new Map(); this.sessions = new Set(); this.tcp = new Map();
-    this.lease = null; this.natTable = []; this.dhcpLeases = new Map();
+    this.lease = null; this.natTable = []; this.dhcpLeases = new Map(); this.resolverSvc = null;
   }
   get cfg() { return this.dev.cfg; }
   get forwarding() { return this.cfg.type === 'router' ? this.cfg.forwarding !== false : false; }
@@ -4005,6 +4509,7 @@ class L3 {
       if (l4.dport === BFD_PORT && l4.payload?.kind === 'bfd') { this.dev.bfd?.onPacket(ip); return; }
       if (l4.dport === 67 && l4.payload?.kind === 'dhcp' && dhcpOn67(this, ip, ifname, frame)) return;
       if (this.dev.onUdp?.(ip, ifname, frame)) return;
+      if (this.resolverSvc?.onUdp(ip)) return;
       for (const s of [...this.sessions]) if (s.onUdp?.(ip)) return;
       const svc = this.service('udp', l4.dport);
       if (svc) {
@@ -4017,14 +4522,7 @@ class L3 {
       this.icmpError(ip, 3, 3);
     }
   }
-  answerDns(ip, svc, frame) {
-    const q = ip.l4.payload;
-    const name = q.qname.toLowerCase().replace(/\.$/, '');
-    const recs = (this.cfg.dns || []).filter(r => String(r.name).toLowerCase().replace(/\.$/, '') === name && isIp(r.ip));
-    const ans = { kind: 'dns', id: q.id, qr: 1, qname: q.qname, answers: recs.map(r => ({ name: q.qname, ip: r.ip })), rcode: recs.length ? 'NOERROR' : 'NXDOMAIN' };
-    this.dev.record('ok', `answers the DNS query for ${q.qname}: ${recs.length ? recs.map(r => r.ip).join(', ') : 'NXDOMAIN (unknown)'}`, { frame, tag: 'dns-answered', data: { name: q.qname, found: !!recs.length } });
-    this.output(ipPacket({ src: ip.dst, dst: ip.src, proto: PROTO.UDP, trace: ip.trace, l4: udp(ip.l4.dport, ip.l4.sport, ans) }), {});
-  }
+  answerDns(ip, svc, frame) { serveDns(this, ip, frame); }
 
   // ---- TCP
   sendResponse(c, mss, from) {
@@ -4426,45 +4924,120 @@ class TcpClient extends Session {
 }
 
 class DigSession extends Session {
-  constructor(l3, server, name, then = null) { super(l3); Object.assign(this, { server, name, then }); this.sport = 49152 + Math.floor(this.sim.random() * 16000); this.id = Math.floor(this.sim.random() * 65535); }
+  constructor(l3, server, name, then = null, o = {}) {
+    super(l3);
+    Object.assign(this, { server, name, then, qtype: o.type || 'A', rd: o.rd ?? true, trace: !!o.trace, short: !!o.short });
+    this.sport = 49152 + Math.floor(this.sim.random() * 16000); this.id = Math.floor(this.sim.random() * 65535);
+  }
   print(t) { if (!this.then) this.dev.print(t); }
+  out(t) { if (!this.short) this.print(t); }
   // A name lookup for curl or ping is cancelled silently, the command after it never starts
   interrupt() { this.sim.cancel(this.timer); if (this.then) { this.then = null; this.end(); } else this.finish(false); }
   start() {
     this.begin();
-    this.print(`$ dig @${this.server} ${this.name}`);
+    const opts = `${this.trace ? ' +trace' : ''}${!this.rd && !this.trace ? ' +norec' : ''}${this.short ? ' +short' : ''}`;
+    this.print(`$ dig @${this.server}${opts} ${this.name}${this.qtype !== 'A' ? ' ' + this.qtype : ''}`);
+    if (this.trace) {
+      this.out(`; <<>> DiG 9.18 <<>> +trace ${this.name}`);
+      this.hop = { server: this.server, label: this.server, ips: [this.server], idx: 0, priming: true };
+      return this.ask();
+    }
+    this.hop = { server: this.server, label: this.server, ips: [this.server], idx: 0 };
+    this.ask();
+  }
+  /** One query: to the resolver (normal), or one step of +trace */
+  ask() {
+    const h = this.hop, server = h.ips[h.idx];
+    const priming = !!h.priming;
+    const q = { kind: 'dns', id: this.id = Math.floor(this.sim.random() * 65535), qr: 0, rd: priming || (!this.trace && this.rd) ? 1 : 0,
+      qname: priming ? '' : this.name, qtype: priming ? 'NS' : this.qtype };
     this.t0 = this.sim.time;
-    const res = this.l3.output(ipPacket({ src: this.l3.srcFor(this.server), dst: this.server, proto: PROTO.UDP, l4: udp(this.sport, 53, { kind: 'dns', id: this.id, qr: 0, qname: this.name }) }), {});
+    this.cur = server;
+    const res = this.l3.output(ipPacket({ src: this.l3.srcFor(server), dst: server, proto: PROTO.UDP, l4: udp(this.sport, 53, q) }), {});
     if (!res.ok) { this.print(`;; ${res.error}`); return this.finish(false); }
-    this.dev.record('info', `asks ${this.server} via DNS (UDP 53) for ${this.name}`, { tag: 'dns-query', data: { name: this.name } });
-    this.timer = this.sim.schedule(T.dnsTimeout, () => { this.print(';; connection timed out; no servers could be reached'); this.finish(false); });
+    this.dev.record('info', priming ? `asks ${server} for the list of root servers (dig +trace)` : `asks ${server} via DNS (UDP 53) for ${this.name}${this.qtype !== 'A' ? ' ' + this.qtype : ''}${q.rd ? '' : ' (no recursion wanted)'}`,
+      { tag: 'dns-query', data: { name: this.name, server, rd: q.rd, trace: this.trace } });
+    this.timer = this.sim.schedule(this.trace ? 2000 : T.dnsTimeout, () => {
+      if (this.trace && h.idx + 1 < h.ips.length) { this.out(`;; communications error to ${server}#53: timed out`); h.idx++; return this.ask(); }
+      this.print(';; connection timed out; no servers could be reached'); this.finish(false);
+    });
   }
   onUdp(ip) {
     const l4 = ip.l4;
     if (this.done || l4.dport !== this.sport || l4.payload?.kind !== 'dns' || l4.payload.id !== this.id) return false;
     this.sim.cancel(this.timer);
     const d = l4.payload;
-    this.print(`;; ->>HEADER<<- opcode: QUERY, status: ${d.rcode}, id: ${d.id}`);
-    if (d.answers.length) { this.print(';; ANSWER SECTION:'); for (const a of d.answers) this.print(`${a.name}.\t300\tIN\tA\t${a.ip}`); }
-    this.print(`;; Query time: ${(this.sim.time - this.t0).toFixed(2)} msec`);
-    this.print(`;; SERVER: ${this.server}#53(UDP)`);
+    const ms = Math.max(1, Math.round(this.sim.time - this.t0));
+    const bytes = dnsLen(d);
+    if (this.trace) return this.traceStep(d, ip.src, ms, bytes);
+    const sections = [['ANSWER', d.answers || []], ['AUTHORITY', d.authority || []], ['ADDITIONAL', d.additional || []]];
+    if (this.short) for (const a of d.answers || []) this.print(a.type === 'CNAME' || a.type === 'NS' ? fqdn(a.data) : a.data);
+    this.out(`;; ->>HEADER<<- opcode: QUERY, status: ${d.rcode}, id: ${d.id}`);
+    this.out(`;; flags: ${['qr', d.aa && 'aa', d.rd && 'rd', d.ra && 'ra'].filter(Boolean).join(' ')}; QUERY: 1, ANSWER: ${(d.answers || []).length}, AUTHORITY: ${(d.authority || []).length}, ADDITIONAL: ${(d.additional || []).length}`);
+    if (d.rd && !d.ra) this.out(';; WARNING: recursion requested but not available');
+    this.out(';; QUESTION SECTION:');
+    this.out(`;${fqdn(d.qname)}\t\tIN\t${d.qtype || 'A'}`);
+    for (const [title, list] of sections) if (list.length) { this.out(`;; ${title} SECTION:`); for (const r of list) this.out(rrText(r)); }
+    this.out(`;; Query time: ${ms} msec`);
+    this.out(`;; SERVER: ${this.server}#53(${this.server}) (UDP)`);
+    this.out(`;; MSG SIZE  rcvd: ${bytes}`);
     this.finish(d.rcode === 'NOERROR', d);
     return true;
   }
+  traceStep(d, from, ms, bytes) {
+    const h = this.hop;
+    const label = h.priming ? `${from}#53(${from})` : `${from}#53(${h.names?.[h.idx] || from})`;
+    if (h.priming) {
+      for (const r of d.answers || []) this.out(rrText(r));
+      this.out(`;; Received ${bytes} bytes from ${label} in ${ms} ms`);
+      const ips = (d.additional || []).filter(r => r.type === 'A').map(r => r.data);
+      if (!ips.length) { this.print(';; no root servers known, giving up'); return this.finish(false, d); }
+      this.hop = { ips, names: (d.additional || []).filter(r => r.type === 'A').map(r => r.name), idx: 0 };
+      this.ask(); return true;
+    }
+    if (d.rcode !== 'NOERROR') {
+      this.out(`;; ->>HEADER<<- status: ${d.rcode}`);
+      this.out(`;; Received ${bytes} bytes from ${label} in ${ms} ms`);
+      if (d.rcode !== 'NXDOMAIN' && h.idx + 1 < h.ips.length) { h.idx++; this.ask(); return true; }
+      this.finish(false, d); return true;
+    }
+    if ((d.answers || []).length) {
+      for (const r of d.answers) this.out(rrText(r));
+      this.out(`;; Received ${bytes} bytes from ${label} in ${ms} ms`);
+      this.finish(true, d); return true;
+    }
+    const ns = (d.authority || []).filter(r => r.type === 'NS');
+    for (const r of ns) this.out(rrText(r));
+    this.out(`;; Received ${bytes} bytes from ${label} in ${ms} ms`);
+    const glue = (d.additional || []).filter(r => r.type === 'A' && ns.some(n => n.data === r.name));
+    if (!ns.length || !glue.length) { this.print(ns.length ? ';; the referral contains no addresses (glue), dig +trace stops here' : ';; no answer and no referral'); this.finish(false, d); return true; }
+    this.hop = { ips: glue.map(g => g.data), names: glue.map(g => g.name), idx: 0 };
+    if (++this.steps > 10) { this.finish(false, d); return true; }
+    this.ask(); return true;
+  }
+  steps = 0;
   onIcmpError(ip) {
     const o = ip.l4.orig;
     if (!o || o.sport !== this.sport || this.done) return;
     this.sim.cancel(this.timer);
-    this.print(`;; communications error to ${this.server}#53: ${ip.l4.code === 3 ? 'connection refused' : 'host unreachable'}`);
+    this.print(`;; communications error to ${this.cur}#53: ${ip.l4.code === 3 ? 'connection refused' : 'host unreachable'}`);
     this.finish(false);
   }
-  onArpFail(pkt) { if (pkt.l4?.sport === this.sport && !this.done) { this.sim.cancel(this.timer); this.print(`;; communications error to ${this.server}#53: host unreachable`); this.finish(false); } }
+  onArpFail(pkt) { if (pkt.l4?.sport === this.sport && !this.done) { this.sim.cancel(this.timer); this.print(`;; communications error to ${this.cur}#53: host unreachable`); this.finish(false); } }
   finish(ok, d) {
     if (this.done) return;
     this.end();
-    const answer = d?.answers?.[0]?.ip || null;
-    this.dev.record(ok ? 'ok' : 'err', ok ? `DNS: ${this.name} is ${answer}` : `DNS lookup ${this.name} without result`, { tag: 'dns-done', data: { name: this.name, ok, answer } });
-    if (this.then) { if (answer) this.dev.print(`${this.name} → ${answer} (DNS via ${this.server})`); this.then(answer); }
+    const want = this.qtype === 'AAAA' ? 'AAAA' : 'A';
+    const addrs = (d?.answers || []).filter(a => a.type === want);
+    const answer = addrs[addrs.length - 1]?.data || null;
+    const rcode = d?.rcode || 'TIMEOUT';
+    this.dev.record(ok && (answer || this.qtype !== want) ? 'ok' : 'err', ok ? `DNS: ${this.name}${this.qtype !== 'A' ? ' ' + this.qtype : ''} is ${answer || (d?.answers || []).map(a => a.data).join(', ') || 'without data'}` : `DNS lookup ${this.name} without result (${rcode})`,
+      { tag: 'dns-done', data: { name: this.name, ok: !!ok, answer, rcode, server: this.server, trace: this.trace, qtype: this.qtype, answers: (d?.answers || []).length, ttl: addrs[addrs.length - 1]?.ttl ?? null, aa: !!d?.aa } });
+    if (this.then) {
+      if (answer) this.dev.print(`${this.name} → ${answer} (DNS via ${this.server})`);
+      else this.dev.print(`${this.name}: ${rcode === 'NXDOMAIN' ? 'Name or service not known' : rcode === 'TIMEOUT' ? 'Temporary failure in name resolution' : 'Name resolution failed (' + rcode + ')'}`);
+      this.then(answer);
+    }
   }
 }
 
@@ -4490,7 +5063,7 @@ class Host extends Device {
   arping(target, o = {}) { const s = new ArpingSession(this.l3, target, o); s.start(); return s; }
   curl(dst, port = 80, o = {}) { const s = new TcpClient(this.l3, dst, port, 'http', o); s.start(); return s; }
   ncz(dst, port) { const s = new TcpClient(this.l3, dst, port, 'probe'); s.start(); return s; }
-  dig(server, name) { const s = new DigSession(this.l3, server, name); s.start(); return s; }
+  dig(server, name, o = {}) { const s = new DigSession(this.l3, server, name, null, o); s.start(); return s; }
   resolve(name, cb) {
     if (isIp(name)) return cb(name);
     const dns = this.l3.resolver();
@@ -4500,6 +5073,7 @@ class Host extends Device {
   udpSend(dst, port, len = 32) { const s = new UdpSend(this.l3, dst, port, len); s.start(); return s; }
   // Interfaces in DHCP mode ask for an address shortly after the device starts
   start() {
+    if (this.cfg.recursion?.enabled && this.cfg.recursion.seed?.length) resolverOf(this.l3).seed(this.cfg.recursion.seed);
     for (const [n, v] of Object.entries(this.cfg.ifaces || {})) {
       if (v?.dhcp) this.sim.schedule(600 + this.sim.random() * 600, () => { if (!this.l3.lease && !this.dhcpRunning(n)) this.dhclient(n, { boot: true }); });
     }
@@ -5145,7 +5719,7 @@ const BLOCKS = {
   vxlan: { name: 'VXLAN', size: 8, kind: 'vxlan', note: 'Flags, VNI' },
   // Protocols on top: where they may sit (in) and whether anything may follow (last)
   dhcp: { name: 'DHCP', size: 300, kind: 'data', in: ['udp'], last: true, note: 'Discover, Offer, Request, ACK on UDP 67/68' },
-  dns: { name: 'DNS', size: 32, kind: 'data', in: ['udp'], last: true, note: 'Query or answer on UDP 53 (size depends on the name)' },
+  dns: { name: 'DNS', size: 32, kind: 'data', in: ['udp', 'tcp'], last: true, note: 'Query or answer on port 53, usually UDP, TCP for large answers (size depends on the name)' },
   vrrp: { name: 'VRRP', size: 12, kind: 'rt', in: ['ip'], last: true, note: 'Advertisement: group, priority, virtual IP (protocol 112)' },
   ospf: { name: 'OSPF Hello', size: 48, kind: 'rt', in: ['ip'], last: true, note: 'Router ID, area, timers, neighbors (protocol 89)' },
   bfd: { name: 'BFD', size: 24, kind: 'rt', in: ['udp'], last: true, note: 'Control packet: state, discriminators, intervals (UDP 3784)' },
@@ -5162,6 +5736,7 @@ const PRESETS = {
   'BPDU': ['eth', 'stp'],
   'DHCP Discover': ['eth', 'ip', 'udp', 'dhcp'],
   'DNS query': ['eth', 'ip', 'udp', 'dns'],
+  'DNS over TCP': ['eth', 'ip', 'tcp', 'dns'],
   'OSPF Hello': ['eth', 'ip', 'ospf'],
   'VRRP': ['eth', 'ip', 'vrrp'],
   'BFD': ['eth', 'ip', 'udp', 'bfd'],
@@ -5298,7 +5873,7 @@ export const GLOSSARY = [
   ['encapsulation', 'Wrapping the data of the upper layer into the header of the lower layer.'],
   ['MTU', 'Maximum Transmission Unit: the largest payload a link carries in one frame, usually 1500 bytes.'],
   ['MSS', 'Maximum Segment Size: the largest amount of TCP data in one segment, normally the MTU minus 40.'],
-  ['TTL', 'Time To Live: every router subtracts one, at 0 the packet is dropped. Prevents endless loops.'],
+  ['TTL', 'Time To Live. In IP: every router subtracts one, at 0 the packet is dropped, which prevents endless loops. In DNS: how many seconds an answer may be cached.'],
   ['FCS', 'Frame Check Sequence: a CRC-32 checksum at the end of every Ethernet frame.'],
   ['EtherType', 'Field in the Ethernet header that says what the payload is: 0x0800 IPv4, 0x0806 ARP, 0x8100 VLAN tag.'],
   ['VLAN', 'Virtual LAN: splits one switch into several separate layer 2 networks.', ['VLANs']],
@@ -5345,6 +5920,18 @@ export const GLOSSARY = [
   ['retransmission', 'Sending data again that was not acknowledged in time.'],
   ['DNS', 'Domain Name System: translates names like web.lab into IP addresses.'],
   ['NXDOMAIN', 'DNS answer: this name does not exist.'],
+  ['recursive resolver', 'A DNS server that finds any answer on behalf of its clients: it asks root, TLD and authoritative servers and caches the results.', ['resolver', 'resolvers', 'recursive resolvers']],
+  ['stub resolver', 'The small DNS client in every operating system: it sends one question with RD set to a recursive resolver and waits.'],
+  ['authoritative', 'A DNS server is authoritative for a zone it holds itself. Its answers carry the AA flag.', ['authoritatively', 'authoritative server', 'authoritative servers']],
+  ['zone', 'The part of the DNS tree one set of name servers is responsible for, e.g. firma.lab.', ['zones']],
+  ['referral', 'A DNS answer without the address, but with NS records: "I do not know, ask those servers".', ['referrals']],
+  ['delegation', 'Handing a part of a zone to other name servers, with NS records in the parent zone.', ['delegations']],
+  ['glue record', 'The address of a name server, sent along by the parent zone because the name server lies inside the zone it serves.', ['glue records', 'glue']],
+  ['root server', 'One of the 13 named servers (with hundreds of anycast copies) at the top of the DNS tree. It knows who is responsible for each TLD.', ['root servers', 'root hints']],
+  ['TLD', 'Top-level domain: the last part of a name, like com, ch or lab.'],
+  ['CNAME', 'Canonical name record: this name is an alias, look up the other name instead.'],
+  ['negative caching', 'Resolvers also remember "this name does not exist" (NXDOMAIN), for the time given in the SOA record of the zone.'],
+  ['open resolver', 'A recursive resolver that answers anyone on the internet. It is abused for DNS amplification attacks.'],
   ['DHCP', 'Dynamic Host Configuration Protocol: hands out IP addresses, gateway and DNS automatically.'],
   ['lease', 'The time a DHCP address is lent to a client.', ['leases']],
   ['DHCP relay', 'A router that forwards DHCP broadcasts to a server in another network.', ['relay', 'helper address']],
@@ -6833,9 +7420,18 @@ export function ospfLen(o) {
   return 24 + 4 + (o.lsas || []).reduce((s, l) => s + 24 + 12 * l.links.length, 0);
 }
 export function tcpHdrLen(t) { return TCP_HDR + (t.mss ? 4 : 0); }
+// DNS: 12 byte header, the question, then every record: name (compressed to 2 bytes when it
+// repeats an earlier name), type, class, TTL, length (10 bytes) and the data
 export function dnsLen(d) {
-  const q = 12 + (d.qname.length + 2) + 4;
-  return q + (d.answers || []).length * 16;
+  const nameLen = n => (n ? n.replace(/\.$/, '').length + 2 : 1);
+  const seen = new Set([String(d.qname || '').toLowerCase()]);
+  const rr = r => {
+    const short = seen.has(r.name); seen.add(r.name);
+    const data = r.type === 'A' ? 4 : r.type === 'AAAA' ? 16 : r.type === 'SOA' ? 22 + nameLen(r.name) : nameLen(r.data);
+    return (short ? 2 : nameLen(r.name)) + 10 + data;
+  };
+  const all = [...(d.answers || []), ...(d.authority || []), ...(d.additional || [])];
+  return 12 + nameLen(d.qname) + 4 + all.reduce((s, r) => s + rr(r), 0);
 }
 export function udpPayloadLen(udp) {
   const p = udp.payload;
@@ -7022,8 +7618,12 @@ export function summary(f) {
       : `OSPF LS Update from router ${l4.rid} (${base}): ${l4.lsas.length} LSA${l4.lsas.length === 1 ? '' : 's'} (${l4.lsas.map(l => l.rid).join(', ')})`;
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'dns') {
     const d = l4.payload;
-    s = d.qr ? `DNS response ${base}: ${d.qname} ${d.rcode === 'NOERROR' ? '→ ' + d.answers.map(a => a.ip).join(', ') : d.rcode}`
-      : `DNS query ${base}: A ${d.qname}?`;
+    const qn = d.qname || '.', qt = d.qtype || 'A';
+    const ns = (d.authority || []).filter(r => r.type === 'NS');
+    s = !d.qr ? `DNS query ${base}: ${qt} ${qn}?${d.rd === 0 ? ' (iterative)' : ''}`
+      : d.rcode !== 'NOERROR' ? `DNS response ${base}: ${qn} ${d.rcode}`
+      : d.answers?.length ? `DNS response ${base}: ${qn} → ${d.answers.map(a => a.type === 'CNAME' ? 'alias ' + a.data : a.data).join(', ')}${d.aa ? ' (authoritative)' : ''}`
+      : ns.length ? `DNS referral ${base}: ask ${ns[0].name || '.'} at ${ns.map(n => n.data).join(', ')}` : `DNS response ${base}: ${qn} has no ${qt} record`;
   } else if (l4.kind === 'udp') {
     s = `UDP ${ip.src}.${l4.sport} > ${ip.dst}.${l4.dport}, TTL ${ip.ttl}`;
   } else if (l4.kind === 'tcp') {
@@ -7166,9 +7766,14 @@ export function dissect(f, depth = 0) {
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'dns') {
     const d = l4.payload;
     layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), ''], ['Destination port', String(l4.dport), l4.dport === 53 || l4.sport === 53 ? 'DNS' : ''], ['Length', `${UDP_HDR + udpPayloadLen(l4)} bytes`, '']] });
+    const rrF = (sec, a) => [sec, `${a.name || '.'} ${a.type} ${a.data}`, `TTL ${a.ttl} s`];
+    const flags = d.qr ? [['AA', d.aa ? '1' : '0', d.aa ? 'Authoritative: the server is responsible for the name' : 'Not authoritative (from a cache or a referral)'],
+      ['RD', d.rd ? '1' : '0', 'Recursion desired, copied from the query'], ['RA', d.ra ? '1' : '0', d.ra ? 'Recursion available: this server resolves for others' : 'This server does not resolve for others']]
+      : [['RD', d.rd === 0 ? '0' : '1', d.rd === 0 ? 'Iterative: "just tell me what you know"' : 'Recursion desired: "find the answer for me"']];
     layers.push({ kind: 'data', depth, name: `DNS ${d.qr ? 'response' : 'query'}`, bytes: dnsLen(d), fields: [
-      ['ID', String(d.id), 'Matches response and query to each other'], ['QR', d.qr ? '1 (response)' : '0 (query)', ''],
-      ['Question', `${d.qname} A`, ''], ...(d.qr ? [['Response code', d.rcode, ''], ...d.answers.map(a => ['Answer', `${a.name} A ${a.ip}`, 'TTL 300'])] : [])] });
+      ['ID', String(d.id), 'Matches response and query to each other'], ['QR', d.qr ? '1 (response)' : '0 (query)', ''], ...flags,
+      ['Question', `${d.qname || '.'} ${d.qtype || 'A'}`, ''], ...(d.qr ? [['Response code', d.rcode, { NOERROR: 'No error', NXDOMAIN: 'The name does not exist', REFUSED: 'The server refuses to answer', SERVFAIL: 'The resolver failed to find an answer' }[d.rcode] || ''],
+        ...(d.answers || []).map(a => rrF('Answer', a)), ...(d.authority || []).map(a => rrF('Authority', a)), ...(d.additional || []).map(a => rrF('Additional', a))] : [])] });
   } else if (l4.kind === 'udp') {
     const vx = l4.payload?.kind === 'vxlan';
     layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [
@@ -7330,8 +7935,11 @@ export function configPanel(dev, ctx) {
       { id: 'services', title: 'Services', desc: 'Programs that listen on a port, e.g. a web server on TCP 80',
         inUse: c.services.length > 0, status: c.services.map(x => `${x.proto.toUpperCase()} ${x.port}`).join(', '), render: () => servicesEditor(dev, upd) },
       { id: 'dns', title: 'DNS records', desc: 'Answer name queries for other devices (DNS server on UDP 53)',
-        inUse: c.dns.length > 0, status: plural(c.dns.length, 'record'), render: () => dnsEditor(dev, upd),
+        inUse: c.dns.length > 0 || !!c.dnsZone, status: plural(c.dns.length, 'record') + (c.dnsZone ? `, zone ${c.dnsZone}` : ''), render: () => dnsEditor(dev, upd),
         onAdd: () => { if (!hasDnsSvc()) upd(() => c.services.push({ proto: 'udp', port: 53, name: 'dns' }), `${dev.name}: DNS service`); } },
+      { id: 'resolver', title: 'Recursive resolver', desc: 'Find any name for others: ask root, TLD and authoritative servers and cache the answers',
+        inUse: !!c.recursion?.enabled, status: c.recursion?.enabled ? `on, ${plural(dev.l3.resolverSvc?.dump().length || 0, 'cached record')}` : 'off', render: () => resolverEditor(dev, upd, rerender),
+        onAdd: () => upd(() => { c.recursion.enabled = true; if (!hasDnsSvc()) c.services.push({ proto: 'udp', port: 53, name: 'dns' }); }, `${dev.name}: recursive resolver`) },
       ...(c.type === 'server' ? [{ id: 'dhcpd', title: 'DHCP server', desc: 'Hand out addresses to other devices',
         inUse: c.dhcpServer.enabled, status: c.dhcpServer.enabled ? `on, ${plural(dev.l3.dhcpLeases.size, 'lease')}` : 'off', render: () => dhcpServerEditor(dev, upd) }] : []),
       { id: 'vlan', title: 'VLAN tag', desc: 'Send every frame with an 802.1Q tag, like eth1.10 on Linux',
@@ -7529,19 +8137,51 @@ function dnsEditor(dev, upd) {
   const draw = () => {
     wrap.innerHTML = '';
     if (!c.services.some(s => s.proto === 'udp' && Number(s.port) === 53)) wrap.append(h('p', { class: 'small', style: { color: 'var(--warn)', marginTop: 0 } }, 'No DNS service on UDP 53: add it under Services, otherwise nobody can ask.'));
+    const zone = h('input', { class: 'input mono', value: c.dnsZone || '', placeholder: 'none', spellcheck: 'false' });
+    zone.addEventListener('change', () => upd(() => c.dnsZone = zone.value.trim().toLowerCase(), `${dev.name}: zone ${zone.value.trim() || 'none'}`));
+    wrap.append(h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr' } }, h('span', {}, 'Authoritative for'), zone),
+      h('p', { class: 'small muted', style: { margin: '4px 0 8px' } }, 'A zone like firma.lab, lab or . (the root). The server then answers every name in it: from its records, with a referral (NS) for delegated parts, or NXDOMAIN. Names outside the zone are refused. Empty: it only answers the names below.'));
     const list = h('div', { class: 'list' });
     c.dns.forEach((r, idx) => {
-      const name = h('input', { class: 'input mono', value: r.name, placeholder: 'web.lab' });
+      const type = r.type || 'A';
+      const name = h('input', { class: 'input mono', value: r.name, placeholder: 'www.firma.lab', spellcheck: 'false' });
       name.addEventListener('change', () => upd(() => r.name = name.value.trim().toLowerCase(), `${dev.name}: DNS ${name.value}`));
-      list.append(h('div', { class: 'item' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, name, h('span', { class: 'small muted' }, 'A'),
-        ipInput(r.ip, v => upd(() => r.ip = v, `${dev.name}: DNS ${r.name} → ${v}`), '10.0.0.10'),
-        h('button', { class: 'btn icon ghost', title: 'Remove entry', html: I.trash, onclick: () => { upd(() => c.dns.splice(idx, 1), `${dev.name}: DNS entry removed`); draw(); } }))));
+      const isAddr = type === 'A' || type === 'AAAA';
+      let data;
+      if (isAddr) {
+        data = h('input', { class: 'input mono', value: r.ip || '', placeholder: type === 'A' ? '10.0.0.10' : '2001:db8::10', spellcheck: 'false' });
+        data.addEventListener('change', () => { const v = data.value.trim(); upd(() => r.ip = v, `${dev.name}: DNS ${r.name} → ${v}`); });
+      } else {
+        data = h('input', { class: 'input mono', value: r.value || '', placeholder: type === 'NS' ? 'ns1.firma.lab' : 'www.firma.lab', spellcheck: 'false' });
+        data.addEventListener('change', () => upd(() => r.value = data.value.trim().toLowerCase(), `${dev.name}: DNS ${r.name} ${type} ${data.value}`));
+      }
+      const ttl = numInput(r.ttl ?? 300, 1, 604800, v => upd(() => r.ttl = v ?? 300, `${dev.name}: TTL ${r.name} ${v}`), '300');
+      ttl.title = 'TTL in seconds: how long others may cache the answer';
+      list.append(h('div', { class: 'item' }, h('div', { class: 'row dnsrow' },
+        h('span', { class: 'grp grow' }, name, select(['A', 'AAAA', 'NS', 'CNAME'].map(t => [t, t]), type, v => { upd(() => { r.type = v; if (v === 'A' || v === 'AAAA') delete r.value; else delete r.ip; }, `${dev.name}: ${r.name} type ${v}`); draw(); })),
+        h('span', { class: 'grp grow' }, data, h('span', { class: 'small muted' }, 'TTL'), ttl,
+          h('button', { class: 'btn icon ghost', title: 'Remove entry', html: I.trash, onclick: () => { upd(() => c.dns.splice(idx, 1), `${dev.name}: DNS entry removed`); draw(); } })))));
     });
     if (!c.dns.length) list.append(h('div', { class: 'empty' }, 'No entries. Every query ends with NXDOMAIN.'));
-    wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Entry', onclick: () => { upd(() => c.dns.push({ name: 'new.lab', ip: '' }), `${dev.name}: DNS entry`); draw(); } }));
+    wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Entry', onclick: () => { upd(() => c.dns.push({ name: 'new.lab', type: 'A', ip: '', ttl: 300 }), `${dev.name}: DNS entry`); draw(); } }),
+      h('p', { class: 'small muted', style: { marginTop: '8px' } }, 'A: name to IPv4 address. AAAA: to IPv6 address. NS: who is responsible for a zone (with an A record for that server as glue). CNAME: the name is an alias for another name.'));
   };
   draw();
   return wrap;
+}
+function resolverEditor(dev, upd, rerender) {
+  const c = dev.cfg, r = c.recursion;
+  const roots = h('input', { class: 'input mono', value: r.roots || '', placeholder: '198.41.0.4', spellcheck: 'false' });
+  roots.addEventListener('change', () => upd(() => r.roots = roots.value.trim(), `${dev.name}: root hints ${roots.value.trim() || 'none'}`));
+  const cache = dev.l3.resolverSvc?.dump() || [];
+  return h('div', {},
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: r.enabled ? true : null, onchange: e => { upd(() => r.enabled = e.target.checked, `${dev.name}: resolver ${e.target.checked ? 'on' : 'off'}`); rerender?.(); } }), 'Resolve recursively for others'),
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr', marginTop: '6px' } }, h('span', {}, 'Root hints'), roots),
+    h('p', { class: 'small muted', style: { margin: '4px 0 8px' } }, 'Where the resolver starts when it knows nothing yet: the addresses of the root servers. Every answer is kept in the cache for its TTL.'),
+    h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', { class: 'small' }, `Cache (${plural(cache.length, 'entry').replace('entrys', 'entries')})`),
+      h('button', { class: 'btn ghost', onclick: () => { runCommand(dev, 'unbound-control flush_all'); rerender?.(); } }, 'Flush cache')),
+    cache.length ? h('table', { class: 'tbl' }, h('tr', {}, ['Name', 'Type', 'Data', 'TTL left'].map(x => h('th', {}, x))),
+      cache.map(e => h('tr', {}, [e.name || '.', e.type, e.data, `${e.ttl} s`].map(x => h('td', { class: 'mono small' }, x))))) : h('div', { class: 'empty' }, 'Empty'));
 }
 
 function routesEditor(dev, upd) {
@@ -7837,6 +8477,7 @@ export function tablesPanel(dev, sim) {
     if (dev.vrrp?.groups.length) box.append(h('h4', {}, 'VRRP'), tbl(['Group', 'Port', 'Virtual IP', 'State', 'Prio'], dev.vrrp.table().map(g => [g.vrid, g.ifname, g.vip, g.state, g.prio])));
     if (dev.bfd?.table().length) box.append(h('h4', {}, 'BFD sessions'), tbl(['Peer', 'Port', 'State', 'For'], dev.bfd.table().map(x => [x.peer, x.ifname, x.state, x.clients.join(', ')])));
     if (dev.ospf?.enabled) box.append(h('h4', {}, 'OSPF neighbors'), tbl(['Router ID', 'Address', 'Port', 'State'], dev.ospf.neighborTable().map(n => [n.rid, n.ip, n.ifname, n.state])));
+    if (dev.cfg.recursion?.enabled) box.append(h('h4', {}, 'DNS cache'), tbl(['Name', 'Type', 'Data', 'TTL left'], (dev.l3.resolverSvc?.dump() || []).map(e => [e.name || '.', e.type, e.data, `${e.ttl} s`])));
     if (dev.cfg.services?.length) box.append(h('h4', {}, 'Listening services'), tbl(['Proto', 'Port', 'Service'], dev.cfg.services.map(s => [s.proto.toUpperCase(), s.port, s.name || ''])));
   }
   if (dev.type === 'switch') {
@@ -8200,6 +8841,9 @@ export const PRESETS = [
   { id: 'services', title: 'Web and DNS', topics: ['TCP', 'UDP', 'DNS', 'Rules'],
     text: 'A client, a web server, a DNS server. curl http://web.lab/ first resolves the name and then opens a TCP connection.',
     make: () => servicesTopo() },
+  { id: 'dnstree', title: 'DNS from the root down', topics: ['DNS', 'Resolver', 'Delegation', 'Caching'],
+    text: 'A resolver asks the root, the TLD server and the authoritative server one after the other, and caches the answers. Try dig www.firma.lab, dig +trace and unbound-control dump_cache.',
+    make: () => dnsTopo() },
   { id: 'failover', title: 'Failover with gratuitous ARP', topics: ['ARP', 'GARP', 'Failover'],
     text: 'The service address 10.0.0.100 moves from srvA to srvB. Try it with and without gratuitous ARP.',
     make: () => failoverTopo() },
@@ -8310,6 +8954,47 @@ export function servicesTopo({ acl = [] } = {}) {
   return topo('Web and DNS', [c1, router('r1', 300, 220, { eth1: '10.10.0.1/24', eth2: '10.20.0.1/24' }, [], { acl }), sw('sw1', 470, 220), web, dns],
     [link('client', 'eth1', 'r1', 'eth1'), link('r1', 'eth2', 'sw1', 'eth1'), link('web', 'eth1', 'sw1', 'eth2'), link('dns', 'eth1', 'sw1', 'eth3')],
     [{ x: 400, y: 40, w: 340, h: 380, label: 'Server network 10.20.0.0/24', color: 'green' }]);
+}
+/** DNS from the root down: a resolver in the own network, root, TLD and two authoritative servers on the internet */
+export function dnsTopo() {
+  const auth = (name, x, y, ip, gw, zone, dns) => {
+    const d = server(name, x, y, ip, 24, gw);
+    d.services = [{ proto: 'udp', port: 53, name: 'dns' }];
+    d.dnsZone = zone; d.dns = dns;
+    return d;
+  };
+  const client = host('client', 80, 130, '10.1.0.10', 24, '10.1.0.1');
+  client.resolver = '10.1.0.53';
+  const resolver = server('resolver', 80, 330, '10.1.0.53', 24, '10.1.0.1');
+  resolver.services = [{ proto: 'udp', port: 53, name: 'dns' }];
+  resolver.recursion = { enabled: true, roots: '198.41.0.4' };
+  const web = server('web', 930, 330, '203.0.113.80', 24, '203.0.113.1');
+  web.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  return topo('DNS from the root down', [client, resolver, sw('sw1', 220, 230),
+    router('r1', 370, 230, { eth1: '10.1.0.1/24', eth2: '10.0.12.1/24' }, [['0.0.0.0/0', '10.0.12.2']]),
+    router('isp', 560, 230, { eth1: '10.0.12.2/24', eth2: '198.41.0.1/24', eth3: '192.0.2.1/24', eth4: '203.0.113.1/24' }, [['10.1.0.0/24', '10.0.12.1']]),
+    auth('root', 560, 60, '198.41.0.4', '198.41.0.1', '.', [
+      { name: '.', type: 'NS', value: 'a.root-servers.lab', ttl: 518400 }, { name: 'a.root-servers.lab', type: 'A', ip: '198.41.0.4', ttl: 518400 },
+      { name: 'lab', type: 'NS', value: 'ns1.nic.lab', ttl: 172800 }, { name: 'ns1.nic.lab', type: 'A', ip: '192.0.2.53', ttl: 172800 }]),
+    auth('nic', 780, 90, '192.0.2.53', '192.0.2.1', 'lab', [
+      { name: 'lab', type: 'NS', value: 'ns1.nic.lab', ttl: 172800 }, { name: 'ns1.nic.lab', type: 'A', ip: '192.0.2.53', ttl: 172800 },
+      { name: 'firma.lab', type: 'NS', value: 'ns1.firma.lab', ttl: 86400 }, { name: 'ns1.firma.lab', type: 'A', ip: '203.0.113.53', ttl: 86400 },
+      { name: 'partner.lab', type: 'NS', value: 'ns.partner.lab', ttl: 86400 }, { name: 'ns.partner.lab', type: 'A', ip: '203.0.113.153', ttl: 86400 }]),
+    sw('sw2', 760, 330),
+    auth('ns1', 930, 200, '203.0.113.53', '203.0.113.1', 'firma.lab', [
+      { name: 'firma.lab', type: 'NS', value: 'ns1.firma.lab', ttl: 86400 }, { name: 'ns1.firma.lab', type: 'A', ip: '203.0.113.53', ttl: 86400 },
+      { name: 'www.firma.lab', type: 'A', ip: '203.0.113.80', ttl: 60 }, { name: 'shop.firma.lab', type: 'CNAME', value: 'www.firma.lab', ttl: 3600 },
+      { name: 'mail.firma.lab', type: 'A', ip: '203.0.113.25', ttl: 3600 }]),
+    web,
+    auth('partner', 930, 460, '203.0.113.153', '203.0.113.1', 'partner.lab', [
+      { name: 'partner.lab', type: 'NS', value: 'ns.partner.lab', ttl: 86400 }, { name: 'ns.partner.lab', type: 'A', ip: '203.0.113.153', ttl: 86400 },
+      { name: 'portal.partner.lab', type: 'A', ip: '203.0.113.80', ttl: 300 }])],
+  [link('client', 'eth1', 'sw1', 'eth1'), link('resolver', 'eth1', 'sw1', 'eth2'), link('sw1', 'eth8', 'r1', 'eth1'), link('r1', 'eth2', 'isp', 'eth1'),
+    link('isp', 'eth2', 'root', 'eth1'), link('isp', 'eth3', 'nic', 'eth1'), link('isp', 'eth4', 'sw2', 'eth8'),
+    link('ns1', 'eth1', 'sw2', 'eth1'), link('web', 'eth1', 'sw2', 'eth2'), link('partner', 'eth1', 'sw2', 'eth3')],
+  [{ x: 20, y: 50, w: 420, h: 380, label: 'Own network with a resolver', color: 'blue' },
+    { x: 470, y: 10, w: 160, h: 120, label: 'Root', color: 'gray' }, { x: 690, y: 30, w: 180, h: 120, label: 'TLD lab.', color: 'gray' },
+    { x: 690, y: 160, w: 330, h: 370, label: 'Hosting provider', color: 'green' }]);
 }
 export function failoverTopo() {
   const a = server('srvA', 600, 110, '10.0.0.100'), b = server('srvB', 600, 330, '10.0.0.12');
@@ -9698,7 +10383,9 @@ export const BUILD_BLOCKS = {
   icmp: { name: 'ICMP', kind: 'icmp', fields: [['type', 'Type', [['8', '8 Echo Request'], ['0', '0 Echo Reply'], ['3', '3 Destination Unreachable'], ['11', '11 Time Exceeded']]]] },
   udp: { name: 'UDP', kind: 'udp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num']] },
   tcp: { name: 'TCP', kind: 'tcp', fields: [['sport', 'Source port', 'num'], ['dport', 'Destination port', 'num'], ['flags', 'Flags', [['SYN', 'SYN'], ['SYN,ACK', 'SYN, ACK'], ['ACK', 'ACK'], ['PSH,ACK', 'PSH, ACK'], ['FIN,ACK', 'FIN, ACK'], ['RST', 'RST'], ['RST,ACK', 'RST, ACK']]]] },
-  dns: { name: 'DNS', kind: 'udp', fields: [['qr', 'Kind', [['0', 'Query (QR 0)'], ['1', 'Response (QR 1)']]], ['name', 'Queried name', 'name']] },
+  dns: { name: 'DNS', kind: 'udp', fields: [['qr', 'Kind', [['0', 'Query (QR 0)'], ['1', 'Response (QR 1)']]], ['name', 'Queried name', 'name'],
+    ['qtype', 'Type', [['A', 'A (IPv4 address)'], ['AAAA', 'AAAA (IPv6 address)'], ['NS', 'NS (name server)'], ['CNAME', 'CNAME (alias)']]],
+    ['rd', 'Recursion desired (RD)', [['1', '1: find the answer for me'], ['0', '0: only tell me what you know']]]] },
   dhcp: { name: 'DHCP', kind: 'data', fields: [['op', 'Message type', [['DISCOVER', 'Discover'], ['OFFER', 'Offer'], ['REQUEST', 'Request'], ['ACK', 'ACK']]], ['chaddr', 'Client MAC (chaddr)', 'mac'], ['yiaddr', 'Your IP (yiaddr)', 'ip']] },
   http: { name: 'HTTP', kind: 'data', fields: [['msg', 'Message', [['GET', 'GET / HTTP/1.1'], ['200', 'HTTP/1.1 200 OK']]]] },
   data: { name: 'Data', kind: 'data', fields: [] }

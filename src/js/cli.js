@@ -1,6 +1,7 @@
 // Small command line per device, modeled on iproute2 and FRR
 import { isIp, parseCidr } from './net.js';
 import { PORTS } from './engine.js';
+import { resolverOf, fqdn } from './dns.js';
 
 const pad = (s, n) => String(s).padEnd(n);
 
@@ -20,7 +21,9 @@ export function helpFor(dev) {
     'curl http://<ip>[:port]/         fetch HTTP over TCP',
     'nc -zv <ip> <port>    check whether a TCP port is open',
     'nc -u <ip> <port>     send a UDP datagram',
-    'dig [@server] <name>  DNS query over UDP 53',
+    'dig [@server] <name> [A|AAAA|NS|CNAME]   DNS query over UDP 53',
+    'dig +trace <name>     follow the delegation from the root yourself',
+    'dig +norec / +short   no recursion wanted / only the answer',
     'curl http://<name>/   DNS first, then TCP (DNS server in the configuration)',
     'ss -tan / ss -tuln    TCP connections / open ports');
   if (dev.type === 'router') l.push(
@@ -32,6 +35,7 @@ export function helpFor(dev) {
     'maximum-paths <n>     ECMP: how many equal paths are used (1 = off)', 'sysctl net.ipv4.fib_multipath_hash_policy=0|1   ECMP hash: addresses / with ports',
     'show bfd peers        BFD sessions and their state',
     'show ip ospf neighbor / database / interface   OSPF state', 'show vrrp             VRRP groups and who is master', 'conntrack -L          NAT translations (also: show ip nat)');
+  if (dev.cfg.recursion?.enabled) l.push('unbound-control dump_cache     what the resolver has cached, with TTL left', 'unbound-control flush_all      empty the cache (flush <name>: one name)');
   if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
   if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)');
   if (dev.bridge) l.push('bridge fdb            MAC table (also: show mac address-table)', 'bridge fdb flush      flush the MAC table');
@@ -56,7 +60,7 @@ export function runCommand(dev, line) {
   if (!own.includes(p[0]) || !dev.l3) say(`$ ${cmd}`);
   try {
     if (p[0] === 'help' || p[0] === '?') return helpFor(dev).forEach(say);
-    if (p[0] === 'clear') { dev.consoleLines.length = 0; sim.emit('console', { devId: dev.id, clear: true }); return; }
+    if (p[0] === 'clear' && !p[1]) { dev.consoleLines.length = 0; sim.emit('console', { devId: dev.id, clear: true }); return; }
 
     if (p[0] === 'ping') {
       if (!dev.l3) return say('This device has no IP address. Pings can be sent from PCs, servers, routers and VTEPs.');
@@ -249,12 +253,38 @@ export function runCommand(dev, line) {
       return;
     }
     if ((p[0] === 'dig' || p[0] === 'nslookup') && dev.l3) {
-      let server = null, name = null;
-      for (const x of p.slice(1)) { if (x.startsWith('@')) server = x.slice(1); else if (isIp(x) && p[0] === 'nslookup') server = x; else if (!x.startsWith('+')) name = x; }
-      server ??= (dev.cfg.resolver || '');
-      if (!name) { say(`$ ${cmd}`); return say('Syntax: dig @<server-ip> <name>   e.g. dig @10.0.2.53 web.lab'); }
+      let server = null, name = null, type = 'A';
+      const o = {};
+      for (const x of p.slice(1)) {
+        if (x.startsWith('@')) server = x.slice(1);
+        else if (x === '+trace') o.trace = true;
+        else if (x === '+norec' || x === '+norecurse') o.rd = false;
+        else if (x === '+short') o.short = true;
+        else if (/^(A|AAAA|NS|CNAME)$/i.test(x) && name) type = x.toUpperCase();
+        else if (x.startsWith('-type=') || x.startsWith('-q=')) type = x.split('=')[1].toUpperCase();
+        else if (isIp(x) && p[0] === 'nslookup' && name) server = x;
+        else if (!x.startsWith('+') && !x.startsWith('-')) name = x;
+      }
+      server ??= dev.l3.resolver();
+      if (!name) { say(`$ ${cmd}`); return say('Syntax: dig [@server] <name> [A|AAAA|NS|CNAME] [+trace] [+norec] [+short]   e.g. dig @10.0.2.53 web.lab'); }
       if (!isIp(server)) { say(`$ ${cmd}`); return say(';; No DNS server configured. Specify one with @<ip> or enter it in the configuration.'); }
-      dev.dig(server, name); return;
+      if (!['A', 'AAAA', 'NS', 'CNAME'].includes(type)) { say(`$ ${cmd}`); return say(`;; unsupported query type ${type}: A, AAAA, NS or CNAME`); }
+      dev.dig(server, name, { ...o, type }); return;
+    }
+    if (p[0] === 'unbound-control' || (p[0] === 'show' && p[1] === 'dns' && p[2] === 'cache') || (p[0] === 'clear' && p[1] === 'dns')) {
+      if (!dev.cfg.recursion?.enabled) return say('unbound-control: this device is not a recursive resolver (Configuration, Add a feature, Recursive resolver)');
+      const r = resolverOf(dev.l3);
+      const sub = p[0] === 'show' ? 'dump_cache' : p[0] === 'clear' ? 'flush_all' : p[1];
+      if (sub === 'dump_cache') {
+        const rows = r.dump();
+        if (!rows.length) return say('(cache empty)');
+        say(`${pad('Name', 26)}${pad('TTL left', 10)}${pad('Type', 7)}Data`);
+        for (const e of rows) say(`${pad(fqdn(e.name), 26)}${pad(e.ttl + ' s', 10)}${pad(e.type, 7)}${e.type === 'NS' || e.type === 'CNAME' ? fqdn(e.data) : e.data}`);
+        return;
+      }
+      if (sub === 'flush_all') { const n = r.flush(); dev.record('info', `cache flushed (${n} entr${n === 1 ? 'y' : 'ies'} removed)`, { tag: 'dns-flush' }); return say(`ok removed ${n} rrsets`); }
+      if (sub === 'flush' && p[2]) { const n = r.flush(p[2]); dev.record('info', `cache entries for ${fqdn(p[2])} removed`, { tag: 'dns-flush', data: { name: p[2] } }); return say(`ok removed ${n} rrsets`); }
+      return say('Syntax: unbound-control dump_cache | flush_all | flush <name>');
     }
     if (p[0] === 'ss' && dev.l3) {
       const f = p.slice(1).join('');

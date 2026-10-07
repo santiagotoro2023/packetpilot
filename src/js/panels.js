@@ -99,8 +99,11 @@ export function configPanel(dev, ctx) {
       { id: 'services', title: 'Services', desc: 'Programs that listen on a port, e.g. a web server on TCP 80',
         inUse: c.services.length > 0, status: c.services.map(x => `${x.proto.toUpperCase()} ${x.port}`).join(', '), render: () => servicesEditor(dev, upd) },
       { id: 'dns', title: 'DNS records', desc: 'Answer name queries for other devices (DNS server on UDP 53)',
-        inUse: c.dns.length > 0, status: plural(c.dns.length, 'record'), render: () => dnsEditor(dev, upd),
+        inUse: c.dns.length > 0 || !!c.dnsZone, status: plural(c.dns.length, 'record') + (c.dnsZone ? `, zone ${c.dnsZone}` : ''), render: () => dnsEditor(dev, upd),
         onAdd: () => { if (!hasDnsSvc()) upd(() => c.services.push({ proto: 'udp', port: 53, name: 'dns' }), `${dev.name}: DNS service`); } },
+      { id: 'resolver', title: 'Recursive resolver', desc: 'Find any name for others: ask root, TLD and authoritative servers and cache the answers',
+        inUse: !!c.recursion?.enabled, status: c.recursion?.enabled ? `on, ${plural(dev.l3.resolverSvc?.dump().length || 0, 'cached record')}` : 'off', render: () => resolverEditor(dev, upd, rerender),
+        onAdd: () => upd(() => { c.recursion.enabled = true; if (!hasDnsSvc()) c.services.push({ proto: 'udp', port: 53, name: 'dns' }); }, `${dev.name}: recursive resolver`) },
       ...(c.type === 'server' ? [{ id: 'dhcpd', title: 'DHCP server', desc: 'Hand out addresses to other devices',
         inUse: c.dhcpServer.enabled, status: c.dhcpServer.enabled ? `on, ${plural(dev.l3.dhcpLeases.size, 'lease')}` : 'off', render: () => dhcpServerEditor(dev, upd) }] : []),
       { id: 'vlan', title: 'VLAN tag', desc: 'Send every frame with an 802.1Q tag, like eth1.10 on Linux',
@@ -298,19 +301,51 @@ function dnsEditor(dev, upd) {
   const draw = () => {
     wrap.innerHTML = '';
     if (!c.services.some(s => s.proto === 'udp' && Number(s.port) === 53)) wrap.append(h('p', { class: 'small', style: { color: 'var(--warn)', marginTop: 0 } }, 'No DNS service on UDP 53: add it under Services, otherwise nobody can ask.'));
+    const zone = h('input', { class: 'input mono', value: c.dnsZone || '', placeholder: 'none', spellcheck: 'false' });
+    zone.addEventListener('change', () => upd(() => c.dnsZone = zone.value.trim().toLowerCase(), `${dev.name}: zone ${zone.value.trim() || 'none'}`));
+    wrap.append(h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr' } }, h('span', {}, 'Authoritative for'), zone),
+      h('p', { class: 'small muted', style: { margin: '4px 0 8px' } }, 'A zone like firma.lab, lab or . (the root). The server then answers every name in it: from its records, with a referral (NS) for delegated parts, or NXDOMAIN. Names outside the zone are refused. Empty: it only answers the names below.'));
     const list = h('div', { class: 'list' });
     c.dns.forEach((r, idx) => {
-      const name = h('input', { class: 'input mono', value: r.name, placeholder: 'web.lab' });
+      const type = r.type || 'A';
+      const name = h('input', { class: 'input mono', value: r.name, placeholder: 'www.firma.lab', spellcheck: 'false' });
       name.addEventListener('change', () => upd(() => r.name = name.value.trim().toLowerCase(), `${dev.name}: DNS ${name.value}`));
-      list.append(h('div', { class: 'item' }, h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, name, h('span', { class: 'small muted' }, 'A'),
-        ipInput(r.ip, v => upd(() => r.ip = v, `${dev.name}: DNS ${r.name} → ${v}`), '10.0.0.10'),
-        h('button', { class: 'btn icon ghost', title: 'Remove entry', html: I.trash, onclick: () => { upd(() => c.dns.splice(idx, 1), `${dev.name}: DNS entry removed`); draw(); } }))));
+      const isAddr = type === 'A' || type === 'AAAA';
+      let data;
+      if (isAddr) {
+        data = h('input', { class: 'input mono', value: r.ip || '', placeholder: type === 'A' ? '10.0.0.10' : '2001:db8::10', spellcheck: 'false' });
+        data.addEventListener('change', () => { const v = data.value.trim(); upd(() => r.ip = v, `${dev.name}: DNS ${r.name} → ${v}`); });
+      } else {
+        data = h('input', { class: 'input mono', value: r.value || '', placeholder: type === 'NS' ? 'ns1.firma.lab' : 'www.firma.lab', spellcheck: 'false' });
+        data.addEventListener('change', () => upd(() => r.value = data.value.trim().toLowerCase(), `${dev.name}: DNS ${r.name} ${type} ${data.value}`));
+      }
+      const ttl = numInput(r.ttl ?? 300, 1, 604800, v => upd(() => r.ttl = v ?? 300, `${dev.name}: TTL ${r.name} ${v}`), '300');
+      ttl.title = 'TTL in seconds: how long others may cache the answer';
+      list.append(h('div', { class: 'item' }, h('div', { class: 'row dnsrow' },
+        h('span', { class: 'grp grow' }, name, select(['A', 'AAAA', 'NS', 'CNAME'].map(t => [t, t]), type, v => { upd(() => { r.type = v; if (v === 'A' || v === 'AAAA') delete r.value; else delete r.ip; }, `${dev.name}: ${r.name} type ${v}`); draw(); })),
+        h('span', { class: 'grp grow' }, data, h('span', { class: 'small muted' }, 'TTL'), ttl,
+          h('button', { class: 'btn icon ghost', title: 'Remove entry', html: I.trash, onclick: () => { upd(() => c.dns.splice(idx, 1), `${dev.name}: DNS entry removed`); draw(); } })))));
     });
     if (!c.dns.length) list.append(h('div', { class: 'empty' }, 'No entries. Every query ends with NXDOMAIN.'));
-    wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Entry', onclick: () => { upd(() => c.dns.push({ name: 'new.lab', ip: '' }), `${dev.name}: DNS entry`); draw(); } }));
+    wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Entry', onclick: () => { upd(() => c.dns.push({ name: 'new.lab', type: 'A', ip: '', ttl: 300 }), `${dev.name}: DNS entry`); draw(); } }),
+      h('p', { class: 'small muted', style: { marginTop: '8px' } }, 'A: name to IPv4 address. AAAA: to IPv6 address. NS: who is responsible for a zone (with an A record for that server as glue). CNAME: the name is an alias for another name.'));
   };
   draw();
   return wrap;
+}
+function resolverEditor(dev, upd, rerender) {
+  const c = dev.cfg, r = c.recursion;
+  const roots = h('input', { class: 'input mono', value: r.roots || '', placeholder: '198.41.0.4', spellcheck: 'false' });
+  roots.addEventListener('change', () => upd(() => r.roots = roots.value.trim(), `${dev.name}: root hints ${roots.value.trim() || 'none'}`));
+  const cache = dev.l3.resolverSvc?.dump() || [];
+  return h('div', {},
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: r.enabled ? true : null, onchange: e => { upd(() => r.enabled = e.target.checked, `${dev.name}: resolver ${e.target.checked ? 'on' : 'off'}`); rerender?.(); } }), 'Resolve recursively for others'),
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr', marginTop: '6px' } }, h('span', {}, 'Root hints'), roots),
+    h('p', { class: 'small muted', style: { margin: '4px 0 8px' } }, 'Where the resolver starts when it knows nothing yet: the addresses of the root servers. Every answer is kept in the cache for its TTL.'),
+    h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', { class: 'small' }, `Cache (${plural(cache.length, 'entry').replace('entrys', 'entries')})`),
+      h('button', { class: 'btn ghost', onclick: () => { runCommand(dev, 'unbound-control flush_all'); rerender?.(); } }, 'Flush cache')),
+    cache.length ? h('table', { class: 'tbl' }, h('tr', {}, ['Name', 'Type', 'Data', 'TTL left'].map(x => h('th', {}, x))),
+      cache.map(e => h('tr', {}, [e.name || '.', e.type, e.data, `${e.ttl} s`].map(x => h('td', { class: 'mono small' }, x))))) : h('div', { class: 'empty' }, 'Empty'));
 }
 
 function routesEditor(dev, upd) {
@@ -606,6 +641,7 @@ export function tablesPanel(dev, sim) {
     if (dev.vrrp?.groups.length) box.append(h('h4', {}, 'VRRP'), tbl(['Group', 'Port', 'Virtual IP', 'State', 'Prio'], dev.vrrp.table().map(g => [g.vrid, g.ifname, g.vip, g.state, g.prio])));
     if (dev.bfd?.table().length) box.append(h('h4', {}, 'BFD sessions'), tbl(['Peer', 'Port', 'State', 'For'], dev.bfd.table().map(x => [x.peer, x.ifname, x.state, x.clients.join(', ')])));
     if (dev.ospf?.enabled) box.append(h('h4', {}, 'OSPF neighbors'), tbl(['Router ID', 'Address', 'Port', 'State'], dev.ospf.neighborTable().map(n => [n.rid, n.ip, n.ifname, n.state])));
+    if (dev.cfg.recursion?.enabled) box.append(h('h4', {}, 'DNS cache'), tbl(['Name', 'Type', 'Data', 'TTL left'], (dev.l3.resolverSvc?.dump() || []).map(e => [e.name || '.', e.type, e.data, `${e.ttl} s`])));
     if (dev.cfg.services?.length) box.append(h('h4', {}, 'Listening services'), tbl(['Proto', 'Port', 'Service'], dev.cfg.services.map(s => [s.proto.toUpperCase(), s.port, s.name || ''])));
   }
   if (dev.type === 'switch') {

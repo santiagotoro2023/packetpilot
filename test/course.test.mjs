@@ -110,6 +110,20 @@ const SOLUTIONS = {
     for (const id of ['r1', 'r2']) { Object.assign(sim.dev(id).cfg.bfd, { enabled: true, ospf: true }); sim.configChanged(id); }
     sim.runFor(15000); ctx.snap();
     runCommand(sim.dev('pc1'), 'ping -c 20 10.2.0.10'); sim.runFor(3500); prov.loss = 100; sim.runFor(25000); } },
+  'm11-l2': { answers: [null, '198.41.0.4', '3', 'no', null, 'ns.partner.lab', 'REFUSED'], act: sim => {
+    run(sim, 'client', 'dig www.firma.lab');
+    assert.equal(sim.log.filter(e => e.dev === 'resolver' && e.tag === 'dns-iter').length, 3);
+    assert.equal(sim.log.find(e => e.dev === 'resolver' && e.tag === 'dns-iter').data.server, '198.41.0.4');
+    run(sim, 'client', 'dig +trace portal.partner.lab'); run(sim, 'client', 'dig @203.0.113.53 portal.partner.lab');
+    assert.match(sim.dev('client').consoleLines.join('\n'), /status: REFUSED/); } },
+  'm11-l4': { answers: sim => [null, String(sim.log.filter(e => e.dev === 'client' && e.tag === 'dns-done' && e.data.name === 'www.firma.lab').pop().data.ttl), null, null, '60', null, null], act: (sim, ctx) => {
+    run(sim, 'client', 'dig www.firma.lab'); sim.runFor(5000); run(sim, 'client', 'dig www.firma.lab');
+    sim.dev('ns1').cfg.dns.find(r => r.name === 'www.firma.lab').ip = '203.0.113.81'; ctx.snap();
+    run(sim, 'client', 'dig www.firma.lab'); ctx.snap();
+    sim.runFor(61000); run(sim, 'client', 'dig www.firma.lab'); ctx.snap();
+    run(sim, 'client', 'dig blog.firma.lab'); sim.dev('ns1').cfg.dns.push({ name: 'blog.firma.lab', type: 'A', ip: '203.0.113.80', ttl: 300 }); ctx.snap();
+    run(sim, 'client', 'dig blog.firma.lab'); ctx.snap();
+    run(sim, 'resolver', 'unbound-control flush_all'); run(sim, 'client', 'dig www.firma.lab'); } },
   'm5-l2': { answers: sim => [null, null, String(sim.log.find(e => e.dev === 'client' && e.kind === 'send' && e.frame?.payload?.l4?.payload?.kind === 'dns').frame.payload.l4.sport), 'NXDOMAIN', null],
     act: (sim, ctx) => { run(sim, 'client', 'dig @10.20.0.53 web.lab'); ctx.inspected.push(sim.log.find(e => e.frame?.payload?.l4?.payload?.kind === 'dns'));
       run(sim, 'client', 'dig @10.20.0.53 doesnotexist.lab'); assert.match(sim.dev('client').consoleLines.join('\n'), /NXDOMAIN/); run(sim, 'client', 'nc -u 10.20.0.53 5353'); } },

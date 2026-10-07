@@ -156,8 +156,12 @@ export function summary(f) {
       : `OSPF LS Update from router ${l4.rid} (${base}): ${l4.lsas.length} LSA${l4.lsas.length === 1 ? '' : 's'} (${l4.lsas.map(l => l.rid).join(', ')})`;
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'dns') {
     const d = l4.payload;
-    s = d.qr ? `DNS response ${base}: ${d.qname} ${d.rcode === 'NOERROR' ? '→ ' + d.answers.map(a => a.ip).join(', ') : d.rcode}`
-      : `DNS query ${base}: A ${d.qname}?`;
+    const qn = d.qname || '.', qt = d.qtype || 'A';
+    const ns = (d.authority || []).filter(r => r.type === 'NS');
+    s = !d.qr ? `DNS query ${base}: ${qt} ${qn}?${d.rd === 0 ? ' (iterative)' : ''}`
+      : d.rcode !== 'NOERROR' ? `DNS response ${base}: ${qn} ${d.rcode}`
+      : d.answers?.length ? `DNS response ${base}: ${qn} → ${d.answers.map(a => a.type === 'CNAME' ? 'alias ' + a.data : a.data).join(', ')}${d.aa ? ' (authoritative)' : ''}`
+      : ns.length ? `DNS referral ${base}: ask ${ns[0].name || '.'} at ${ns.map(n => n.data).join(', ')}` : `DNS response ${base}: ${qn} has no ${qt} record`;
   } else if (l4.kind === 'udp') {
     s = `UDP ${ip.src}.${l4.sport} > ${ip.dst}.${l4.dport}, TTL ${ip.ttl}`;
   } else if (l4.kind === 'tcp') {
@@ -300,9 +304,14 @@ export function dissect(f, depth = 0) {
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'dns') {
     const d = l4.payload;
     layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), ''], ['Destination port', String(l4.dport), l4.dport === 53 || l4.sport === 53 ? 'DNS' : ''], ['Length', `${UDP_HDR + udpPayloadLen(l4)} bytes`, '']] });
+    const rrF = (sec, a) => [sec, `${a.name || '.'} ${a.type} ${a.data}`, `TTL ${a.ttl} s`];
+    const flags = d.qr ? [['AA', d.aa ? '1' : '0', d.aa ? 'Authoritative: the server is responsible for the name' : 'Not authoritative (from a cache or a referral)'],
+      ['RD', d.rd ? '1' : '0', 'Recursion desired, copied from the query'], ['RA', d.ra ? '1' : '0', d.ra ? 'Recursion available: this server resolves for others' : 'This server does not resolve for others']]
+      : [['RD', d.rd === 0 ? '0' : '1', d.rd === 0 ? 'Iterative: "just tell me what you know"' : 'Recursion desired: "find the answer for me"']];
     layers.push({ kind: 'data', depth, name: `DNS ${d.qr ? 'response' : 'query'}`, bytes: dnsLen(d), fields: [
-      ['ID', String(d.id), 'Matches response and query to each other'], ['QR', d.qr ? '1 (response)' : '0 (query)', ''],
-      ['Question', `${d.qname} A`, ''], ...(d.qr ? [['Response code', d.rcode, ''], ...d.answers.map(a => ['Answer', `${a.name} A ${a.ip}`, 'TTL 300'])] : [])] });
+      ['ID', String(d.id), 'Matches response and query to each other'], ['QR', d.qr ? '1 (response)' : '0 (query)', ''], ...flags,
+      ['Question', `${d.qname || '.'} ${d.qtype || 'A'}`, ''], ...(d.qr ? [['Response code', d.rcode, { NOERROR: 'No error', NXDOMAIN: 'The name does not exist', REFUSED: 'The server refuses to answer', SERVFAIL: 'The resolver failed to find an answer' }[d.rcode] || ''],
+        ...(d.answers || []).map(a => rrF('Answer', a)), ...(d.authority || []).map(a => rrF('Authority', a)), ...(d.additional || []).map(a => rrF('Additional', a))] : [])] });
   } else if (l4.kind === 'udp') {
     const vx = l4.payload?.kind === 'vxlan';
     layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [

@@ -1,8 +1,9 @@
 // PacketPilot simulation engine: event-driven, no DOM
 import { BCAST, VXLAN_PORT, PROTO, STP_MAC, isGroupMac, macFor, inNet, parseCidr, isIp,
-  netOf, intToIp, ipToInt, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp } from './net.js';
+  netOf, intToIp, ipToInt, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp, dnsLen } from './net.js';
 const ipCmp = (a, b) => (ipToInt(a) ?? 0) - (ipToInt(b) ?? 0);
 import { ethFrame, arpPacket, ipPacket, icmp, udp, tcp, ipChecksum, summary, icmpName, fmtBid } from './packets.js';
+import { serveDns, rrText, fqdn, resolverOf } from './dns.js';
 import { dhcpOn67, natIn, natOut, Vrrp, Ospf, Bfd, BFD_PORT, DHCP_TIMING, vrrpMac } from './services.js';
 
 export const PORTS = {
@@ -202,6 +203,8 @@ export function normalizeDevice(cfg) {
     cfg.services ??= clone(DEFAULT_SERVICES[t]);
     cfg.dns ??= [];
     cfg.resolver ??= '';
+    cfg.dnsZone ??= '';
+    cfg.recursion = { enabled: false, roots: '', ...(cfg.recursion || {}) };
   }
   if (t === 'router') {
     for (const p of PORTS.router) cfg.ifaces[p] ??= { ip: '', prefix: 24 };
@@ -278,7 +281,7 @@ class L3 {
   resetState() {
     this.arp = new Map(); this.pending = new Map(); this.pmtu = new Map();
     this.reasm = new Map(); this.sessions = new Set(); this.tcp = new Map();
-    this.lease = null; this.natTable = []; this.dhcpLeases = new Map();
+    this.lease = null; this.natTable = []; this.dhcpLeases = new Map(); this.resolverSvc = null;
   }
   get cfg() { return this.dev.cfg; }
   get forwarding() { return this.cfg.type === 'router' ? this.cfg.forwarding !== false : false; }
@@ -687,6 +690,7 @@ class L3 {
       if (l4.dport === BFD_PORT && l4.payload?.kind === 'bfd') { this.dev.bfd?.onPacket(ip); return; }
       if (l4.dport === 67 && l4.payload?.kind === 'dhcp' && dhcpOn67(this, ip, ifname, frame)) return;
       if (this.dev.onUdp?.(ip, ifname, frame)) return;
+      if (this.resolverSvc?.onUdp(ip)) return;
       for (const s of [...this.sessions]) if (s.onUdp?.(ip)) return;
       const svc = this.service('udp', l4.dport);
       if (svc) {
@@ -699,14 +703,7 @@ class L3 {
       this.icmpError(ip, 3, 3);
     }
   }
-  answerDns(ip, svc, frame) {
-    const q = ip.l4.payload;
-    const name = q.qname.toLowerCase().replace(/\.$/, '');
-    const recs = (this.cfg.dns || []).filter(r => String(r.name).toLowerCase().replace(/\.$/, '') === name && isIp(r.ip));
-    const ans = { kind: 'dns', id: q.id, qr: 1, qname: q.qname, answers: recs.map(r => ({ name: q.qname, ip: r.ip })), rcode: recs.length ? 'NOERROR' : 'NXDOMAIN' };
-    this.dev.record('ok', `answers the DNS query for ${q.qname}: ${recs.length ? recs.map(r => r.ip).join(', ') : 'NXDOMAIN (unknown)'}`, { frame, tag: 'dns-answered', data: { name: q.qname, found: !!recs.length } });
-    this.output(ipPacket({ src: ip.dst, dst: ip.src, proto: PROTO.UDP, trace: ip.trace, l4: udp(ip.l4.dport, ip.l4.sport, ans) }), {});
-  }
+  answerDns(ip, svc, frame) { serveDns(this, ip, frame); }
 
   // ---- TCP
   sendResponse(c, mss, from) {
@@ -1108,45 +1105,120 @@ class TcpClient extends Session {
 }
 
 class DigSession extends Session {
-  constructor(l3, server, name, then = null) { super(l3); Object.assign(this, { server, name, then }); this.sport = 49152 + Math.floor(this.sim.random() * 16000); this.id = Math.floor(this.sim.random() * 65535); }
+  constructor(l3, server, name, then = null, o = {}) {
+    super(l3);
+    Object.assign(this, { server, name, then, qtype: o.type || 'A', rd: o.rd ?? true, trace: !!o.trace, short: !!o.short });
+    this.sport = 49152 + Math.floor(this.sim.random() * 16000); this.id = Math.floor(this.sim.random() * 65535);
+  }
   print(t) { if (!this.then) this.dev.print(t); }
+  out(t) { if (!this.short) this.print(t); }
   // A name lookup for curl or ping is cancelled silently, the command after it never starts
   interrupt() { this.sim.cancel(this.timer); if (this.then) { this.then = null; this.end(); } else this.finish(false); }
   start() {
     this.begin();
-    this.print(`$ dig @${this.server} ${this.name}`);
+    const opts = `${this.trace ? ' +trace' : ''}${!this.rd && !this.trace ? ' +norec' : ''}${this.short ? ' +short' : ''}`;
+    this.print(`$ dig @${this.server}${opts} ${this.name}${this.qtype !== 'A' ? ' ' + this.qtype : ''}`);
+    if (this.trace) {
+      this.out(`; <<>> DiG 9.18 <<>> +trace ${this.name}`);
+      this.hop = { server: this.server, label: this.server, ips: [this.server], idx: 0, priming: true };
+      return this.ask();
+    }
+    this.hop = { server: this.server, label: this.server, ips: [this.server], idx: 0 };
+    this.ask();
+  }
+  /** One query: to the resolver (normal), or one step of +trace */
+  ask() {
+    const h = this.hop, server = h.ips[h.idx];
+    const priming = !!h.priming;
+    const q = { kind: 'dns', id: this.id = Math.floor(this.sim.random() * 65535), qr: 0, rd: priming || (!this.trace && this.rd) ? 1 : 0,
+      qname: priming ? '' : this.name, qtype: priming ? 'NS' : this.qtype };
     this.t0 = this.sim.time;
-    const res = this.l3.output(ipPacket({ src: this.l3.srcFor(this.server), dst: this.server, proto: PROTO.UDP, l4: udp(this.sport, 53, { kind: 'dns', id: this.id, qr: 0, qname: this.name }) }), {});
+    this.cur = server;
+    const res = this.l3.output(ipPacket({ src: this.l3.srcFor(server), dst: server, proto: PROTO.UDP, l4: udp(this.sport, 53, q) }), {});
     if (!res.ok) { this.print(`;; ${res.error}`); return this.finish(false); }
-    this.dev.record('info', `asks ${this.server} via DNS (UDP 53) for ${this.name}`, { tag: 'dns-query', data: { name: this.name } });
-    this.timer = this.sim.schedule(T.dnsTimeout, () => { this.print(';; connection timed out; no servers could be reached'); this.finish(false); });
+    this.dev.record('info', priming ? `asks ${server} for the list of root servers (dig +trace)` : `asks ${server} via DNS (UDP 53) for ${this.name}${this.qtype !== 'A' ? ' ' + this.qtype : ''}${q.rd ? '' : ' (no recursion wanted)'}`,
+      { tag: 'dns-query', data: { name: this.name, server, rd: q.rd, trace: this.trace } });
+    this.timer = this.sim.schedule(this.trace ? 2000 : T.dnsTimeout, () => {
+      if (this.trace && h.idx + 1 < h.ips.length) { this.out(`;; communications error to ${server}#53: timed out`); h.idx++; return this.ask(); }
+      this.print(';; connection timed out; no servers could be reached'); this.finish(false);
+    });
   }
   onUdp(ip) {
     const l4 = ip.l4;
     if (this.done || l4.dport !== this.sport || l4.payload?.kind !== 'dns' || l4.payload.id !== this.id) return false;
     this.sim.cancel(this.timer);
     const d = l4.payload;
-    this.print(`;; ->>HEADER<<- opcode: QUERY, status: ${d.rcode}, id: ${d.id}`);
-    if (d.answers.length) { this.print(';; ANSWER SECTION:'); for (const a of d.answers) this.print(`${a.name}.\t300\tIN\tA\t${a.ip}`); }
-    this.print(`;; Query time: ${(this.sim.time - this.t0).toFixed(2)} msec`);
-    this.print(`;; SERVER: ${this.server}#53(UDP)`);
+    const ms = Math.max(1, Math.round(this.sim.time - this.t0));
+    const bytes = dnsLen(d);
+    if (this.trace) return this.traceStep(d, ip.src, ms, bytes);
+    const sections = [['ANSWER', d.answers || []], ['AUTHORITY', d.authority || []], ['ADDITIONAL', d.additional || []]];
+    if (this.short) for (const a of d.answers || []) this.print(a.type === 'CNAME' || a.type === 'NS' ? fqdn(a.data) : a.data);
+    this.out(`;; ->>HEADER<<- opcode: QUERY, status: ${d.rcode}, id: ${d.id}`);
+    this.out(`;; flags: ${['qr', d.aa && 'aa', d.rd && 'rd', d.ra && 'ra'].filter(Boolean).join(' ')}; QUERY: 1, ANSWER: ${(d.answers || []).length}, AUTHORITY: ${(d.authority || []).length}, ADDITIONAL: ${(d.additional || []).length}`);
+    if (d.rd && !d.ra) this.out(';; WARNING: recursion requested but not available');
+    this.out(';; QUESTION SECTION:');
+    this.out(`;${fqdn(d.qname)}\t\tIN\t${d.qtype || 'A'}`);
+    for (const [title, list] of sections) if (list.length) { this.out(`;; ${title} SECTION:`); for (const r of list) this.out(rrText(r)); }
+    this.out(`;; Query time: ${ms} msec`);
+    this.out(`;; SERVER: ${this.server}#53(${this.server}) (UDP)`);
+    this.out(`;; MSG SIZE  rcvd: ${bytes}`);
     this.finish(d.rcode === 'NOERROR', d);
     return true;
   }
+  traceStep(d, from, ms, bytes) {
+    const h = this.hop;
+    const label = h.priming ? `${from}#53(${from})` : `${from}#53(${h.names?.[h.idx] || from})`;
+    if (h.priming) {
+      for (const r of d.answers || []) this.out(rrText(r));
+      this.out(`;; Received ${bytes} bytes from ${label} in ${ms} ms`);
+      const ips = (d.additional || []).filter(r => r.type === 'A').map(r => r.data);
+      if (!ips.length) { this.print(';; no root servers known, giving up'); return this.finish(false, d); }
+      this.hop = { ips, names: (d.additional || []).filter(r => r.type === 'A').map(r => r.name), idx: 0 };
+      this.ask(); return true;
+    }
+    if (d.rcode !== 'NOERROR') {
+      this.out(`;; ->>HEADER<<- status: ${d.rcode}`);
+      this.out(`;; Received ${bytes} bytes from ${label} in ${ms} ms`);
+      if (d.rcode !== 'NXDOMAIN' && h.idx + 1 < h.ips.length) { h.idx++; this.ask(); return true; }
+      this.finish(false, d); return true;
+    }
+    if ((d.answers || []).length) {
+      for (const r of d.answers) this.out(rrText(r));
+      this.out(`;; Received ${bytes} bytes from ${label} in ${ms} ms`);
+      this.finish(true, d); return true;
+    }
+    const ns = (d.authority || []).filter(r => r.type === 'NS');
+    for (const r of ns) this.out(rrText(r));
+    this.out(`;; Received ${bytes} bytes from ${label} in ${ms} ms`);
+    const glue = (d.additional || []).filter(r => r.type === 'A' && ns.some(n => n.data === r.name));
+    if (!ns.length || !glue.length) { this.print(ns.length ? ';; the referral contains no addresses (glue), dig +trace stops here' : ';; no answer and no referral'); this.finish(false, d); return true; }
+    this.hop = { ips: glue.map(g => g.data), names: glue.map(g => g.name), idx: 0 };
+    if (++this.steps > 10) { this.finish(false, d); return true; }
+    this.ask(); return true;
+  }
+  steps = 0;
   onIcmpError(ip) {
     const o = ip.l4.orig;
     if (!o || o.sport !== this.sport || this.done) return;
     this.sim.cancel(this.timer);
-    this.print(`;; communications error to ${this.server}#53: ${ip.l4.code === 3 ? 'connection refused' : 'host unreachable'}`);
+    this.print(`;; communications error to ${this.cur}#53: ${ip.l4.code === 3 ? 'connection refused' : 'host unreachable'}`);
     this.finish(false);
   }
-  onArpFail(pkt) { if (pkt.l4?.sport === this.sport && !this.done) { this.sim.cancel(this.timer); this.print(`;; communications error to ${this.server}#53: host unreachable`); this.finish(false); } }
+  onArpFail(pkt) { if (pkt.l4?.sport === this.sport && !this.done) { this.sim.cancel(this.timer); this.print(`;; communications error to ${this.cur}#53: host unreachable`); this.finish(false); } }
   finish(ok, d) {
     if (this.done) return;
     this.end();
-    const answer = d?.answers?.[0]?.ip || null;
-    this.dev.record(ok ? 'ok' : 'err', ok ? `DNS: ${this.name} is ${answer}` : `DNS lookup ${this.name} without result`, { tag: 'dns-done', data: { name: this.name, ok, answer } });
-    if (this.then) { if (answer) this.dev.print(`${this.name} → ${answer} (DNS via ${this.server})`); this.then(answer); }
+    const want = this.qtype === 'AAAA' ? 'AAAA' : 'A';
+    const addrs = (d?.answers || []).filter(a => a.type === want);
+    const answer = addrs[addrs.length - 1]?.data || null;
+    const rcode = d?.rcode || 'TIMEOUT';
+    this.dev.record(ok && (answer || this.qtype !== want) ? 'ok' : 'err', ok ? `DNS: ${this.name}${this.qtype !== 'A' ? ' ' + this.qtype : ''} is ${answer || (d?.answers || []).map(a => a.data).join(', ') || 'without data'}` : `DNS lookup ${this.name} without result (${rcode})`,
+      { tag: 'dns-done', data: { name: this.name, ok: !!ok, answer, rcode, server: this.server, trace: this.trace, qtype: this.qtype, answers: (d?.answers || []).length, ttl: addrs[addrs.length - 1]?.ttl ?? null, aa: !!d?.aa } });
+    if (this.then) {
+      if (answer) this.dev.print(`${this.name} → ${answer} (DNS via ${this.server})`);
+      else this.dev.print(`${this.name}: ${rcode === 'NXDOMAIN' ? 'Name or service not known' : rcode === 'TIMEOUT' ? 'Temporary failure in name resolution' : 'Name resolution failed (' + rcode + ')'}`);
+      this.then(answer);
+    }
   }
 }
 
@@ -1172,7 +1244,7 @@ class Host extends Device {
   arping(target, o = {}) { const s = new ArpingSession(this.l3, target, o); s.start(); return s; }
   curl(dst, port = 80, o = {}) { const s = new TcpClient(this.l3, dst, port, 'http', o); s.start(); return s; }
   ncz(dst, port) { const s = new TcpClient(this.l3, dst, port, 'probe'); s.start(); return s; }
-  dig(server, name) { const s = new DigSession(this.l3, server, name); s.start(); return s; }
+  dig(server, name, o = {}) { const s = new DigSession(this.l3, server, name, null, o); s.start(); return s; }
   resolve(name, cb) {
     if (isIp(name)) return cb(name);
     const dns = this.l3.resolver();
@@ -1182,6 +1254,7 @@ class Host extends Device {
   udpSend(dst, port, len = 32) { const s = new UdpSend(this.l3, dst, port, len); s.start(); return s; }
   // Interfaces in DHCP mode ask for an address shortly after the device starts
   start() {
+    if (this.cfg.recursion?.enabled && this.cfg.recursion.seed?.length) resolverOf(this.l3).seed(this.cfg.recursion.seed);
     for (const [n, v] of Object.entries(this.cfg.ifaces || {})) {
       if (v?.dhcp) this.sim.schedule(600 + this.sim.random() * 600, () => { if (!this.l3.lease && !this.dhcpRunning(n)) this.dhclient(n, { boot: true }); });
     }
