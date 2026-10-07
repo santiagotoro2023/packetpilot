@@ -99,7 +99,7 @@ ${bar([['Ethernet', '14', 'eth', 1], ['IPv4', '20', 'ip', 1.1], ['UDP 4789', '8'
 ${note('Why UDP? UDP goes through any IP network. And the VTEP computes the UDP source port from the inner frame: different connections get different ports, and routers with several equally good paths (ECMP) spread them across those paths.')}
 ${note('If you do not specify one, Linux uses the old port <b>8472</b>. Always specify <code>dstport 4789</code>, otherwise two VTEPs talk past each other.', true)}
 <p>For broadcasts and unknown destinations (BUM traffic), a VTEP sends a copy to every VTEP in its <b>flood list</b> (head-end replication). From the frames it unwraps, it learns which MAC is behind which VTEP: <b>flood and learn</b>.</p>` },
-      { type: 'stack', title: 'Assemble the VXLAN packet', hint: 'The top is what goes over the underlay wire first.',
+      { type: 'stack', title: 'Assemble the VXLAN packet', retry: 'Remember: which layer goes onto the wire first?', hint: 'The top is what goes over the underlay wire first.',
         items: [{ name: 'Outer Ethernet header', size: '14 bytes', kind: 'eth' }, { name: 'Outer IPv4 header (VTEP → VTEP)', size: '20 bytes', kind: 'ip' }, { name: 'UDP, destination port 4789', size: '8 bytes', kind: 'udp' },
           { name: 'VXLAN header with VNI', size: '8 bytes', kind: 'vxlan' }, { name: 'Inner Ethernet header (srv1 → srv2)', size: '14 bytes', kind: 'eth' }, { name: 'Inner IPv4 header', size: '20 bytes', kind: 'ip' }, { name: 'ICMP Echo Request', size: '64 bytes', kind: 'icmp' }] },
       { type: 'quiz', title: 'Quick check', questions: [

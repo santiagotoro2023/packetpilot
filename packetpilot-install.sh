@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.1.0
+#  PacketPilot 2.1.1
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -31,7 +31,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.1.0"
+PP_VERSION="2.1.1"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -1731,7 +1731,7 @@ ${bar([['Ethernet', '14 bytes', 'eth', 1.2], ['IPv4', '20 bytes', 'ip', 1.4], ['
 <tr><td>Link</td><td>Frame</td><td>MAC address</td><td>Switch</td></tr></table>
 ${note('<b>Every device only looks as deep as it has to.</b> A switch reads the Ethernet header. A router unwraps the frame, reads the IP header, decides and wraps the packet in a <i>new</i> frame. Neither of them touches anything above that.')}
 <p>In the lab you can see this on every packet: the colored stripes on the envelope are its layers, from outside to inside. Clicking a packet takes it apart in the packet inspector.</p>` },
-      { type: 'stack', title: 'Put the parts in the right order', hint: 'The top is what goes over the wire first.',
+      { type: 'stack', title: 'Put the parts in the right order', retry: 'Remember: which layer goes onto the wire first?', hint: 'The top is what goes over the wire first.',
         items: [{ name: 'Ethernet header', size: '14 bytes', kind: 'eth' }, { name: 'IPv4 header', size: '20 bytes', kind: 'ip' }, { name: 'UDP header', size: '8 bytes', kind: 'udp' },
           { name: 'Application data', size: 'e.g. a DNS query', kind: 'data' }, { name: 'FCS (checksum)', size: '4 bytes', kind: 'eth' }],
         explain: 'The outermost layer comes first so that every device can immediately read what it needs. Only the FCS sits at the end: the network card can only compute it once all bytes have gone by.' },
@@ -2200,7 +2200,7 @@ ${bar([['Ethernet', '14', 'eth', 1], ['IPv4', '20', 'ip', 1.1], ['UDP 4789', '8'
 ${note('Why UDP? UDP goes through any IP network. And the VTEP computes the UDP source port from the inner frame: different connections get different ports, and routers with several equally good paths (ECMP) spread them across those paths.')}
 ${note('If you do not specify one, Linux uses the old port <b>8472</b>. Always specify <code>dstport 4789</code>, otherwise two VTEPs talk past each other.', true)}
 <p>For broadcasts and unknown destinations (BUM traffic), a VTEP sends a copy to every VTEP in its <b>flood list</b> (head-end replication). From the frames it unwraps, it learns which MAC is behind which VTEP: <b>flood and learn</b>.</p>` },
-      { type: 'stack', title: 'Assemble the VXLAN packet', hint: 'The top is what goes over the underlay wire first.',
+      { type: 'stack', title: 'Assemble the VXLAN packet', retry: 'Remember: which layer goes onto the wire first?', hint: 'The top is what goes over the underlay wire first.',
         items: [{ name: 'Outer Ethernet header', size: '14 bytes', kind: 'eth' }, { name: 'Outer IPv4 header (VTEP → VTEP)', size: '20 bytes', kind: 'ip' }, { name: 'UDP, destination port 4789', size: '8 bytes', kind: 'udp' },
           { name: 'VXLAN header with VNI', size: '8 bytes', kind: 'vxlan' }, { name: 'Inner Ethernet header (srv1 → srv2)', size: '14 bytes', kind: 'eth' }, { name: 'Inner IPv4 header', size: '20 bytes', kind: 'ip' }, { name: 'ICMP Echo Request', size: '64 bytes', kind: 'icmp' }] },
       { type: 'quiz', title: 'Quick check', questions: [
@@ -2653,7 +2653,8 @@ ${note('A router reads none of this. To it, a TCP segment is an IP packet like a
       { type: 'stack', title: 'Put the segments in the right order', hint: 'The top is the first segment of a short HTTP connection.',
         items: [{ name: 'client → web: SYN', kind: 'tcp' }, { name: 'web → client: SYN, ACK', kind: 'tcp' }, { name: 'client → web: ACK', kind: 'tcp' },
           { name: 'client → web: PSH, ACK with GET /', kind: 'data' }, { name: 'web → client: ACK with HTTP/1.1 200 OK', kind: 'data' },
-          { name: 'client → web: FIN, ACK', kind: 'tcp' }, { name: 'web → client: FIN, ACK', kind: 'tcp' }, { name: 'client → web: ACK', kind: 'tcp' }] },
+          { name: 'client → web: FIN, ACK', kind: 'tcp' }, { name: 'web → client: FIN, ACK', kind: 'tcp' }, { name: 'client → web: ACK', kind: 'tcp' }],
+        explain: 'Three-way handshake, then the request and the response (the response also acknowledges the request), then the close: whoever is done first sends FIN, the other side answers with its own FIN, and the last ACK confirms it. Here the client closes first.' },
       { type: 'build', title: 'Build the first segment', blocks: ['eth', 'vlan', 'arp', 'ip', 'icmp', 'udp', 'tcp', 'http'],
         task: '<p>The <b>client</b> (10.10.0.10) opens a connection to the web server <b>web</b> (10.20.0.80, port 80) in a different subnet. Build the first frame of this connection as it leaves the client\'s cable.</p>',
         addresses: ADDR,
@@ -8634,8 +8635,11 @@ function stack(step, el, done, saved, save) {
     });
   };
   const checkOrder = () => {
-    const ok = order.every((v, i) => v === i);
-    fb.textContent = ok ? 'Correct.' : 'Not quite yet. Remember: which layer goes onto the wire first?';
+    // Items with the same text (e.g. two ACKs) are interchangeable
+    const right = (v, i) => step.items[v].name === step.items[i].name;
+    const ok = order.every(right);
+    const lead = order.findIndex((v, i) => !right(v, i));
+    fb.textContent = ok ? 'Correct.' : lead > 0 ? `Not quite yet. The first ${lead === 1 ? 'one is' : lead + ' are'} in the right place, number ${lead + 1} is not.` : `Not quite yet. ${step.retry || 'Already the first one is not right.'}`;
     fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
     if (ok) { explain.classList.remove('hidden'); done(); }
   };

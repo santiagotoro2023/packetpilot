@@ -23,7 +23,7 @@ ${bar([['Ethernet', '14 bytes', 'eth', 1.2], ['IPv4', '20 bytes', 'ip', 1.4], ['
 <tr><td>Link</td><td>Frame</td><td>MAC address</td><td>Switch</td></tr></table>
 ${note('<b>Every device only looks as deep as it has to.</b> A switch reads the Ethernet header. A router unwraps the frame, reads the IP header, decides and wraps the packet in a <i>new</i> frame. Neither of them touches anything above that.')}
 <p>In the lab you can see this on every packet: the colored stripes on the envelope are its layers, from outside to inside. Clicking a packet takes it apart in the packet inspector.</p>` },
-      { type: 'stack', title: 'Put the parts in the right order', hint: 'The top is what goes over the wire first.',
+      { type: 'stack', title: 'Put the parts in the right order', retry: 'Remember: which layer goes onto the wire first?', hint: 'The top is what goes over the wire first.',
         items: [{ name: 'Ethernet header', size: '14 bytes', kind: 'eth' }, { name: 'IPv4 header', size: '20 bytes', kind: 'ip' }, { name: 'UDP header', size: '8 bytes', kind: 'udp' },
           { name: 'Application data', size: 'e.g. a DNS query', kind: 'data' }, { name: 'FCS (checksum)', size: '4 bytes', kind: 'eth' }],
         explain: 'The outermost layer comes first so that every device can immediately read what it needs. Only the FCS sits at the end: the network card can only compute it once all bytes have gone by.' },

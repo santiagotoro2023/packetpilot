@@ -171,8 +171,11 @@ function stack(step, el, done, saved, save) {
     });
   };
   const checkOrder = () => {
-    const ok = order.every((v, i) => v === i);
-    fb.textContent = ok ? 'Correct.' : 'Not quite yet. Remember: which layer goes onto the wire first?';
+    // Items with the same text (e.g. two ACKs) are interchangeable
+    const right = (v, i) => step.items[v].name === step.items[i].name;
+    const ok = order.every(right);
+    const lead = order.findIndex((v, i) => !right(v, i));
+    fb.textContent = ok ? 'Correct.' : lead > 0 ? `Not quite yet. The first ${lead === 1 ? 'one is' : lead + ' are'} in the right place, number ${lead + 1} is not.` : `Not quite yet. ${step.retry || 'Already the first one is not right.'}`;
     fb.className = 'feedback ' + (ok ? 'ok' : 'bad');
     if (ok) { explain.classList.remove('hidden'); done(); }
   };
