@@ -1,10 +1,10 @@
 // Side panel: configuration, tables and console of a device
-import { h } from './ui.js';
+import { h, toast, contextMenu } from './ui.js';
 import { I } from './icons.js';
 import { isIp, parseCidr, isAnyIp, isIp6, parseCidr6, norm6 } from './net.js';
 import { staticAddrs } from './ipv6.js';
 import { wgPubKey, wgGenKey, isWgKey, shortKey } from './vpn.js';
-import { PORTS, STP_TEXT } from './engine.js';
+import { PORTS, STP_TEXT, normalizeDevice } from './engine.js';
 import { runCommand } from './cli.js';
 
 function ipInput(value, onChange, placeholder = '', any = false) {
@@ -35,10 +35,15 @@ function select(options, value, onChange) {
 // Collapsible section for features that are not always needed. It opens by itself when the
 // feature is in use and remembers being opened or closed while the device stays selected.
 const sectionOpen = new Map();
-function section(dev, title, status, inUse, content) {
+// onRemove (optional): the section can be removed with a button at its end or by right-clicking its header.
+function section(dev, title, status, inUse, content, onRemove) {
   const key = dev.id + '|' + title;
-  const d = h('details', { class: 'sect', open: (sectionOpen.get(key) ?? inUse) ? true : null },
-    h('summary', {}, h('span', {}, title), h('span', { class: 'sect-status' + (inUse ? ' on' : '') }, status)), h('div', { class: 'sect-body' }, content));
+  const label = `Remove ${title}`;
+  const summary = h('summary', {}, h('span', {}, title), h('span', { class: 'sect-status' + (inUse ? ' on' : '') }, status));
+  const d = h('details', { class: 'sect', open: (sectionOpen.get(key) ?? inUse) ? true : null }, summary,
+    h('div', { class: 'sect-body' }, content,
+      onRemove ? h('div', { class: 'row', style: { marginTop: '10px' } }, h('button', { class: 'btn ghost danger', html: I.trash + label, onclick: onRemove })) : null));
+  if (onRemove) summary.addEventListener('contextmenu', e => contextMenu(e, [{ label, icon: I.trash, danger: true, onClick: onRemove }], title));
   d.addEventListener('toggle', () => sectionOpen.set(key, d.open));
   return d;
 }
@@ -46,12 +51,18 @@ function section(dev, title, status, inUse, content) {
 // Optional features: only the ones in use (or just added) are shown, the rest waits in a
 // small menu with one line of explanation each. This keeps a new device calm to look at.
 const featShown = new Set();
+// A feature in use is removed with f.remove(): its settings go back to the defaults (Ctrl+Z undoes it).
 function features(dev, list, rerender, locked) {
   const wrap = h('div', { class: 'features' });
   const key = f => dev.id + '|' + f.id;
   const active = list.filter(f => f.inUse || featShown.has(key(f)));
   const rest = list.filter(f => !active.includes(f));
-  for (const f of active) wrap.append(section(dev, f.title, f.status || '', f.inUse, f.render()));
+  const remove = f => () => {
+    featShown.delete(key(f)); sectionOpen.delete(dev.id + '|' + f.title);
+    if (f.inUse) { f.remove?.(); toast(`${f.title} removed from ${dev.name}. Ctrl+Z brings it back.`); }
+    rerender?.();
+  };
+  for (const f of active) wrap.append(section(dev, f.title, f.status || '', f.inUse, f.render(), locked || (f.inUse && !f.remove) ? null : remove(f)));
   if (rest.length && !locked) {
     const menu = h('div', { class: 'featmenu hidden', role: 'menu' }, rest.map(f => h('button', { class: 'featitem', role: 'menuitem', onclick: () => {
       featShown.add(key(f)); sectionOpen.set(dev.id + '|' + f.title, true); f.onAdd?.(); rerender?.();
@@ -70,6 +81,11 @@ export function configPanel(dev, ctx) {
   const c = dev.cfg;
   const box = h('div');
   const upd = (fn, msg) => { fn(); changed(msg); };
+  // Removing a feature: drop its settings and let normalizeDevice put the defaults back
+  const reset = (what, fn) => () => upd(() => { fn(); normalizeDevice(c); }, `${dev.name}: ${what} removed`);
+  const dnsSvcOff = () => { c.services = c.services.filter(x => !(x.proto === 'udp' && Number(x.port) === 53)); };
+  const no6 = () => { for (const i of Object.values(c.ifaces)) delete i.ip6; };
+  const noWg = () => { delete c.wg; delete c.ifaces.wg0; };
   if (locked) box.append(h('div', { class: 'hint' }, 'The configuration is locked in this step. Observe the network and use the console and tables.'));
 
   if (c.type === 'pc' || c.type === 'server') {
@@ -99,25 +115,32 @@ export function configPanel(dev, ctx) {
     const hasDnsSvc = () => c.services.some(x => x.proto === 'udp' && Number(x.port) === 53);
     box.append(features(dev, [
       { id: 'services', title: 'Services', desc: 'Programs that listen on a port, e.g. a web server on TCP 80',
-        inUse: c.services.length > 0, status: c.services.map(x => `${x.proto.toUpperCase()} ${x.port}`).join(', '), render: () => servicesEditor(dev, upd) },
+        inUse: c.services.length > 0, status: c.services.map(x => `${x.proto.toUpperCase()} ${x.port}`).join(', '), render: () => servicesEditor(dev, upd),
+        remove: reset('services', () => { c.services = []; }) },
       { id: 'dns', title: 'DNS records', desc: 'Answer name queries for other devices (DNS server on UDP 53)',
         inUse: c.dns.length > 0 || !!c.dnsZone, status: plural(c.dns.length, 'record') + (c.dnsZone ? `, zone ${c.dnsZone}` : ''), render: () => dnsEditor(dev, upd),
+        remove: reset('DNS records', () => { c.dns = []; c.dnsZone = ''; if (!c.recursion?.enabled) dnsSvcOff(); }),
         onAdd: () => { if (!hasDnsSvc()) upd(() => c.services.push({ proto: 'udp', port: 53, name: 'dns' }), `${dev.name}: DNS service`); } },
       { id: 'resolver', title: 'Recursive resolver', desc: 'Find any name for others: ask root, TLD and authoritative servers and cache the answers',
         inUse: !!c.recursion?.enabled, status: c.recursion?.enabled ? `on, ${plural(dev.l3.resolverSvc?.dump().length || 0, 'cached record')}` : 'off', render: () => resolverEditor(dev, upd, rerender),
+        remove: reset('recursive resolver', () => { delete c.recursion; if (!c.dns.length && !c.dnsZone) dnsSvcOff(); }),
         onAdd: () => upd(() => { c.recursion.enabled = true; if (!hasDnsSvc()) c.services.push({ proto: 'udp', port: 53, name: 'dns' }); }, `${dev.name}: recursive resolver`) },
       ...(c.type === 'server' ? [{ id: 'dhcpd', title: 'DHCP server', desc: 'Hand out addresses to other devices',
-        inUse: c.dhcpServer.enabled, status: c.dhcpServer.enabled ? `on, ${plural(dev.l3.dhcpLeases.size, 'lease')}` : 'off', render: () => dhcpServerEditor(dev, upd) }] : []),
+        inUse: c.dhcpServer.enabled, status: c.dhcpServer.enabled ? `on, ${plural(dev.l3.dhcpLeases.size, 'lease')}` : 'off', render: () => dhcpServerEditor(dev, upd),
+        remove: reset('DHCP server', () => { delete c.dhcpServer; }) }] : []),
       { id: 'ipv6', title: 'IPv6', desc: 'A second address family: link-local, addresses from router advertisements (SLAAC), static addresses',
         inUse: !!c.ipv6?.enabled, status: c.ipv6?.enabled ? plural(dev.l3.v6.allAddrs().filter(a => a.scope === 'global').length, 'global address') : 'off', render: () => ipv6HostEditor(dev, upd, rerender),
+        remove: reset('IPv6', () => { delete c.ipv6; no6(); }),
         onAdd: () => upd(() => { c.ipv6.enabled = true; }, `${dev.name}: IPv6 on`) },
       { id: 'wg', title: 'WireGuard VPN', desc: 'An encrypted tunnel wg0 to other sites or devices, with keys and allowed IPs',
         inUse: !!c.wg?.enabled, status: c.wg?.enabled ? `wg0 ${c.ifaces.wg0?.ip || ''}, ${plural((c.wg.peers || []).length, 'peer')}` : 'off', render: () => wgEditor(dev, upd, rerender),
+        remove: reset('WireGuard', noWg),
         onAdd: () => upd(() => { c.wg.enabled = true; c.wg.privateKey ||= wgGenKey(dev.id + Date.now()); c.ifaces.wg0 ??= { ip: '10.99.0.1', prefix: 24 }; }, `${dev.name}: WireGuard on`) },
       { id: 'vlan', title: 'VLAN tag', desc: 'Send every frame with an 802.1Q tag, like eth1.10 on Linux',
         inUse: !!i.vlan, status: i.vlan ? `VLAN ${i.vlan}` : '', render: () => h('div', {},
           h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '90px 1fr' } }, h('span', {}, 'VLAN tag'), numInput(i.vlan, 1, 4094, v => upd(() => i.vlan = v, `${dev.name}: VLAN tag ${v ?? 'off'}`), 'no tag')),
-          h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'Without a tag the host fits on an access port. With a tag, the switch port must be a trunk that allows this VLAN.')) }
+          h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'Without a tag the host fits on an access port. With a tag, the switch port must be a trunk that allows this VLAN.')),
+        remove: reset('VLAN tag', () => { i.vlan = null; }) }
     ], rerender, locked));
   }
 
@@ -146,30 +169,42 @@ export function configPanel(dev, ctx) {
       const relay = Object.values(c.ifaces).some(i => isIp(i.helper));
       const fullNbrs = (dev.ospf?.neighborTable() || []).filter(n => n.state === 'Full').length;
       box.append(features(dev, [
-        { id: 'subif', title: 'Subinterfaces', desc: 'One cable, several VLANs: router on a stick', inUse: subs.length > 0, status: subs.join(', '), render: () => subifEditor(dev, upd, sim, rerender) },
+        { id: 'subif', title: 'Subinterfaces', desc: 'One cable, several VLANs: router on a stick', inUse: subs.length > 0, status: subs.join(', '), render: () => subifEditor(dev, upd, sim, rerender),
+          remove: reset('subinterfaces', () => { for (const n of subs) delete c.ifaces[n]; }) },
         { id: 'ipv6', title: 'IPv6', desc: 'IPv6 addresses per interface, router advertisements for SLAAC, a DNS server for the clients (RDNSS)',
           inUse: !!c.ipv6?.enabled, status: c.ipv6?.enabled ? `on${(c.ipv6.ra || []).length ? ', RA on ' + c.ipv6.ra.join(', ') : ''}` : 'off', render: () => ipv6RouterEditor(dev, upd, sim, rerender),
+          remove: reset('IPv6', () => { delete c.ipv6; no6(); }),
           onAdd: () => upd(() => { c.ipv6.enabled = true; }, `${dev.name}: IPv6 on`) },
         { id: 'wg', title: 'WireGuard VPN', desc: 'An encrypted tunnel wg0 to other sites or devices, with keys and allowed IPs',
           inUse: !!c.wg?.enabled, status: c.wg?.enabled ? `wg0 ${c.ifaces.wg0?.ip || ''}, ${plural((c.wg.peers || []).length, 'peer')}` : 'off', render: () => wgEditor(dev, upd, rerender),
+          remove: reset('WireGuard', noWg),
           onAdd: () => upd(() => { c.wg.enabled = true; c.wg.privateKey ||= wgGenKey(dev.id + Date.now()); c.ifaces.wg0 ??= { ip: '10.99.0.1', prefix: 24 }; }, `${dev.name}: WireGuard on`) },
         { id: 'bgp', title: 'BGP', desc: 'Exchange routes with other autonomous systems (eBGP) and inside your own (iBGP)',
           inUse: !!c.bgp?.enabled, status: c.bgp?.enabled ? `AS ${c.bgp.asn || '?'}, ${(dev.bgp?.summary() || []).filter(x => x.state === 'Established').length}/${(c.bgp.neighbors || []).length} up` : 'off', render: () => bgpEditor(dev, upd, rerender),
+          remove: reset('BGP', () => { delete c.bgp; }),
           onAdd: () => upd(() => { c.bgp.enabled = true; c.bgp.asn ||= 65001; }, `${dev.name}: BGP on`) },
-        { id: 'rules', title: 'Rules', desc: 'Allow, drop or reject forwarded packets (firewall)', inUse: c.acl.length > 0, status: plural(c.acl.length, 'rule'), render: () => aclEditor(dev, upd) },
-        { id: 'nat', title: 'NAT', desc: 'Inside hosts share the outside address, port forwards', inUse: !!c.nat.outside, status: c.nat.outside ? `outside ${c.nat.outside}` : 'off', render: () => natEditor(dev, upd, rerender) },
+        { id: 'rules', title: 'Rules', desc: 'Allow, drop or reject forwarded packets (firewall)', inUse: c.acl.length > 0, status: plural(c.acl.length, 'rule'), render: () => aclEditor(dev, upd),
+          remove: reset('rules', () => { c.acl = []; }) },
+        { id: 'nat', title: 'NAT', desc: 'Inside hosts share the outside address, port forwards', inUse: !!c.nat.outside, status: c.nat.outside ? `outside ${c.nat.outside}` : 'off', render: () => natEditor(dev, upd, rerender),
+          remove: reset('NAT', () => { delete c.nat; }) },
         { id: 'dhcp', title: 'DHCP', desc: 'Hand out addresses, or relay requests to a DHCP server', inUse: c.dhcpServer.enabled || relay,
-          status: c.dhcpServer.enabled ? 'server on' : relay ? 'relay' : 'off', render: () => h('div', {}, relayEditor(dev, upd), dhcpServerEditor(dev, upd)) },
+          status: c.dhcpServer.enabled ? 'server on' : relay ? 'relay' : 'off', render: () => h('div', {}, relayEditor(dev, upd), dhcpServerEditor(dev, upd)),
+          remove: reset('DHCP', () => { delete c.dhcpServer; for (const i of Object.values(c.ifaces)) delete i.helper; }) },
         { id: 'vrrp', title: 'VRRP', desc: 'Share a gateway address with a second router', inUse: c.vrrp.length > 0,
-          status: (dev.vrrp?.table() || []).map(g => `${g.vrid}: ${g.state}`).join(', ') || plural(c.vrrp.length, 'group'), render: () => vrrpEditor(dev, upd, rerender) },
+          status: (dev.vrrp?.table() || []).map(g => `${g.vrid}: ${g.state}`).join(', ') || plural(c.vrrp.length, 'group'), render: () => vrrpEditor(dev, upd, rerender),
+          remove: reset('VRRP', () => { c.vrrp = []; }) },
         { id: 'ospf', title: 'OSPF', desc: 'Learn routes automatically from neighboring routers', inUse: c.ospf.enabled,
-          status: c.ospf.enabled ? `on, ${plural(fullNbrs, 'neighbor')}` : 'off', render: () => ospfEditor(dev, upd, rerender) },
+          status: c.ospf.enabled ? `on, ${plural(fullNbrs, 'neighbor')}` : 'off', render: () => ospfEditor(dev, upd, rerender),
+          remove: reset('OSPF', () => { delete c.ospf; }) },
         { id: 'ecmp', title: 'Load balancing (ECMP)', desc: 'Use several equally good routes at the same time', inUse: Number(c.maxPaths) !== 4 || c.ecmpHash === 'l4',
-          status: Number(c.maxPaths) === 1 ? 'off (1 path)' : `up to ${c.maxPaths} paths, ${c.ecmpHash === 'l4' ? 'L4' : 'L3'} hash`, render: () => ecmpEditor(dev, upd) },
+          status: Number(c.maxPaths) === 1 ? 'off (1 path)' : `up to ${c.maxPaths} paths, ${c.ecmpHash === 'l4' ? 'L4' : 'L3'} hash`, render: () => ecmpEditor(dev, upd),
+          remove: reset('load balancing', () => { delete c.maxPaths; delete c.ecmpHash; }) },
         { id: 'bfd', title: 'BFD', desc: 'Notice a dead neighbor in under a second', inUse: !!c.bfd.enabled,
-          status: c.bfd.enabled ? (dev.bfd?.table() || []).map(x => `${x.peer} ${x.state}`).join(', ') || 'on, no peers' : 'off', render: () => bfdEditor(dev, upd, rerender) },
+          status: c.bfd.enabled ? (dev.bfd?.table() || []).map(x => `${x.peer} ${x.state}`).join(', ') || 'on, no peers' : 'off', render: () => bfdEditor(dev, upd, rerender),
+          remove: reset('BFD', () => { delete c.bfd; }) },
         { id: 'adv', title: 'Advanced', desc: 'IP forwarding on or off, MSS clamping', inUse: c.forwarding === false || !!c.mssClamp,
-          status: c.forwarding === false || c.mssClamp ? 'changed' : '', render: () => advancedEditor(dev, upd) }
+          status: c.forwarding === false || c.mssClamp ? 'changed' : '', render: () => advancedEditor(dev, upd),
+          remove: reset('advanced settings', () => { delete c.forwarding; delete c.mssClamp; }) }
       ], rerender, locked));
     }
   }
@@ -205,11 +240,13 @@ export function configPanel(dev, ctx) {
     const st = c.stp;
     box.append(features(dev, [
       ...(c.type === 'switch' ? [{ id: 'stp', title: 'Spanning tree', desc: 'Block redundant paths so no loop forms (STP or RSTP)', inUse: !!st.enabled,
-        status: st.enabled ? `${st.mode === 'rstp' ? 'RSTP' : 'STP'}${dev.bridge.stpTable()?.isRoot ? ', root' : ''}` : 'off', render: () => stpEditor(dev, upd, sim, shown, rerender) }] : []),
+        status: st.enabled ? `${st.mode === 'rstp' ? 'RSTP' : 'STP'}${dev.bridge.stpTable()?.isRoot ? ', root' : ''}` : 'off', render: () => stpEditor(dev, upd, sim, shown, rerender),
+        remove: reset('spanning tree', () => { delete c.stp; }) }] : []),
       { id: 'mac', title: 'MAC table', desc: 'How long learned addresses are kept, 0 turns the switch into a hub', inUse: Number(c.ageing) !== 300,
         status: `aging ${c.ageing} s`, render: () => h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '1fr 90px' } },
           h('span', { class: 'small' }, 'Aging time (s), 0 = learns nothing'),
-          numInput(c.ageing, 0, 3600, v => upd(() => c.ageing = v ?? 300, `${dev.name}: aging ${v} s`))) }
+          numInput(c.ageing, 0, 3600, v => upd(() => c.ageing = v ?? 300, `${dev.name}: aging ${v} s`))),
+        remove: reset('MAC table settings', () => { delete c.ageing; }) }
     ], rerender, locked));
   }
 
@@ -217,6 +254,7 @@ export function configPanel(dev, ctx) {
     box.append(vxlanEditor(dev, upd, sim));
     box.append(features(dev, [{ id: 'bgp', title: 'BGP (EVPN)', desc: 'Find the other VTEPs and all MAC addresses over BGP instead of static flood lists',
       inUse: !!c.bgp?.enabled, status: c.bgp?.enabled ? `AS ${c.bgp.asn || '?'}, ${(dev.bgp?.summary() || []).filter(x => x.state === 'Established').length}/${(c.bgp.neighbors || []).length} up` : 'off', render: () => bgpEditor(dev, upd, rerender),
+      remove: reset('BGP', () => { delete c.bgp; }),
       onAdd: () => upd(() => { c.bgp.enabled = true; c.bgp.asn ||= 65000; }, `${dev.name}: BGP on`) }], rerender, locked));
   }
   if (locked) box.querySelectorAll('input,select,button').forEach(e => e.disabled = true);

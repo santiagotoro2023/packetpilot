@@ -46,7 +46,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: packetpilot
-          image: ghcr.io/santiagotoro2023/packetpilot:2.9.0
+          image: ghcr.io/santiagotoro2023/packetpilot:2.9.1
           imagePullPolicy: IfNotPresent
           env:
             - name: PACKETPILOT_CANONICAL

@@ -152,7 +152,7 @@ node test/design.test.mjs               # the design kit is an exact copy, DESIG
 bash build.sh                           # regenerate packetpilot-install.sh
 ```
 
-`test/ui.test.mjs`, `test/features.test.mjs`, `test/lesson.test.mjs`, `test/persist.test.mjs` and `test/practice.test.mjs` require Playwright with Chromium and the local server from above.
+`test/ui.test.mjs`, `test/features.test.mjs`, `test/lesson.test.mjs`, `test/persist.test.mjs`, `test/practice.test.mjs` and `test/featremove.test.mjs` require Playwright with Chromium and the local server from above.
 
 ```
 src/
