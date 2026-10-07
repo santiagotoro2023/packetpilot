@@ -501,17 +501,25 @@ do_update() {
   local tmp new
   tmp="$(mktemp)"
   say "Downloading the latest version from github.com/${PP_REPO}"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$PP_SCRIPT_URL" -o "$tmp" || die "Download failed: ${PP_SCRIPT_URL}"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$tmp" "$PP_SCRIPT_URL" || die "Download failed: ${PP_SCRIPT_URL}"
-  else
-    die "Neither curl nor wget found. Install with: apt install curl"
+  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || die "Neither curl nor wget found. Install with: apt install curl"
+  fetch() { if command -v curl >/dev/null 2>&1; then curl -fsSL -H "$2" "$1" -o "$3"; else wget -q --header="$2" -O "$3" "$1"; fi; }
+  # raw.githubusercontent.com caches main/ for minutes: ask for the newest commit and load
+  # the script of exactly that commit, which is never stale
+  local sha url="$PP_SCRIPT_URL"
+  if fetch "https://api.github.com/repos/${PP_REPO}/commits/main" "Accept: application/vnd.github.sha" "$tmp" 2>/dev/null; then
+    sha="$(head -c 40 "$tmp")"
+    case "$sha" in *[!0-9a-f]*|"") ;; *) url="https://raw.githubusercontent.com/${PP_REPO}/${sha}/packetpilot-install.sh" ;; esac
   fi
+  fetch "$url" "Cache-Control: no-cache" "$tmp" || die "Download failed: ${url}"
   bash -n "$tmp" || die "The downloaded script is broken, aborting."
   new="$(sed -n 's/^PP_VERSION="\(.*\)"$/\1/p' "$tmp" | head -1)"
   [ -n "$new" ] || die "The downloaded script does not look like PacketPilot."
   say "Installed: $(cat "${PP_ROOT}/VERSION" 2>/dev/null || echo none), available: ${new}"
+  # Never go back to an older version than the one running right now
+  if [ "$new" != "$PP_VERSION" ] && [ "$(printf '%s\n%s\n' "$new" "$PP_VERSION" | sort -V | tail -1)" = "$PP_VERSION" ]; then
+    warn "GitHub offers ${new}, this script is ${PP_VERSION}: installing ${PP_VERSION} instead"
+    cp "$0" "$tmp" 2>/dev/null || die "Cannot reuse this script, download it again"
+  fi
   local args=()
   [ "$PP_PORT_SET" = "yes" ] && args+=(--port "$PP_PORT")
   [ "$PP_FORCE" = "yes" ] && args+=(--force)
@@ -521,6 +529,10 @@ do_update() {
   [ "$PP_LE_SET" = "off" ] && args+=(--no-letsencrypt)
   [ -n "$PP_LE_DNS" ] && args+=(--dns "$PP_LE_DNS")
   [ -n "$PP_LE_EMAIL" ] && args+=(--email "$PP_LE_EMAIL")
+  # Every option given together with --update goes to the new script as well
+  [ "$PP_MOVE_CARD_SET" = "yes" ] && { [ "$PP_MOVE_CARD" = "no" ] && args+=(--no-move-card) || args+=(--move-card); }
+  [ "$PP_MOVED_SET" = "yes" ] && args+=(--moved-to "$PP_MOVED_TO")
+  [ "$PP_MOVED_SET" = "off" ] && args+=(--not-moved)
   exec bash "$tmp" "${args[@]}"
 }
 
