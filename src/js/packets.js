@@ -74,6 +74,7 @@ export function shortLabel(f) {
   if (l4.kind === 'udp' && l4.payload?.kind === 'vxlan') return 'VXLAN';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dns') return 'DNS';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return 'DHCP ' + (DHCP_NAME[l4.payload.op] || '');
+  if (l4.kind === 'udp' && l4.payload?.kind === 'bfd') return 'BFD';
   if (l4.kind === 'vrrp') return 'VRRP';
   if (l4.kind === 'ospf') return l4.type === 'hello' ? 'Hello' : 'LSU';
   if (l4.kind === 'udp') return 'UDP';
@@ -104,7 +105,7 @@ export function layerKinds(f) {
     if (l4.kind === 'udp') {
       out.push('udp');
       if (l4.payload?.kind === 'vxlan') { out.push('vxlan'); cur = l4.payload.frame; continue; }
-      out.push('data');
+      out.push(l4.payload?.kind === 'bfd' ? 'rt' : 'data');
     }
     if (l4.kind === 'tcp') { out.push('tcp'); if (l4.dataLen) out.push('data'); }
     break;
@@ -145,6 +146,9 @@ export function summary(f) {
     const what = { DISCOVER: `Discover from ${d.chaddr}`, OFFER: `Offer ${d.yiaddr} to ${d.chaddr}`, REQUEST: `Request ${d.requested || d.ciaddr} for ${d.chaddr}`,
       ACK: `ACK ${d.yiaddr} for ${d.chaddr}`, NAK: `NAK for ${d.chaddr}`, RELEASE: `Release ${d.ciaddr} from ${d.chaddr}` }[d.op] || d.op;
     s = `DHCP ${what} (${base}${d.giaddr && d.giaddr !== '0.0.0.0' ? ', relayed via ' + d.giaddr : ''})`;
+  } else if (l4.kind === 'udp' && l4.payload?.kind === 'bfd') {
+    const b = l4.payload;
+    s = `BFD control ${base}: state ${b.state}, discriminators ${b.myDisc}/${b.yourDisc || 0}, every ${b.interval} ms × ${b.mult}${b.diag ? `, ${b.diag}` : ''}`;
   } else if (l4.kind === 'vrrp') {
     s = `VRRP advertisement ${base}: group ${l4.vrid}, priority ${l4.prio}, virtual IP ${(l4.vips || []).join(', ')}`;
   } else if (l4.kind === 'ospf') {
@@ -283,6 +287,16 @@ export function dissect(f, depth = 0) {
       ['Relay agent (giaddr)', d.giaddr || '0.0.0.0', d.giaddr && d.giaddr !== '0.0.0.0' ? 'Set by the relay, the server picks the pool by it' : 'No relay involved'],
       ...(d.requested ? [['Option 50: requested IP', d.requested, '']] : []), ...(d.server ? [['Option 54: server ID', d.server, '']] : []),
       ...(d.op === 'OFFER' || d.op === 'ACK' ? [['Option 1: subnet mask', `/${d.prefix}`, ''], ['Option 3: router', d.router || '-', 'Default gateway'], ['Option 6: DNS', d.dns || '-', ''], ['Option 51: lease time', `${d.lease} s`, '']] : [])] });
+  } else if (l4.kind === 'udp' && l4.payload?.kind === 'bfd') {
+    const b = l4.payload;
+    layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), 'From 49152 up'], ['Destination port', String(l4.dport), '3784: BFD single hop'], ['Length', `${UDP_HDR + 24} bytes`, '']] });
+    layers.push({ kind: 'rt', depth, name: `${pre}BFD Control`, bytes: 24, fields: [
+      ['Version / Diagnostic', `1 / ${b.diag || 'No Diagnostic'}`, 'Why the session last went down'],
+      ['State', b.state, { Down: 'No session yet, or it failed', Init: 'I hear you, do you hear me?', Up: 'Both sides hear each other' }[b.state] || ''],
+      ['Detect multiplier', String(b.mult), 'Missed packets before the session goes down'],
+      ['My discriminator', String(b.myDisc), 'Random number that names the session on the sender'],
+      ['Your discriminator', String(b.yourDisc || 0), 'The number the neighbor uses, 0 while unknown'],
+      ['Desired min TX / required min RX', `${b.interval} ms`, `Detection time = ${b.interval} × ${b.mult} = ${b.interval * b.mult} ms`]] });
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'dns') {
     const d = l4.payload;
     layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), ''], ['Destination port', String(l4.dport), l4.dport === 53 || l4.sport === 53 ? 'DNS' : ''], ['Length', `${UDP_HDR + udpPayloadLen(l4)} bytes`, '']] });

@@ -88,6 +88,28 @@ const SOLUTIONS = {
     run(sim, 'sw1', 'spanning-tree portfast eth5 on'); run(sim, 'sw3', 'spanning-tree portfast eth5 on');
     const l = sim.linkAt('sw3', 'eth5'); sim.setLinkUp(l, false); sim.runFor(100); sim.setLinkUp(l, true); sim.runFor(10);
     runT(sim, 'pc1', 'ping -c 1 10.0.0.3', 3000); } },
+  'm10-l2': { answers: [], act: (sim, ctx) => {
+    sim.runFor(8000);
+    ctx.ask(0, String(sim.dev('r1').l3.lookupAll('10.4.0.10').length));
+    runT(sim, 'c1', 'ping -c 1 10.4.0.10', 2000); runT(sim, 'c2', 'ping -c 1 10.4.0.10', 2000);
+    const via = src => { const e = sim.log.find(x => x.dev === 'r1' && x.tag === 'forwarded' && x.frame?.payload?.src === src); return sim.topo.devices.find(d => Object.values(d.ifaces || {}).some(i => i.ip === e.data.via)).name; };
+    assert.notEqual(via('10.1.0.10'), via('10.1.0.11'), 'c1 and c2 take different paths');
+    ctx.ask(2, via('10.1.0.10')); ctx.ask(3, via('10.1.0.11'));
+    run(sim, 'r1', 'sysctl net.ipv4.fib_multipath_hash_policy=1');
+    for (let i = 0; i < 6; i++) runT(sim, 'c1', 'curl http://10.4.0.10/', 2000);
+    ctx.snap();
+    run(sim, 'r1', 'ip link set eth1 down'); sim.runFor(2000); runT(sim, 'c1', 'ping -c 2 10.4.0.10', 4000); } },
+  'm10-l4': { answers: [null, null, '40', null, null, '900'], act: (sim, ctx) => {
+    sim.runFor(15000); runT(sim, 'pc1', 'ping -c 1 10.2.0.10', 2000);
+    const prov = sim.topo.links.find(l => (l.a.dev === 'prov' && l.b.dev === 'r2') || (l.b.dev === 'prov' && l.a.dev === 'r2'));
+    runCommand(sim.dev('pc1'), 'ping -c 60 10.2.0.10'); sim.runFor(3500); prov.loss = 100; sim.runFor(70000);
+    const slow = sim.log.filter(e => e.tag === 'ping-done').pop().data;
+    assert.ok(slow.sent - slow.received >= 30, `without BFD about 40 lost (${slow.sent - slow.received})`);
+    ctx.snap();
+    prov.loss = 0;
+    for (const id of ['r1', 'r2']) { Object.assign(sim.dev(id).cfg.bfd, { enabled: true, ospf: true }); sim.configChanged(id); }
+    sim.runFor(15000); ctx.snap();
+    runCommand(sim.dev('pc1'), 'ping -c 20 10.2.0.10'); sim.runFor(3500); prov.loss = 100; sim.runFor(25000); } },
   'm5-l2': { answers: sim => [null, null, String(sim.log.find(e => e.dev === 'client' && e.kind === 'send' && e.frame?.payload?.l4?.payload?.kind === 'dns').frame.payload.l4.sport), 'NXDOMAIN', null],
     act: (sim, ctx) => { run(sim, 'client', 'dig @10.20.0.53 web.lab'); ctx.inspected.push(sim.log.find(e => e.frame?.payload?.l4?.payload?.kind === 'dns'));
       run(sim, 'client', 'dig @10.20.0.53 doesnotexist.lab'); assert.match(sim.dev('client').consoleLines.join('\n'), /NXDOMAIN/); run(sim, 'client', 'nc -u 10.20.0.53 5353'); } },

@@ -1,6 +1,6 @@
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo } from './presets.js';
 import { macFor } from './net.js';
 
 const preset = id => PRESETS.find(p => p.id === id).make();
@@ -21,6 +21,18 @@ const fastFailover = sim => sim.log.some(cut => {
   const d = sim.log.find(e => e.tag === 'ping-done' && e.dev === 'pc1' && e.data.dst === '10.0.0.3' && e.seq > cut.seq && e.t - e.data.sent * 1000 - 1500 < cut.t);
   return moved && !!d && d.data.sent - d.data.received <= 1;
 });
+
+// pc1 kept pinging while BFD on r1 declared a neighbor dead, and lost at most two replies.
+// BFD hellos fill the capped log fast, so the moments are remembered per simulation.
+const bfdDowns = new WeakMap();
+const bfdFailover = sim => {
+  const seen = bfdDowns.get(sim) || new Set(); bfdDowns.set(sim, seen);
+  for (const e of sim.log) if (e.tag === 'bfd-state' && e.dev === 'r1' && e.data?.state === 'Down') seen.add(e.t);
+  return sim.log.some(d => d.tag === 'ping-done' && d.dev === 'pc1' && d.data.sent >= 5 && d.data.sent - d.data.received <= 2
+    && [...seen].some(t => t < d.t && t > d.t - d.data.sent * 1000 - 1500));
+};
+// r1 has (at least) two next hops for the server network
+const ecmpPaths = sim => (sim.dev('r1')?.l3?.lookupAll('10.4.0.10') || []).length >= 2 && Number(sim.dev('r1').cfg.maxPaths ?? 4) >= 2;
 
 export const LEVELS = { 1: 'Easy', 2: 'Medium', 3: 'Hard' };
 
@@ -66,6 +78,29 @@ export const CHALLENGES = [
     goals: [{ text: 'Cut the cable on the root port of sw3 while pc1 pings pc3 (10.0.0.3). The ping loses at most one reply.', check: fastFailover }],
     hints: ['Find the root port of sw3 with show spanning-tree, then cut that cable during a long ping.', 'Look for "Peer(STP)" in show spanning-tree and for "falls back to STP" in the log.'],
     presets: { pc1: ['ping -c 40 10.0.0.3'], sw3: ['show spanning-tree', 'ip link set eth1 down', 'ip link set eth2 down'], sw2: ['show spanning-tree'], sw4: ['show spanning-tree'] } },
+
+  { id: 'ecmp', level: 2, title: 'The second path sits idle', topics: ['ECMP', 'OSPF'],
+    symptom: '<p>The company paid for a second path to the server network via r3, so r1 can spread the load over r2 and r3. The monitoring shows that r3 carries no traffic at all, every flow goes via r2.</p>',
+    topo: () => ecmpTopo(),
+    variants: [
+      { fault: t => { dev(t, 'r1').maxPaths = 1; }, cause: 'r1 was limited to one path (maximum-paths 1). OSPF found two equal routes, but r1 only installed one of them.' },
+      { fault: t => { dev(t, 'r1').ospf.ifaces.eth2.cost = 20; }, cause: 'The OSPF cost of eth2 on r1 was 20 instead of 10. The path via r3 cost 40 instead of 30, so it was no longer equal, and ECMP only uses equal paths.' },
+      { fault: t => { dev(t, 'r3').ospf.ifaces.eth2.cost = 15; }, cause: 'r3 had cost 15 on its link to r4. The difference was two hops away from r1, but it still made the path via r3 more expensive (35 against 30).' }],
+    goals: [{ text: 'r1 has two next hops for 10.4.0.0/24 in its routing table.', check: ecmpPaths },
+      { text: 'c1 and c2 still reach the server (10.4.0.10).', check: sim => pingAfterStart('c1', '10.4.0.10')(sim) && pingAfterStart('c2', '10.4.0.10')(sim) }],
+    hints: ['show ip route on r1: how many next hops does 10.4.0.0/24 have? show ip ospf interface shows the costs.', 'Add up the costs of both paths. ECMP needs exactly the same total, and r1 must be allowed to use more than one path (Load balancing).'],
+    presets: { r1: ['show ip route', 'show ip ospf interface'], r3: ['show ip ospf interface'], c1: ['ping -c 1 10.4.0.10'], c2: ['ping -c 1 10.4.0.10'] } },
+
+  { id: 'bfd', level: 3, title: 'BFD is set up, but nothing is faster', topics: ['BFD', 'OSPF', 'Failover'],
+    symptom: '<p>Last month the team set up BFD between r1 and r2 so a dying provider link is noticed in under a second. Yesterday the provider silently dropped all traffic again, and pc1 still lost the server for 40 seconds.</p>',
+    topo: () => bfdTopo({ bfd: ['r1', 'r2'] }),
+    variants: [
+      { fault: t => { dev(t, 'r2').bfd.enabled = false; }, cause: 'BFD was only turned on on r1. A BFD session needs both neighbors: r1 kept sending, nobody answered, the session never left Down, so nothing watched the provider link.' },
+      { fault: t => { dev(t, 'r1').bfd.ospf = false; dev(t, 'r2').bfd.ospf = false; }, cause: 'BFD was enabled on both routers, but nobody used it: "Watch the OSPF neighbors" was off, so no session was ever created. BFD only helps its clients.' },
+      { fault: t => { dev(t, 'r2').bfd = { enabled: false, interval: 300, mult: 3, ospf: false }; dev(t, 'r3').bfd = { enabled: true, interval: 300, mult: 3, ospf: true }; }, cause: 'BFD was configured on r1 and r3 instead of r1 and r2. The session that mattered, across the provider switch, never existed.' }],
+    goals: [{ text: 'While pc1 pings the server (10.2.0.10), set the loss of the cable prov–r2 to 100 %. The ping loses at most two replies.', check: bfdFailover }],
+    hints: ['show bfd peers on r1 and r2: which sessions exist, and in which state?', 'BFD is under Configuration, Add a feature, BFD. It needs both neighbors and "Watch the OSPF neighbors".'],
+    presets: { pc1: ['ping -c 60 10.2.0.10'], r1: ['show bfd peers', 'show ip ospf neighbor'], r2: ['show bfd peers'], r3: ['show bfd peers'] } },
 
   { id: 'vlan', level: 2, title: 'VLAN 20 is cut in half', topics: ['VLAN', 'Trunk'],
     symptom: '<p>a10 and b10 in VLAN 10 work. a20 and b20 in VLAN 20 cannot reach each other, even though they are in the same VLAN.</p>',

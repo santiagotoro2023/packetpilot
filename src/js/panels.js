@@ -144,6 +144,10 @@ export function configPanel(dev, ctx) {
           status: (dev.vrrp?.table() || []).map(g => `${g.vrid}: ${g.state}`).join(', ') || plural(c.vrrp.length, 'group'), render: () => vrrpEditor(dev, upd, rerender) },
         { id: 'ospf', title: 'OSPF', desc: 'Learn routes automatically from neighboring routers', inUse: c.ospf.enabled,
           status: c.ospf.enabled ? `on, ${plural(fullNbrs, 'neighbor')}` : 'off', render: () => ospfEditor(dev, upd, rerender) },
+        { id: 'ecmp', title: 'Load balancing (ECMP)', desc: 'Use several equally good routes at the same time', inUse: Number(c.maxPaths) !== 4 || c.ecmpHash === 'l4',
+          status: Number(c.maxPaths) === 1 ? 'off (1 path)' : `up to ${c.maxPaths} paths, ${c.ecmpHash === 'l4' ? 'L4' : 'L3'} hash`, render: () => ecmpEditor(dev, upd) },
+        { id: 'bfd', title: 'BFD', desc: 'Notice a dead neighbor in under a second', inUse: !!c.bfd.enabled,
+          status: c.bfd.enabled ? (dev.bfd?.table() || []).map(x => `${x.peer} ${x.state}`).join(', ') || 'on, no peers' : 'off', render: () => bfdEditor(dev, upd, rerender) },
         { id: 'adv', title: 'Advanced', desc: 'IP forwarding on or off, MSS clamping', inUse: c.forwarding === false || !!c.mssClamp,
           status: c.forwarding === false || c.mssClamp ? 'changed' : '', render: () => advancedEditor(dev, upd) }
       ], rerender, locked));
@@ -323,8 +327,13 @@ function routesEditor(dev, upd) {
       list.append(h('div', { class: 'item' },
         h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, dst, h('span', { class: 'small muted' }, 'via'),
           ipInput(r.via, v => upd(() => r.via = v, `${dev.name}: next hop ${v}`), 'Next hop'),
+          (() => { const d = numInput(r.distance ?? '', 1, 255, v => upd(() => { if (!v || v === 1) delete r.distance; else r.distance = v; }, `${dev.name}: route ${r.dst} distance ${v ?? 1}`), '1');
+            d.title = 'Distance (administrative distance): lower wins. A backup route with e.g. 200 is only used when the main route is gone.'; d.setAttribute('aria-label', 'Distance'); return d; })(),
           h('button', { class: 'btn icon ghost', title: 'Remove route', html: I.trash, onclick: () => { upd(() => c.routes.splice(idx, 1), `${dev.name}: route removed`); draw(); } })),
-        act && !act.dev ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, 'Inactive: the next hop is not in any directly connected network') : null));
+        c.bfd?.enabled ? (() => { const cb = h('input', { type: 'checkbox', checked: r.bfd ? true : null });
+          cb.addEventListener('change', () => upd(() => { if (cb.checked) r.bfd = true; else delete r.bfd; }, `${dev.name}: BFD for route ${r.dst} ${cb.checked ? 'on' : 'off'}`));
+          return h('label', { class: 'row small' }, cb, 'Watch the next hop with BFD, withdraw the route when it fails'); })() : null,
+        act && !act.dev ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, act.bfdDown ? 'Inactive: BFD says the next hop is gone' : 'Inactive: the next hop is not in any directly connected network') : null));
     });
     if (!c.routes.length) list.append(h('div', { class: 'empty' }, 'None. The device knows directly connected networks on its own.'));
     wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Add route',
@@ -452,6 +461,34 @@ function natEditor(dev, upd, rerender) {
   return wrap;
 }
 
+function ecmpEditor(dev, upd) {
+  const c = dev.cfg;
+  return h('div', {},
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr' } },
+      h('span', { class: 'small' }, 'Equal paths used'), select([1, 2, 4, 8].map(n => [n, n === 1 ? '1 (ECMP off)' : String(n) + (n === 4 ? ' (default)' : '')]), c.maxPaths, v => upd(() => c.maxPaths = Number(v), `${dev.name}: maximum ${v} paths`)),
+      h('span', { class: 'small' }, 'Hash over'), select([['l3', 'Addresses (L3, Linux default)'], ['l4', 'Addresses and ports (L4)']], c.ecmpHash, v => upd(() => c.ecmpHash = v, `${dev.name}: ECMP hash ${v.toUpperCase()}`))),
+    h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'When several routes to a network are equally good (same prefix, same source, same metric), the router uses all of them. A hash over each packet picks the path, so a flow always stays on one path and its packets do not overtake each other.'));
+}
+
+function bfdEditor(dev, upd, rerender) {
+  const b = dev.cfg.bfd;
+  const on = h('input', { type: 'checkbox', checked: b.enabled ? true : null });
+  on.addEventListener('change', () => { upd(() => b.enabled = on.checked, `${dev.name}: BFD ${on.checked ? 'on' : 'off'}`); rerender?.(); });
+  const ospf = h('input', { type: 'checkbox', checked: b.ospf ? true : null });
+  ospf.addEventListener('change', () => upd(() => b.ospf = ospf.checked, `${dev.name}: BFD for OSPF ${ospf.checked ? 'on' : 'off'}`));
+  const t = dev.bfd?.table() || [];
+  return h('div', {},
+    h('label', { class: 'row', style: { fontSize: '.88rem' } }, on, 'BFD enabled'),
+    b.enabled ? h('div', {},
+      h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr', marginTop: '6px' } },
+        h('span', { class: 'small' }, 'Interval (ms)'), numInput(b.interval, 50, 10000, v => upd(() => b.interval = v ?? 300, `${dev.name}: BFD interval ${v} ms`)),
+        h('span', { class: 'small' }, 'Multiplier'), numInput(b.mult, 2, 50, v => upd(() => b.mult = v ?? 3, `${dev.name}: BFD multiplier ${v}`))),
+      h('label', { class: 'row small', style: { marginTop: '6px' } }, ospf, 'Watch the OSPF neighbors'),
+      h('p', { class: 'small muted', style: { margin: '4px 0 0' } }, 'Static routes get a BFD checkbox above. Both neighbors must run BFD.'),
+      t.length ? h('table', { class: 'rtable', style: { marginTop: '8px' } }, h('tr', {}, h('th', {}, 'Peer'), h('th', {}, 'Port'), h('th', {}, 'State')), t.map(x => h('tr', {}, h('td', {}, x.peer), h('td', {}, x.ifname), h('td', {}, x.state)))) : null) : null,
+    h('p', { class: 'small muted', style: { marginTop: '6px' } }, `Every ${b.interval || 300} ms a control packet; after ${(b.interval || 300) * (b.mult || 3)} ms without one the neighbor counts as gone.`));
+}
+
 function relayEditor(dev, upd) {
   const c = dev.cfg;
   const rows = ifaceNames(dev).filter(n => isIp(c.ifaces[n].ip));
@@ -556,7 +593,7 @@ export function tablesPanel(dev, sim) {
   };
   if (dev.l3) {
     box.append(h('h4', {}, 'Routing table'),
-      tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.dhcp ? 'DHCP' : (r.dev ? 'S' : 'S inactive')])));
+      tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.dhcp ? 'DHCP' : (r.dev ? (r.bfd ? 'S, BFD' : 'S') : r.bfdDown ? 'S, BFD down' : 'S inactive')])));
     box.append(h('h4', {}, 'ARP table'),
       tbl(['IP', 'MAC', 'dev', 'State'], dev.l3.arpTable().map(e => [e.ip, e.mac || '–', e.ifname, e.state])));
     if (dev.l3.pmtu.size) box.append(h('h4', {}, 'Learned path MTU'), tbl(['Destination', 'MTU'], [...dev.l3.pmtu].map(([k, v]) => [k, v])));
@@ -567,6 +604,7 @@ export function tablesPanel(dev, sim) {
     if (dev.cfg.dhcpServer?.enabled) box.append(h('h4', {}, 'DHCP leases handed out'), tbl(['IP', 'MAC', 'State'], [...dev.l3.dhcpLeases].map(([m, l]) => [l.ip, m, l.state])));
     if (dev.cfg.nat?.outside) box.append(h('h4', {}, 'NAT translations'), tbl(['Inside', 'Outside', 'Remote'], dev.l3.natTable.map(e => [`${e.inIp}:${e.inPort}`, `${e.outIp}:${e.outPort}`, `${e.remIp}:${e.remPort}`])));
     if (dev.vrrp?.groups.length) box.append(h('h4', {}, 'VRRP'), tbl(['Group', 'Port', 'Virtual IP', 'State', 'Prio'], dev.vrrp.table().map(g => [g.vrid, g.ifname, g.vip, g.state, g.prio])));
+    if (dev.bfd?.table().length) box.append(h('h4', {}, 'BFD sessions'), tbl(['Peer', 'Port', 'State', 'For'], dev.bfd.table().map(x => [x.peer, x.ifname, x.state, x.clients.join(', ')])));
     if (dev.ospf?.enabled) box.append(h('h4', {}, 'OSPF neighbors'), tbl(['Router ID', 'Address', 'Port', 'State'], dev.ospf.neighborTable().map(n => [n.rid, n.ip, n.ifname, n.state])));
     if (dev.cfg.services?.length) box.append(h('h4', {}, 'Listening services'), tbl(['Proto', 'Port', 'Service'], dev.cfg.services.map(s => [s.proto.toUpperCase(), s.port, s.name || ''])));
   }

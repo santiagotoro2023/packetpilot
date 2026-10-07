@@ -88,6 +88,11 @@ export const GLOSSARY = [
   ['packet loss', 'Packets that never arrive, in percent.'],
   ['loopback', 'A virtual interface that is always up, often used as a stable router address.'],
   ['ECMP', 'Equal-Cost Multi-Path: several equally good routes used at the same time.'],
+  ['BFD', 'Bidirectional Forwarding Detection: neighbors exchange tiny packets every few hundred milliseconds and report a dead neighbor to OSPF, BGP or static routes in under a second.'],
+  ['discriminator', 'A random number that identifies one BFD session on each side, so both routers know which session a packet belongs to.', ['discriminators']],
+  ['floating static route', 'A backup static route with a higher administrative distance; it only enters the routing table when the better route disappears.', ['floating static routes', 'floating route']],
+  ['hash policy', 'Which header fields a router feeds into the hash that picks one of several ECMP paths: layer 3 (addresses) or layer 4 (addresses, protocol and ports).'],
+  ['detection time', 'How long BFD waits without a packet before it declares the neighbor dead: interval × multiplier.'],
   ['RFC 1918', 'The standard that reserves 10/8, 172.16/12 and 192.168/16 for private networks.']
 ];
 

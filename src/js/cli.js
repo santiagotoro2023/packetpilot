@@ -29,6 +29,8 @@ export function helpFor(dev) {
     'ip link del eth1.10   delete a subinterface');
   l.push('ip link set <port> down|up   disconnect or reconnect the cable on this port');
   if (dev.type === 'router') l.push('show ip route         routing table in FRR style', 'sysctl net.ipv4.ip_forward=0|1',
+    'maximum-paths <n>     ECMP: how many equal paths are used (1 = off)', 'sysctl net.ipv4.fib_multipath_hash_policy=0|1   ECMP hash: addresses / with ports',
+    'show bfd peers        BFD sessions and their state',
     'show ip ospf neighbor / database / interface   OSPF state', 'show vrrp             VRRP groups and who is master', 'conntrack -L          NAT translations (also: show ip nat)');
   if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
   if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)');
@@ -134,10 +136,15 @@ export function runCommand(dev, line) {
           const key = `${net.net}/${net.len}`;
           dev.cfg.routes ??= [];
           if (act === 'add') {
-            const via = p[p.indexOf('via') + 1];
-            if (!isIp(via)) return say('Syntax: ip route add 10.0.0.0/24 via 192.168.1.1');
+            // Several next hops (ECMP): ip route add 10.0.0.0/24 nexthop via A nexthop via B
+            const vias = p.map((x, i) => x === 'via' ? p[i + 1] : null).filter(Boolean);
+            const via = vias[0];
+            if (!vias.length || !vias.every(isIp)) return say('Syntax: ip route add 10.0.0.0/24 via 192.168.1.1   (several: nexthop via A nexthop via B)');
             if (dev.cfg.routes.some(r => parseCidr(r.dst) && `${parseCidr(r.dst).net}/${parseCidr(r.dst).len}` === key)) return say('RTNETLINK answers: File exists');
-            dev.cfg.routes.push({ dst: key, via });
+            const di = p.findIndex(x => x === 'distance' || x === 'metric');
+            const distance = di >= 0 ? Number(p[di + 1]) : 1;
+            if (!(distance >= 1 && distance <= 255)) return say('The distance must be between 1 and 255.');
+            for (const v of vias) dev.cfg.routes.push({ dst: key, via: v, ...(distance !== 1 ? { distance } : {}), ...(p.includes('bfd') ? { bfd: true } : {}) });
             if (!dev.l3.routes().find(r => r.proto === 'S' && `${r.net}/${r.len}` === key)?.dev) say(`Note: next hop ${via} is not in any directly connected network, the route is inactive.`);
           } else {
             const before = dev.cfg.routes.length;
@@ -148,10 +155,19 @@ export function runCommand(dev, line) {
           sim.configChanged(dev.id);
           return say('OK');
         }
+        // Routes with several next hops (ECMP) are shown like Linux does: one line per nexthop
+        const groups = [];
         for (const r of dev.l3.routes()) {
-          if (r.proto === 'C') say(`${r.net}/${r.len} dev ${r.dev} proto kernel scope link src ${r.src}`);
-          else if (r.proto === 'O') say(`${r.net}/${r.len} via ${r.via} dev ${r.dev} proto ospf metric ${r.metric}`);
-          else say(`${r.len === 0 ? 'default' : r.net + '/' + r.len} via ${r.via}${r.dev ? ' dev ' + r.dev : '  (inactive: next hop unreachable)'}${r.dhcp ? ' proto dhcp' : ''}`);
+          const g = groups.find(x => x[0].proto === r.proto && x[0].net === r.net && x[0].len === r.len && r.proto !== 'C' && r.dev && x[0].dev);
+          if (g) g.push(r); else groups.push([r]);
+        }
+        for (const g of groups) {
+          const r = g[0], dst = r.len === 0 ? 'default' : r.net + '/' + r.len;
+          const proto = r.proto === 'O' ? ' proto ospf' : r.dhcp ? ' proto dhcp' : '';
+          if (r.proto === 'C') { say(`${dst} dev ${r.dev} proto kernel scope link src ${r.src}`); continue; }
+          if (g.length > 1) { say(`${dst}${proto}${r.metric ? ' metric ' + r.metric : ''}`); for (const x of g) say(`\tnexthop via ${x.via} dev ${x.dev} weight 1`); continue; }
+          if (!r.dev) { say(`${dst} via ${r.via}  (inactive: ${r.bfdDown ? 'BFD says the next hop is down' : 'next hop unreachable'})`); continue; }
+          say(`${dst} via ${r.via} dev ${r.dev}${proto}${r.metric ? ' metric ' + r.metric : ''}${r.bfd ? '  (BFD watched)' : ''}`);
         }
         return;
       }
@@ -349,16 +365,42 @@ export function runCommand(dev, line) {
     }
     if (p[0] === 'show' && p[1] === 'ip' && p[2] === 'route' && dev.l3) {
       say('Codes: C - connected, S - static, O - OSPF, > - selected route, * - FIB route');
-      const AD = { C: 0, S: 1, O: 110 };
+      const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, O: 110 }[r.proto];
       const all = dev.l3.routes();
-      const sel = r => !!r.dev && !all.some(x => x !== r && x.dev && x.net === r.net && x.len === r.len && AD[x.proto] < AD[r.proto]);
+      const sel = r => !!r.dev && !all.some(x => x !== r && x.dev && x.net === r.net && x.len === r.len && (ad(x) < ad(r) || (ad(x) === ad(r) && (x.metric || 0) < (r.metric || 0))));
+      let prev = null;
       for (const r of all) {
         const mark = sel(r) ? '>*' : '  ';
+        // Further next hops of the same route (ECMP) are indented like in FRR
+        const more = prev && prev.proto === r.proto && prev.net === r.net && prev.len === r.len && r.proto !== 'C';
+        const lead = more ? `  ${sel(r) ? '*' : ' '} ${' '.repeat(`${r.net}/${r.len}`.length + (r.proto === 'O' ? 9 : 6))}` : null;
         if (r.proto === 'C') say(`C${mark} ${r.net}/${r.len} is directly connected, ${r.dev}`);
-        else if (r.proto === 'O') say(`O${mark} ${r.net}/${r.len} [110/${r.metric}] via ${r.via}, ${r.dev}`);
-        else say(`S${mark} ${r.net}/${r.len} [1/0] via ${r.via}${r.dev ? ', ' + r.dev : ' inactive'}`);
+        else if (r.proto === 'O') say(more ? `${lead}via ${r.via}, ${r.dev}` : `O${mark} ${r.net}/${r.len} [110/${r.metric}] via ${r.via}, ${r.dev}`);
+        else say(more ? `${lead}via ${r.via}${r.dev ? ', ' + r.dev : ' inactive'}` : `S${mark} ${r.net}/${r.len} [${r.distance || 1}/0] via ${r.via}${r.dev ? ', ' + r.dev : r.bfdDown ? ' inactive (BFD down)' : ' inactive'}`);
+        prev = r;
       }
       return;
+    }
+    if (p[0] === 'show' && p[1] === 'bfd' && dev.bfd) {
+      const t = dev.bfd.table();
+      if (!dev.cfg.bfd?.enabled) return say('BFD is off. Turn it on under Configuration (Add a feature, BFD).');
+      if (!t.length) return say('No BFD peers. Mark a static route with BFD, or let BFD watch the OSPF neighbors.');
+      say(`${pad('Peer', 16)}${pad('Interface', 11)}${pad('State', 7)}${pad('For', 14)}Discriminators`);
+      for (const x of t) say(`${pad(x.peer, 16)}${pad(x.ifname, 11)}${pad(x.state, 7)}${pad(x.clients.join(', '), 14)}${x.myDisc}/${x.yourDisc || 0}`);
+      say(`Interval ${dev.bfd.interval} ms × ${dev.bfd.mult} = detection after ${dev.bfd.interval * dev.bfd.mult} ms`);
+      return;
+    }
+    if (p[0] === 'maximum-paths' && dev.type === 'router') {
+      const n = Number(p[1]);
+      if (!(n >= 1 && n <= 16)) return say('Syntax: maximum-paths <1-16>   (1 turns ECMP off)');
+      dev.cfg.maxPaths = n; sim.record(dev, 'info', `ECMP: up to ${n} equal path${n === 1 ? '' : 's'}`, { tag: 'ecmp-config', data: { maxPaths: n } }); sim.configChanged(dev.id); return say('OK');
+    }
+    if (p[0] === 'sysctl' && dev.type === 'router' && /fib_multipath_hash_policy/.test(cmd)) {
+      const m = cmd.match(/fib_multipath_hash_policy\s*=\s*([01])/);
+      if (!m) return say(`net.ipv4.fib_multipath_hash_policy = ${dev.cfg.ecmpHash === 'l4' ? 1 : 0}`);
+      dev.cfg.ecmpHash = m[1] === '1' ? 'l4' : 'l3';
+      sim.record(dev, 'info', `ECMP hash over ${m[1] === '1' ? 'addresses and ports (layer 4)' : 'the addresses only (layer 3)'}`, { tag: 'ecmp-config', data: { hash: dev.cfg.ecmpHash } });
+      sim.configChanged(dev.id); return say(`net.ipv4.fib_multipath_hash_policy = ${m[1]}`);
     }
     if (p[0] === 'sysctl' && dev.type === 'router') {
       const m = cmd.match(/ip_forward\s*=\s*([01])/);

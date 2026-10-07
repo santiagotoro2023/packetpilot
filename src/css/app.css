@@ -556,3 +556,5 @@ svg.net .lnk-g.trace .lnk { stroke: var(--l-vxlan); stroke-width: 3.2; }
 .ctx-item svg .dv-screen { fill: color-mix(in srgb, var(--l-eth) 18%, var(--panel)); }
 .ctx-item svg .dv-led { fill: var(--l-ip); }
 svg.net .pkt text.side { text-anchor: start; }
+.fb-grp { font-size: .74rem; font-weight: 650; color: var(--ink-3); margin: 6px 0 -2px; text-transform: uppercase; letter-spacing: .04em; }
+.fb-grp:first-child { margin-top: 0; }

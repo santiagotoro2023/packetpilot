@@ -7,12 +7,12 @@ import m6 from './m6.js';
 import m7 from './m7.js';
 import m8 from './m8.js';
 import m9 from './m9.js';
+import m10 from './m10.js';
 
 // Display order: all of layer 2, then layer 3, VLAN/VXLAN, transport, then the network services
-export const MODULES = [m1, m4, m2, m3, m5, m6, m7, m8, m9];
+export const MODULES = [m1, m4, m2, m3, m5, m6, m7, m8, m9, m10];
 export const UPCOMING = [
   { title: 'IPv6', text: 'Addresses, Neighbor Discovery instead of ARP, SLAAC and dual stack.' },
-  { title: 'ECMP and BFD', text: 'Several equally good paths, load balancing via hashes, and failure detection in milliseconds.' },
   { title: 'DNS in depth', text: 'The DNS hierarchy, recursive resolution and caching.' },
   { title: 'VPN', text: 'WireGuard and IPsec between sites, MTU with a double envelope.' },
   { title: 'BGP and EVPN', text: 'Routing between networks and a real control plane for VXLAN.' }

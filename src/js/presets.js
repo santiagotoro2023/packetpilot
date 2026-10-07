@@ -67,6 +67,12 @@ export const PRESETS = [
   { id: 'rstp', title: 'Rapid spanning tree', topics: ['RSTP', 'Proposal/agreement', 'Fast failover'],
     text: 'The triangle with RSTP and the standard timers. Ports between switches are negotiated in milliseconds, a cable cut costs no ping.',
     make: () => stpTriangle({ enabled: true, rootPrio: 4096, timers: 'standard', edge: true, mode: 'rstp' }) },
+  { id: 'ecmp', title: 'Two equal paths (ECMP)', topics: ['ECMP', 'OSPF', 'Load balancing'],
+    text: 'r1 reaches the server over two paths with the same cost and uses both. Compare the L3 and the L4 hash.',
+    make: () => ecmpTopo() },
+  { id: 'bfd', title: 'Provider link with BFD', topics: ['BFD', 'OSPF', 'Failover'],
+    text: 'The primary path runs through a provider switch. Set the loss of its cable to 100 % and compare OSPF alone with OSPF plus BFD.',
+    make: () => bfdTopo({ bfd: ['r1', 'r2', 'r3'] }) },
   { id: 'stpsquare', title: 'Four switches in a ring', topics: ['STP', 'Port costs', 'Port roles'],
     text: 'Which port blocks, and how do you move it with port costs?',
     make: () => stpSquare() },
@@ -267,4 +273,45 @@ export function vrrpTopo({ vrrpB = true, prioB = 100 } = {}) {
   [link('pc1', 'eth1', 'sw1', 'eth1'), link('pc2', 'eth1', 'sw1', 'eth2'), link('ra', 'eth1', 'sw1', 'eth7'), link('rb', 'eth1', 'sw1', 'eth8'),
     link('ra', 'eth2', 'core', 'eth1'), link('rb', 'eth2', 'core', 'eth2'), link('core', 'eth3', 'srv', 'eth1')],
   [{ x: 20, y: 40, w: 410, h: 470, label: 'LAN 10.0.0.0/24, gateway 10.0.0.1 (virtual)', color: 'orange' }]);
+}
+
+// -------------------------------------------------------------- ECMP and BFD
+/** A diamond: two equal paths r1 → r2 → r4 and r1 → r3 → r4 */
+export function ecmpTopo({ hash = 'l3', maxPaths = 4 } = {}) {
+  const r = (name, x, y, ifaces, lan) => {
+    const d = router(name, x, y, ifaces, [], { maxPaths, ecmpHash: hash });
+    d.ospf = ospfOn(Object.fromEntries(Object.keys(ifaces).map(k => [k, k === lan ? { passive: true } : {}])));
+    return d;
+  };
+  const srv = server('srv', 940, 250, '10.4.0.10', 24, '10.4.0.1');
+  srv.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  return topo('Two equal paths (ECMP)', [
+    host('c1', 70, 150, '10.1.0.10', 24, '10.1.0.1'), host('c2', 70, 350, '10.1.0.11', 24, '10.1.0.1'), sw('sw1', 200, 250),
+    r('r1', 370, 250, { eth1: '10.0.12.1/24', eth2: '10.0.13.1/24', eth3: '10.1.0.1/24' }, 'eth3'),
+    r('r2', 570, 110, { eth1: '10.0.12.2/24', eth2: '10.0.24.2/24' }),
+    r('r3', 570, 390, { eth1: '10.0.13.3/24', eth2: '10.0.34.3/24' }),
+    r('r4', 770, 250, { eth1: '10.0.24.4/24', eth2: '10.0.34.4/24', eth3: '10.4.0.1/24' }, 'eth3'), srv],
+  [link('c1', 'eth1', 'sw1', 'eth1'), link('c2', 'eth1', 'sw1', 'eth2'), link('sw1', 'eth8', 'r1', 'eth3'),
+    link('r1', 'eth1', 'r2', 'eth1'), link('r1', 'eth2', 'r3', 'eth1'), link('r2', 'eth2', 'r4', 'eth1'), link('r3', 'eth2', 'r4', 'eth2'), link('r4', 'eth3', 'srv', 'eth1')],
+  [{ x: 300, y: 40, w: 560, h: 420, label: 'Two paths with the same OSPF cost', color: 'green' }]);
+}
+/** Primary path through a provider switch (the link stays up when the far side fails), backup via r3 */
+export function bfdTopo({ bfd = [], timers = 'standard' } = {}) {
+  const on = name => bfd.includes(name);
+  const r = (name, x, y, ifaces, costs, lan) => {
+    const d = router(name, x, y, ifaces);
+    d.ospf = ospfOn(Object.fromEntries(Object.keys(ifaces).map(k => [k, { cost: costs[k] || 10, ...(k === lan ? { passive: true } : {}) }])), { timers });
+    d.bfd = { enabled: on(name), interval: 300, mult: 3, ospf: on(name) };
+    return d;
+  };
+  return topo('Provider link and a backup path', [
+    host('pc1', 70, 250, '10.1.0.10', 24, '10.1.0.1'),
+    r('r1', 250, 250, { eth1: '10.0.12.1/24', eth2: '10.0.13.1/24', eth3: '10.1.0.1/24' }, { eth2: 30 }, 'eth3'),
+    sw('prov', 470, 120),
+    r('r2', 690, 250, { eth1: '10.0.12.2/24', eth2: '10.0.23.2/24', eth3: '10.2.0.1/24' }, { eth2: 30 }, 'eth3'),
+    r('r3', 470, 420, { eth1: '10.0.13.3/24', eth2: '10.0.23.3/24' }, {}),
+    server('srv', 880, 250, '10.2.0.10', 24, '10.2.0.1')],
+  [link('pc1', 'eth1', 'r1', 'eth3'), link('r1', 'eth1', 'prov', 'eth1'), link('prov', 'eth2', 'r2', 'eth1'),
+    link('r1', 'eth2', 'r3', 'eth1'), link('r3', 'eth2', 'r2', 'eth2'), link('r2', 'eth3', 'srv', 'eth1')],
+  [{ x: 380, y: 40, w: 180, h: 150, label: 'Provider network', color: 'gray' }]);
 }

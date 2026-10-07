@@ -1,8 +1,9 @@
 // PacketPilot simulation engine: event-driven, no DOM
 import { BCAST, VXLAN_PORT, PROTO, STP_MAC, isGroupMac, macFor, inNet, parseCidr, isIp,
-  netOf, intToIp, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp } from './net.js';
+  netOf, intToIp, ipToInt, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp } from './net.js';
+const ipCmp = (a, b) => (ipToInt(a) ?? 0) - (ipToInt(b) ?? 0);
 import { ethFrame, arpPacket, ipPacket, icmp, udp, tcp, ipChecksum, summary, icmpName, fmtBid } from './packets.js';
-import { dhcpOn67, natIn, natOut, Vrrp, Ospf, DHCP_TIMING, vrrpMac } from './services.js';
+import { dhcpOn67, natIn, natOut, Vrrp, Ospf, Bfd, BFD_PORT, DHCP_TIMING, vrrpMac } from './services.js';
 
 export const PORTS = {
   pc: ['eth1'], server: ['eth1'],
@@ -172,9 +173,17 @@ export class Sim {
 }
 
 /** Periodic control frames that would flood the log: VRRP advertisements and OSPF hellos */
+/** Hash for ECMP: l3 like Linux by default (addresses only), l4 adds protocol and ports */
+export function flowHash(ip, policy = 'l3') {
+  const l4 = ip.l4 || {};
+  const key = policy === 'l4' ? `${ip.src}|${ip.dst}|${ip.proto}|${l4.sport ?? l4.ident ?? 0}|${l4.dport ?? 0}` : `${ip.src}|${ip.dst}`;
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
+  return (h >>> 0) % 9973;
+}
 export function isHello(f) {
   const l4 = f?.type === 'ipv4' ? f.payload.l4 : null;
-  return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello'));
+  return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello') || (l4.kind === 'udp' && l4.payload?.kind === 'bfd'));
 }
 export function traceOf(f) {
   if (!f || f.type !== 'ipv4') return null;
@@ -201,6 +210,9 @@ export function normalizeDevice(cfg) {
     cfg.vrrp ??= [];
     cfg.nat = { outside: '', masquerade: true, forwards: [], ...(cfg.nat || {}) };
     cfg.ospf = { enabled: false, timers: 'fast', rid: '', ...(cfg.ospf || {}) };
+    cfg.bfd = { enabled: false, interval: 300, mult: 3, ospf: false, ...(cfg.bfd || {}) };
+    cfg.maxPaths ??= 4;
+    cfg.ecmpHash ??= 'l3';
     cfg.ospf.ifaces ??= {};
   }
   if (t === 'router' || t === 'server') cfg.dhcpServer = { enabled: false, pools: [], ...(cfg.dhcpServer || {}) };
@@ -305,21 +317,40 @@ class L3 {
       const p = parseCidr(r.dst);
       if (!p || !isIp(r.via)) continue;
       const nh = out.find(c => c.proto === 'C' && inNet(r.via, c.net, c.len));
-      out.push({ net: p.net, len: p.len, via: r.via, dev: nh ? nh.dev : null, proto: 'S', active: !!nh, auto: r.auto, dhcp: r.dhcp });
+      // A static route watched by BFD only counts while the BFD session to its next hop is up
+      const bfdDown = !!r.bfd && !this.dev.bfd?.isUp(r.via);
+      out.push({ net: p.net, len: p.len, via: r.via, dev: nh && !bfdDown ? nh.dev : null, proto: 'S', active: !!nh && !bfdDown, bfd: !!r.bfd, bfdDown, auto: r.auto, dhcp: r.dhcp,
+        distance: Number(r.distance) > 0 ? Number(r.distance) : 1 });
     }
     for (const r of this.dev.ospf?.routes || []) out.push({ net: r.net, len: r.len, via: r.via, dev: r.dev, proto: 'O', metric: r.cost });
     return out;
   }
-  lookup(dst) {
-    // Longest prefix first, then the administrative distance: connected 0, static 1, OSPF 110
-    const AD = { C: 0, S: 1, O: 110 };
-    let best = null;
+  /** All equally good routes to dst: longest prefix, then the administrative distance
+   *  (connected 0, static 1, OSPF 110), then the metric */
+  lookupAll(dst) {
+    // A static route can carry its own distance (a "floating" backup route, e.g. 200)
+    const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, O: 110 }[r.proto] ?? 255;
+    let best = [];
+    const better = (a, b) => a.len !== b.len ? a.len > b.len : ad(a) !== ad(b) ? ad(a) < ad(b) : (a.metric || 0) < (b.metric || 0);
     for (const r of this.routes()) {
       if (r.proto === 'S' && !r.dev) continue;
       if (!inNet(dst, r.net, r.len)) continue;
-      if (!best || r.len > best.len || (r.len === best.len && AD[r.proto] < AD[best.proto])) best = r;
+      if (!best.length || better(r, best[0])) best = [r];
+      else if (!better(best[0], r) && !best.some(b => b.via === r.via && b.dev === r.dev)) best.push(r);
     }
-    return best;
+    return best.sort((a, b) => ipCmp(a.via || '0.0.0.0', b.via || '0.0.0.0') || a.dev.localeCompare(b.dev));
+  }
+  /** One route for a packet. With several equal routes (ECMP) a hash over the flow picks
+   *  one, so all packets of a flow take the same path */
+  lookup(dst, pkt) {
+    const all = this.lookupAll(dst);
+    if (!all.length) return null;
+    const max = Math.max(1, Number(this.cfg.maxPaths ?? 4));
+    const cand = all.slice(0, max);
+    if (cand.length === 1) return cand[0];
+    if (!pkt) return cand[0];
+    const h = flowHash(pkt, this.cfg.ecmpHash === 'l4' ? 'l4' : 'l3');
+    return { ...cand[h % cand.length], ecmp: cand.length, hash: this.cfg.ecmpHash === 'l4' ? 'l4' : 'l3' };
   }
   srcFor(dst) {
     const r = this.lookup(dst);
@@ -330,7 +361,7 @@ class L3 {
   // ---- Sending
   output(pkt, ctx = {}) {
     if (this.isOwn(pkt.dst)) { this.sim.schedule(0.01, () => this.deliver(pkt, 'lo')); return { ok: true }; }
-    const r = this.lookup(pkt.dst);
+    const r = this.lookup(pkt.dst, pkt);
     if (!r) {
       if (ctx.forwarded) {
         this.dev.record('drop', `no route to ${pkt.dst}, sends ICMP Network Unreachable to ${pkt.src}`, { tag: 'no-route', data: { dst: pkt.dst } });
@@ -579,7 +610,7 @@ class L3 {
       this.icmpError(ip, 11, 0);
       return;
     }
-    const r = this.lookup(ip.dst);
+    const r = this.lookup(ip.dst, ip);
     const out = clone(ip);
     out.ttl = ip.ttl - 1;
     const clamp = Number(this.cfg.mssClamp || 0);
@@ -590,8 +621,9 @@ class L3 {
     const nat = this.cfg.nat;
     if (nat?.outside && r?.dev === nat.outside && inIf !== nat.outside) natOut(this, out, frame);
     out.checksum = ipChecksum(out);
-    if (r) this.dev.record('fwd', `forwards ${ip.src} > ${ip.dst}: route ${r.net}/${r.len}${r.via ? ' via ' + r.via : ' direct'} out ${r.dev}, TTL ${ip.ttl} → ${out.ttl}`,
-      { frame, tag: 'forwarded', data: { dst: ip.dst, route: `${r.net}/${r.len}`, from: inIf, to: r.dev } });
+    const ecmp = r?.ecmp ? ` (ECMP: ${r.ecmp} equal paths, the ${r.hash === 'l4' ? 'hash over addresses and ports' : 'hash over the addresses'} picks this one)` : '';
+    if (r) this.dev.record('fwd', `forwards ${ip.src} > ${ip.dst}: route ${r.net}/${r.len}${r.via ? ' via ' + r.via : ' direct'} out ${r.dev}, TTL ${ip.ttl} → ${out.ttl}${ecmp}`,
+      { frame, tag: 'forwarded', data: { dst: ip.dst, route: `${r.net}/${r.len}`, from: inIf, to: r.dev, via: r.via, ecmp: r.ecmp || 0 } });
     this.output(out, { forwarded: true, inIf });
   }
   icmpError(orig, type, code, extra = {}) {
@@ -652,6 +684,7 @@ class L3 {
     }
     if (l4.kind === 'tcp') return this.onTcp(ip, frame);
     if (l4.kind === 'udp') {
+      if (l4.dport === BFD_PORT && l4.payload?.kind === 'bfd') { this.dev.bfd?.onPacket(ip); return; }
       if (l4.dport === 67 && l4.payload?.kind === 'dhcp' && dhcpOn67(this, ip, ifname, frame)) return;
       if (this.dev.onUdp?.(ip, ifname, frame)) return;
       for (const s of [...this.sessions]) if (s.onUdp?.(ip)) return;
@@ -1170,20 +1203,23 @@ class Router extends Host {
   // VRRP and OSPF only restart when their own settings change, not on every configuration change
   start() {
     super.start();
-    this.vrrp?.stop(); this.ospf?.stop();
+    this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop();
+    this.bfd = new Bfd(this);
     this.vrrp = new Vrrp(this); this.vrrp.start(); this.vrrpSnap = JSON.stringify(this.cfg.vrrp);
     this.ospf = new Ospf(this); this.ospf.start(); this.ospfSnap = JSON.stringify(this.cfg.ospf);
+    this.bfd.start(); this.bfdSnap = JSON.stringify(this.cfg.bfd);
     this.addrSnap = JSON.stringify(this.l3.ifaces());
   }
-  stop() { this.vrrp?.stop(); this.ospf?.stop(); }
+  stop() { this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop(); }
   onConfig() {
-    const v = JSON.stringify(this.cfg.vrrp), o = JSON.stringify(this.cfg.ospf), a = JSON.stringify(this.l3.ifaces());
+    const v = JSON.stringify(this.cfg.vrrp), o = JSON.stringify(this.cfg.ospf), a = JSON.stringify(this.l3.ifaces()), b = JSON.stringify(this.cfg.bfd);
+    if (b !== this.bfdSnap) { this.bfdSnap = b; this.bfd.start(); } else this.bfd.sync();
     if (v !== this.vrrpSnap) { this.vrrpSnap = v; this.vrrp.start(); }
     if (o !== this.ospfSnap) { this.ospfSnap = o; this.ospf.start(); }
     else if (a !== this.addrSnap) this.ospf.originate();
     this.addrSnap = a;
   }
-  onLink(ifname, up) { this.vrrp?.onLink(ifname, up); this.ospf?.onLink(ifname, up); }
+  onLink(ifname, up) { this.bfd?.onLink(ifname, up); this.vrrp?.onLink(ifname, up); this.ospf?.onLink(ifname, up); }
 }
 
 // ---------------------------------------------------------------- DHCP client (DORA)

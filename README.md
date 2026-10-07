@@ -59,7 +59,7 @@ Each browser stores progress, partial answers (including the network you edited 
 
 ## What's inside
 
-**Course with nine modules and 48 lessons**
+**Course with ten modules and 52 lessons**
 
 | Module | Contents |
 |---|---|
@@ -72,6 +72,7 @@ Each browser stores progress, partial answers (including the network you edited 
 | 7. NAT | Private addresses, masquerading (PAT) and the translation table in the lab, port forwarding |
 | 8. Dynamic routing with OSPF | How link-state routing works (hellos, LSAs, SPF), turning OSPF on, failover and costs, neighbors that don't get along |
 | 9. VRRP | One gateway address shared by two routers, failover in the lab, configuring the second router (priority, preemption) |
+| 10. ECMP and BFD | Equal-cost multipath with per-flow hashing (layer 3 and layer 4 hash policy), maximum paths, failover of one path; BFD sessions (Down, Init, Up, discriminators, detection time), BFD for OSPF and static routes, measuring failover through a provider switch |
 
 Theory terms are underlined quietly: hovering, focusing or tapping one shows a short explanation from the glossary. Theory pages can be printed or saved as a PDF, one lesson or any selection of modules (print button on a lesson, or **Print theory** on the home page).
 
@@ -79,7 +80,7 @@ Exercise types: theory, quizzes with explanations, labeling headers by drag and 
 
 **Fix it: troubleshooting challenges**
 
-Twelve broken networks in three levels, each with a symptom, goals, hints and a timer: wrong gateway, missing return route, broadcast storm, slow RSTP failover, VLAN trunk, DHCP relay, NAT, DNS, OSPF, VRRP failover, a slow lossy link and the MTU blackhole. Every challenge has several variants with different causes, so it can be played more than once. Your best time is saved.
+Fourteen broken networks in three levels, each with a symptom, goals, hints and a timer: wrong gateway, missing return route, broadcast storm, slow RSTP failover, VLAN trunk, DHCP relay, NAT, DNS, OSPF, an idle ECMP path, BFD that does not speed anything up, VRRP failover, a slow lossy link and the MTU blackhole. Every challenge has several variants with different causes, so it can be played more than once. Your best time is saved.
 
 **Subnets: subnetting trainer**
 
@@ -90,7 +91,7 @@ Endless random questions in five kinds (network and broadcast, prefix and mask, 
 - Network diagram editor: PCs, servers, switches, routers and VTEPs by drag and drop, cables with the K key
 - **Areas** for organizing: colored, labeled rectangles that can be moved (devices inside move along) and resized
 - Simulation of Ethernet, 802.1Q, ARP (including gratuitous ARP, ARP probe and Neighbor Unreachability Detection), MAC learning, **spanning tree (802.1D)** with root election, roles, states, timers, PortFast and topology change, **rapid spanning tree (802.1w)** with proposal/agreement, alternate and backup ports, topology change flooding and fallback to classic STP neighbors, detection of loops and broadcast storms, IPv4 forwarding, static routing, **router subinterfaces**, ICMP, fragmentation and Path MTU Discovery, **UDP, DNS and TCP** (handshake, segmentation by MSS, RST, timeouts, retransmission after PMTUD), rules on routers (allow, drop, reject, with protocol and port), MSS clamping and VXLAN with head-end replication and flood and learn
-- **DHCP** server and relay, clients with static or DHCP addresses; **NAT** with masquerading and port forwards; **OSPF** (single area, cost, passive interfaces, fast or standard timers); **VRRP** with priority and preemption
+- **DHCP** server and relay, clients with static or DHCP addresses; **NAT** with masquerading and port forwards; **OSPF** (single area, cost, passive interfaces, fast or standard timers); **VRRP** with priority and preemption; **ECMP** (per-flow hash over layer 3 or layer 4, maximum paths) for OSPF and static routes with several next hops, floating static routes with their own distance; **BFD** for OSPF neighbors and static routes
 - **Line quality per cable**: latency in milliseconds and packet loss in percent, with TCP retransmissions (exponential backoff, duplicate ACKs) you can watch
 - Services per server (TCP and UDP, freely chosen ports) and DNS records, DNS server per host
 - Slow motion with a speed slider (remembered), pause, single step and fast-forward, BPDUs and hellos can be shown or hidden

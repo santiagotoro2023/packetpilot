@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 2.2.0
+#  PacketPilot 2.3.0
 #  Understand networks by watching every packet.
 #
 #  Installs the learning web app on Debian 12 (Bookworm) or 13 (Trixie):
@@ -31,7 +31,7 @@
 # =============================================================================
 set -euo pipefail
 
-PP_VERSION="2.2.0"
+PP_VERSION="2.3.0"
 PP_PORT="8080"
 PP_ROOT="/opt/packetpilot"
 PP_WWW="${PP_ROOT}/www"
@@ -665,6 +665,8 @@ svg.net .lnk-g.trace .lnk { stroke: var(--l-vxlan); stroke-width: 3.2; }
 .ctx-item svg .dv-screen { fill: color-mix(in srgb, var(--l-eth) 18%, var(--panel)); }
 .ctx-item svg .dv-led { fill: var(--l-ip); }
 svg.net .pkt text.side { text-anchor: start; }
+.fb-grp { font-size: .74rem; font-weight: 650; color: var(--ink-3); margin: 6px 0 -2px; text-transform: uppercase; letter-spacing: .04em; }
+.fb-grp:first-child { margin-top: 0; }
 __PACKETPILOT_FILE_END__
   cat > "$W/index.html" <<'__PACKETPILOT_FILE_END__'
 <!doctype html>
@@ -1145,7 +1147,7 @@ __PACKETPILOT_FILE_END__
   cat > "$W/js/challenges.js" <<'__PACKETPILOT_FILE_END__'
 // Troubleshooting challenges: a network with a hidden fault, a symptom and a goal.
 // Every challenge has several variants with a different cause, one is picked at random.
-import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo } from './presets.js';
+import { PRESETS, chainTopo, vlanTopo, tcpPathTopo, dhcpTopo, natTopo, ospfTopo, vrrpTopo, stpTriangle, stpSquare, servicesTopo, bfdTopo, ecmpTopo } from './presets.js';
 import { macFor } from './net.js';
 
 const preset = id => PRESETS.find(p => p.id === id).make();
@@ -1166,6 +1168,18 @@ const fastFailover = sim => sim.log.some(cut => {
   const d = sim.log.find(e => e.tag === 'ping-done' && e.dev === 'pc1' && e.data.dst === '10.0.0.3' && e.seq > cut.seq && e.t - e.data.sent * 1000 - 1500 < cut.t);
   return moved && !!d && d.data.sent - d.data.received <= 1;
 });
+
+// pc1 kept pinging while BFD on r1 declared a neighbor dead, and lost at most two replies.
+// BFD hellos fill the capped log fast, so the moments are remembered per simulation.
+const bfdDowns = new WeakMap();
+const bfdFailover = sim => {
+  const seen = bfdDowns.get(sim) || new Set(); bfdDowns.set(sim, seen);
+  for (const e of sim.log) if (e.tag === 'bfd-state' && e.dev === 'r1' && e.data?.state === 'Down') seen.add(e.t);
+  return sim.log.some(d => d.tag === 'ping-done' && d.dev === 'pc1' && d.data.sent >= 5 && d.data.sent - d.data.received <= 2
+    && [...seen].some(t => t < d.t && t > d.t - d.data.sent * 1000 - 1500));
+};
+// r1 has (at least) two next hops for the server network
+const ecmpPaths = sim => (sim.dev('r1')?.l3?.lookupAll('10.4.0.10') || []).length >= 2 && Number(sim.dev('r1').cfg.maxPaths ?? 4) >= 2;
 
 export const LEVELS = { 1: 'Easy', 2: 'Medium', 3: 'Hard' };
 
@@ -1211,6 +1225,29 @@ export const CHALLENGES = [
     goals: [{ text: 'Cut the cable on the root port of sw3 while pc1 pings pc3 (10.0.0.3). The ping loses at most one reply.', check: fastFailover }],
     hints: ['Find the root port of sw3 with show spanning-tree, then cut that cable during a long ping.', 'Look for "Peer(STP)" in show spanning-tree and for "falls back to STP" in the log.'],
     presets: { pc1: ['ping -c 40 10.0.0.3'], sw3: ['show spanning-tree', 'ip link set eth1 down', 'ip link set eth2 down'], sw2: ['show spanning-tree'], sw4: ['show spanning-tree'] } },
+
+  { id: 'ecmp', level: 2, title: 'The second path sits idle', topics: ['ECMP', 'OSPF'],
+    symptom: '<p>The company paid for a second path to the server network via r3, so r1 can spread the load over r2 and r3. The monitoring shows that r3 carries no traffic at all, every flow goes via r2.</p>',
+    topo: () => ecmpTopo(),
+    variants: [
+      { fault: t => { dev(t, 'r1').maxPaths = 1; }, cause: 'r1 was limited to one path (maximum-paths 1). OSPF found two equal routes, but r1 only installed one of them.' },
+      { fault: t => { dev(t, 'r1').ospf.ifaces.eth2.cost = 20; }, cause: 'The OSPF cost of eth2 on r1 was 20 instead of 10. The path via r3 cost 40 instead of 30, so it was no longer equal, and ECMP only uses equal paths.' },
+      { fault: t => { dev(t, 'r3').ospf.ifaces.eth2.cost = 15; }, cause: 'r3 had cost 15 on its link to r4. The difference was two hops away from r1, but it still made the path via r3 more expensive (35 against 30).' }],
+    goals: [{ text: 'r1 has two next hops for 10.4.0.0/24 in its routing table.', check: ecmpPaths },
+      { text: 'c1 and c2 still reach the server (10.4.0.10).', check: sim => pingAfterStart('c1', '10.4.0.10')(sim) && pingAfterStart('c2', '10.4.0.10')(sim) }],
+    hints: ['show ip route on r1: how many next hops does 10.4.0.0/24 have? show ip ospf interface shows the costs.', 'Add up the costs of both paths. ECMP needs exactly the same total, and r1 must be allowed to use more than one path (Load balancing).'],
+    presets: { r1: ['show ip route', 'show ip ospf interface'], r3: ['show ip ospf interface'], c1: ['ping -c 1 10.4.0.10'], c2: ['ping -c 1 10.4.0.10'] } },
+
+  { id: 'bfd', level: 3, title: 'BFD is set up, but nothing is faster', topics: ['BFD', 'OSPF', 'Failover'],
+    symptom: '<p>Last month the team set up BFD between r1 and r2 so a dying provider link is noticed in under a second. Yesterday the provider silently dropped all traffic again, and pc1 still lost the server for 40 seconds.</p>',
+    topo: () => bfdTopo({ bfd: ['r1', 'r2'] }),
+    variants: [
+      { fault: t => { dev(t, 'r2').bfd.enabled = false; }, cause: 'BFD was only turned on on r1. A BFD session needs both neighbors: r1 kept sending, nobody answered, the session never left Down, so nothing watched the provider link.' },
+      { fault: t => { dev(t, 'r1').bfd.ospf = false; dev(t, 'r2').bfd.ospf = false; }, cause: 'BFD was enabled on both routers, but nobody used it: "Watch the OSPF neighbors" was off, so no session was ever created. BFD only helps its clients.' },
+      { fault: t => { dev(t, 'r2').bfd = { enabled: false, interval: 300, mult: 3, ospf: false }; dev(t, 'r3').bfd = { enabled: true, interval: 300, mult: 3, ospf: true }; }, cause: 'BFD was configured on r1 and r3 instead of r1 and r2. The session that mattered, across the provider switch, never existed.' }],
+    goals: [{ text: 'While pc1 pings the server (10.2.0.10), set the loss of the cable prov–r2 to 100 %. The ping loses at most two replies.', check: bfdFailover }],
+    hints: ['show bfd peers on r1 and r2: which sessions exist, and in which state?', 'BFD is under Configuration, Add a feature, BFD. It needs both neighbors and "Watch the OSPF neighbors".'],
+    presets: { pc1: ['ping -c 60 10.2.0.10'], r1: ['show bfd peers', 'show ip ospf neighbor'], r2: ['show bfd peers'], r3: ['show bfd peers'] } },
 
   { id: 'vlan', level: 2, title: 'VLAN 20 is cut in half', topics: ['VLAN', 'Trunk'],
     symptom: '<p>a10 and b10 in VLAN 10 work. a20 and b20 in VLAN 20 cannot reach each other, even though they are in the same VLAN.</p>',
@@ -1342,6 +1379,8 @@ export function helpFor(dev) {
     'ip link del eth1.10   delete a subinterface');
   l.push('ip link set <port> down|up   disconnect or reconnect the cable on this port');
   if (dev.type === 'router') l.push('show ip route         routing table in FRR style', 'sysctl net.ipv4.ip_forward=0|1',
+    'maximum-paths <n>     ECMP: how many equal paths are used (1 = off)', 'sysctl net.ipv4.fib_multipath_hash_policy=0|1   ECMP hash: addresses / with ports',
+    'show bfd peers        BFD sessions and their state',
     'show ip ospf neighbor / database / interface   OSPF state', 'show vrrp             VRRP groups and who is master', 'conntrack -L          NAT translations (also: show ip nat)');
   if (dev.cfg.dhcpServer) l.push('show ip dhcp binding  addresses handed out by the DHCP server');
   if (dev.type === 'pc' || dev.type === 'server') l.push('dhclient [eth1]       ask for an address via DHCP (-r releases it)');
@@ -1447,10 +1486,15 @@ export function runCommand(dev, line) {
           const key = `${net.net}/${net.len}`;
           dev.cfg.routes ??= [];
           if (act === 'add') {
-            const via = p[p.indexOf('via') + 1];
-            if (!isIp(via)) return say('Syntax: ip route add 10.0.0.0/24 via 192.168.1.1');
+            // Several next hops (ECMP): ip route add 10.0.0.0/24 nexthop via A nexthop via B
+            const vias = p.map((x, i) => x === 'via' ? p[i + 1] : null).filter(Boolean);
+            const via = vias[0];
+            if (!vias.length || !vias.every(isIp)) return say('Syntax: ip route add 10.0.0.0/24 via 192.168.1.1   (several: nexthop via A nexthop via B)');
             if (dev.cfg.routes.some(r => parseCidr(r.dst) && `${parseCidr(r.dst).net}/${parseCidr(r.dst).len}` === key)) return say('RTNETLINK answers: File exists');
-            dev.cfg.routes.push({ dst: key, via });
+            const di = p.findIndex(x => x === 'distance' || x === 'metric');
+            const distance = di >= 0 ? Number(p[di + 1]) : 1;
+            if (!(distance >= 1 && distance <= 255)) return say('The distance must be between 1 and 255.');
+            for (const v of vias) dev.cfg.routes.push({ dst: key, via: v, ...(distance !== 1 ? { distance } : {}), ...(p.includes('bfd') ? { bfd: true } : {}) });
             if (!dev.l3.routes().find(r => r.proto === 'S' && `${r.net}/${r.len}` === key)?.dev) say(`Note: next hop ${via} is not in any directly connected network, the route is inactive.`);
           } else {
             const before = dev.cfg.routes.length;
@@ -1461,10 +1505,19 @@ export function runCommand(dev, line) {
           sim.configChanged(dev.id);
           return say('OK');
         }
+        // Routes with several next hops (ECMP) are shown like Linux does: one line per nexthop
+        const groups = [];
         for (const r of dev.l3.routes()) {
-          if (r.proto === 'C') say(`${r.net}/${r.len} dev ${r.dev} proto kernel scope link src ${r.src}`);
-          else if (r.proto === 'O') say(`${r.net}/${r.len} via ${r.via} dev ${r.dev} proto ospf metric ${r.metric}`);
-          else say(`${r.len === 0 ? 'default' : r.net + '/' + r.len} via ${r.via}${r.dev ? ' dev ' + r.dev : '  (inactive: next hop unreachable)'}${r.dhcp ? ' proto dhcp' : ''}`);
+          const g = groups.find(x => x[0].proto === r.proto && x[0].net === r.net && x[0].len === r.len && r.proto !== 'C' && r.dev && x[0].dev);
+          if (g) g.push(r); else groups.push([r]);
+        }
+        for (const g of groups) {
+          const r = g[0], dst = r.len === 0 ? 'default' : r.net + '/' + r.len;
+          const proto = r.proto === 'O' ? ' proto ospf' : r.dhcp ? ' proto dhcp' : '';
+          if (r.proto === 'C') { say(`${dst} dev ${r.dev} proto kernel scope link src ${r.src}`); continue; }
+          if (g.length > 1) { say(`${dst}${proto}${r.metric ? ' metric ' + r.metric : ''}`); for (const x of g) say(`\tnexthop via ${x.via} dev ${x.dev} weight 1`); continue; }
+          if (!r.dev) { say(`${dst} via ${r.via}  (inactive: ${r.bfdDown ? 'BFD says the next hop is down' : 'next hop unreachable'})`); continue; }
+          say(`${dst} via ${r.via} dev ${r.dev}${proto}${r.metric ? ' metric ' + r.metric : ''}${r.bfd ? '  (BFD watched)' : ''}`);
         }
         return;
       }
@@ -1662,16 +1715,42 @@ export function runCommand(dev, line) {
     }
     if (p[0] === 'show' && p[1] === 'ip' && p[2] === 'route' && dev.l3) {
       say('Codes: C - connected, S - static, O - OSPF, > - selected route, * - FIB route');
-      const AD = { C: 0, S: 1, O: 110 };
+      const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, O: 110 }[r.proto];
       const all = dev.l3.routes();
-      const sel = r => !!r.dev && !all.some(x => x !== r && x.dev && x.net === r.net && x.len === r.len && AD[x.proto] < AD[r.proto]);
+      const sel = r => !!r.dev && !all.some(x => x !== r && x.dev && x.net === r.net && x.len === r.len && (ad(x) < ad(r) || (ad(x) === ad(r) && (x.metric || 0) < (r.metric || 0))));
+      let prev = null;
       for (const r of all) {
         const mark = sel(r) ? '>*' : '  ';
+        // Further next hops of the same route (ECMP) are indented like in FRR
+        const more = prev && prev.proto === r.proto && prev.net === r.net && prev.len === r.len && r.proto !== 'C';
+        const lead = more ? `  ${sel(r) ? '*' : ' '} ${' '.repeat(`${r.net}/${r.len}`.length + (r.proto === 'O' ? 9 : 6))}` : null;
         if (r.proto === 'C') say(`C${mark} ${r.net}/${r.len} is directly connected, ${r.dev}`);
-        else if (r.proto === 'O') say(`O${mark} ${r.net}/${r.len} [110/${r.metric}] via ${r.via}, ${r.dev}`);
-        else say(`S${mark} ${r.net}/${r.len} [1/0] via ${r.via}${r.dev ? ', ' + r.dev : ' inactive'}`);
+        else if (r.proto === 'O') say(more ? `${lead}via ${r.via}, ${r.dev}` : `O${mark} ${r.net}/${r.len} [110/${r.metric}] via ${r.via}, ${r.dev}`);
+        else say(more ? `${lead}via ${r.via}${r.dev ? ', ' + r.dev : ' inactive'}` : `S${mark} ${r.net}/${r.len} [${r.distance || 1}/0] via ${r.via}${r.dev ? ', ' + r.dev : r.bfdDown ? ' inactive (BFD down)' : ' inactive'}`);
+        prev = r;
       }
       return;
+    }
+    if (p[0] === 'show' && p[1] === 'bfd' && dev.bfd) {
+      const t = dev.bfd.table();
+      if (!dev.cfg.bfd?.enabled) return say('BFD is off. Turn it on under Configuration (Add a feature, BFD).');
+      if (!t.length) return say('No BFD peers. Mark a static route with BFD, or let BFD watch the OSPF neighbors.');
+      say(`${pad('Peer', 16)}${pad('Interface', 11)}${pad('State', 7)}${pad('For', 14)}Discriminators`);
+      for (const x of t) say(`${pad(x.peer, 16)}${pad(x.ifname, 11)}${pad(x.state, 7)}${pad(x.clients.join(', '), 14)}${x.myDisc}/${x.yourDisc || 0}`);
+      say(`Interval ${dev.bfd.interval} ms × ${dev.bfd.mult} = detection after ${dev.bfd.interval * dev.bfd.mult} ms`);
+      return;
+    }
+    if (p[0] === 'maximum-paths' && dev.type === 'router') {
+      const n = Number(p[1]);
+      if (!(n >= 1 && n <= 16)) return say('Syntax: maximum-paths <1-16>   (1 turns ECMP off)');
+      dev.cfg.maxPaths = n; sim.record(dev, 'info', `ECMP: up to ${n} equal path${n === 1 ? '' : 's'}`, { tag: 'ecmp-config', data: { maxPaths: n } }); sim.configChanged(dev.id); return say('OK');
+    }
+    if (p[0] === 'sysctl' && dev.type === 'router' && /fib_multipath_hash_policy/.test(cmd)) {
+      const m = cmd.match(/fib_multipath_hash_policy\s*=\s*([01])/);
+      if (!m) return say(`net.ipv4.fib_multipath_hash_policy = ${dev.cfg.ecmpHash === 'l4' ? 1 : 0}`);
+      dev.cfg.ecmpHash = m[1] === '1' ? 'l4' : 'l3';
+      sim.record(dev, 'info', `ECMP hash over ${m[1] === '1' ? 'addresses and ports (layer 4)' : 'the addresses only (layer 3)'}`, { tag: 'ecmp-config', data: { hash: dev.cfg.ecmpHash } });
+      sim.configChanged(dev.id); return say(`net.ipv4.fib_multipath_hash_policy = ${m[1]}`);
     }
     if (p[0] === 'sysctl' && dev.type === 'router') {
       const m = cmd.match(/ip_forward\s*=\s*([01])/);
@@ -1743,12 +1822,12 @@ import m6 from './m6.js';
 import m7 from './m7.js';
 import m8 from './m8.js';
 import m9 from './m9.js';
+import m10 from './m10.js';
 
 // Display order: all of layer 2, then layer 3, VLAN/VXLAN, transport, then the network services
-export const MODULES = [m1, m4, m2, m3, m5, m6, m7, m8, m9];
+export const MODULES = [m1, m4, m2, m3, m5, m6, m7, m8, m9, m10];
 export const UPCOMING = [
   { title: 'IPv6', text: 'Addresses, Neighbor Discovery instead of ARP, SLAAC and dual stack.' },
-  { title: 'ECMP and BFD', text: 'Several equally good paths, load balancing via hashes, and failure detection in milliseconds.' },
   { title: 'DNS in depth', text: 'The DNS hierarchy, recursive resolution and caching.' },
   { title: 'VPN', text: 'WireGuard and IPsec between sites, MTU with a double envelope.' },
   { title: 'BGP and EVPN', text: 'Routing between networks and a real control plane for VXLAN.' }
@@ -1998,6 +2077,112 @@ ${note('<b>Remember:</b> MAC addresses are valid hop by hop and are rewritten by
           { text: 'Set the prefix on pc1 to 16 and ping again. Which address does pc1 now ask for via ARP?', ask: true, expect: () => ['192.168.20.20'] }],
         hints: ['The MAC addresses of r1 are shown in the Console tab of r1 with the command ip addr.', 'A ping in LAN B is a frame that r1 sends out of eth2.'],
         outro: '<p>With /16, pc1 believes 192.168.20.20 is in its own network and asks for it directly. Nobody answers, and pc1 itself reports "Destination Host Unreachable". Set the prefix back to 24.</p>' }
+    ] }
+  ]
+};
+__PACKETPILOT_FILE_END__
+  mkdir -p "$W/js/course"
+  cat > "$W/js/course/m10.js" <<'__PACKETPILOT_FILE_END__'
+import { note, pingOk, tag, pingOkAfter, linkBetween } from './helpers.js';
+import { ecmpTopo, bfdTopo } from '../presets.js';
+
+// Via which router a forwarded packet of a client left r1
+const pathOf = (sim, src) => {
+  const e = sim.log.find(x => x.dev === 'r1' && x.tag === 'forwarded' && x.data?.dst === '10.4.0.10' && x.frame?.payload?.src === src);
+  if (!e) return [];
+  const owner = sim.topo.devices.find(d => Object.values(d.ifaces || {}).some(i => i.ip === e.data.via));
+  return owner ? [owner.name] : [];
+};
+// TCP connections of c1 that r1 spread over both paths with the L4 hash
+const synVias = sim => new Set(sim.log.filter(e => e.dev === 'r1' && e.tag === 'forwarded' && e.data?.ecmp && e.frame?.payload?.src === '10.1.0.10' && e.frame.payload.l4?.flags?.SYN).map(e => e.data.via));
+const bfdUpBoth = sim => ['r1', 'r2'].every(id => (sim.dev(id).bfd?.table() || []).some(s => s.state === 'Up' && ['10.0.12.1', '10.0.12.2'].includes(s.peer)));
+const provCut = sim => sim.log.some(e => e.tag === 'link-loss');
+// BFD hellos fill the capped log quickly, so the moments r1 declared a neighbor dead are remembered here
+const bfdDowns = new WeakMap();
+const fastFailover = sim => {
+  const seen = bfdDowns.get(sim) || new Set(); bfdDowns.set(sim, seen);
+  for (const e of sim.log) if (e.tag === 'bfd-state' && e.dev === 'r1' && e.data?.state === 'Down') seen.add(e.t);
+  // a ping of pc1 that was running when BFD fired and lost at most two replies
+  return sim.log.some(d => d.tag === 'ping-done' && d.dev === 'pc1' && d.data.sent >= 5 && d.data.sent - d.data.received <= 2
+    && [...seen].some(t => t < d.t && t > d.t - d.data.sent * 1000 - 1500));
+};
+
+export default {
+  id: 'm10', title: 'ECMP and BFD', bands: ['ip', 'rt'],
+  text: 'Using several equal paths at once, and noticing in under a second when a path dies, even when the cable stays plugged in.',
+  lessons: [
+    { id: 'm10-l1', title: 'Several equal paths: ECMP', minutes: 12, steps: [
+      { type: 'theory', title: 'Why use only one path?', html: `
+<p>Until now, every router had exactly one best route to a network. When two paths are equally good, that wastes half the capacity. <b>ECMP</b> (Equal-Cost Multi-Path) puts all equally good routes into the routing table and uses them at the same time.</p>
+<p>Routes count as equal when the prefix, the source (administrative distance) and the metric are the same. In OSPF that happens when two paths add up to the same cost, with static routes when you give a network several next hops.</p>
+<pre>$ ip route
+10.4.0.0/24 proto ospf metric 30
+        nexthop via 10.0.12.2 dev eth1 weight 1
+        nexthop via 10.0.13.3 dev eth2 weight 1</pre>
+<h2>Per flow, not per packet</h2>
+<p>If the router alternated packet by packet, the packets of one TCP connection would take paths of different length and overtake each other. TCP takes reordering for loss and slows down. That is why the router computes a <b>hash</b> over fields of each packet and picks the path with it. All packets of a flow have the same fields, so they always take the same path.</p>
+<table><tr><th>Hash policy</th><th>Fields</th><th>Effect</th></tr>
+<tr><td>Layer 3 (Linux default)</td><td>source and destination IP</td><td>everything between two hosts takes one path</td></tr>
+<tr><td>Layer 4</td><td>plus protocol and ports</td><td>every connection can take a different path</td></tr></table>
+${note('ECMP spreads <i>flows</i>, not bytes. A single large download always uses only one path. With few hosts and the layer 3 hash, the distribution can be very uneven; data centers use the layer 4 hash and many paths for that reason.')}
+<p>On Linux the hash is chosen with <code>sysctl net.ipv4.fib_multipath_hash_policy</code> (0 layer 3, 1 layer 4), in FRR the number of paths with <code>maximum-paths</code>.</p>` },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'Two OSPF paths to a network cost 30 and 40. How many does ECMP use?', options: ['Both', 'Only the one with cost 30', 'Only the one with cost 40', 'Alternately'], correct: 1,
+          explain: 'ECMP only applies to equal routes. Different cost means one best route.' },
+        { q: 'Why does a router not simply alternate between the paths packet by packet?', options: ['It would need more memory', 'The packets of a connection would overtake each other, TCP sees that as loss', 'The switches would get confused', 'It does not matter'], correct: 1 },
+        { q: 'Hash over source and destination IP: host A downloads from server S over 5 connections at once. How many paths do they use?', input: ['1', 'one'], explain: 'All 5 connections have the same two IP addresses, so the same hash. Only the layer 4 hash would spread them.' }] }
+    ] },
+
+    { id: 'm10-l2', title: 'ECMP in the lab', minutes: 15, steps: [
+      { type: 'lab', title: 'Two paths, one network', topo: () => ecmpTopo(), edit: 'config',
+        intro: '<p>r1 reaches the server network 10.4.0.0/24 via r2 and via r3, both with OSPF cost 30. Find out how r1 spreads the traffic.</p>',
+        presets: { r1: ['show ip route', 'ip route', 'sysctl net.ipv4.fib_multipath_hash_policy=1', 'ip link set eth1 down'], c1: ['ping -c 1 10.4.0.10', 'curl http://10.4.0.10/'], c2: ['ping -c 1 10.4.0.10'] },
+        goals: [
+          { text: 'Look at the routing table of r1 (show ip route). How many next hops does it have for 10.4.0.0/24?', ask: true, expect: () => ['2', 'two'] },
+          { text: 'Ping the server (10.4.0.10) from c1 and from c2.', check: sim => pingOk('c1', '10.4.0.10')(sim) && pingOk('c2', '10.4.0.10')(sim) },
+          { text: 'Through which router did the ping of c1 travel? The log of r1 tells you.', ask: true, expect: sim => pathOf(sim, '10.1.0.10'), placeholder: 'r2 or r3' },
+          { text: 'And the ping of c2?', ask: true, expect: sim => pathOf(sim, '10.1.0.11'), placeholder: 'r2 or r3' },
+          { text: 'With the layer 3 hash, all connections of c1 take one path. Switch r1 to the layer 4 hash and run <code>curl http://10.4.0.10/</code> on c1 a few times until both paths carry a connection.', check: sim => synVias(sim).size >= 2 },
+          { text: 'Disconnect the cable r1–r2 and ping from c1 again: everything now runs via r3.', check: sim => linkBetween(sim, 'r1', 'r2')?.up === false && pingOkAfter('c1', '10.4.0.10', e => e.tag === 'link-down')(sim) }],
+        hints: ['The hash is under Configuration on r1, Add a feature, Load balancing (ECMP). Or in the console: sysctl net.ipv4.fib_multipath_hash_policy=1', 'Every curl uses a new source port, so a new hash. Filter the log to "Only r1" and look for "ECMP".'],
+        outro: '<p>With the layer 3 hash the path depends only on the two addresses, so c1 and c2 happened to take different routers. With the layer 4 hash, even the connections of one client are spread. When a path fails, OSPF removes its next hop and the flows move to the remaining one.</p>' }
+    ] },
+
+    { id: 'm10-l3', title: 'BFD: noticing a dead neighbor fast', minutes: 12, steps: [
+      { type: 'theory', title: 'When the cable stays plugged in', html: `
+<p>If a router's own cable is pulled, it notices immediately. But often there is something in between: a provider switch, a media converter, a radio link. When the far side fails, the local port stays up. The router only finds out when the routing protocol misses its hellos:</p>
+<table><tr><th>Protocol</th><th>Detection with default timers</th></tr>
+<tr><td>OSPF</td><td>dead interval 40 s</td></tr>
+<tr><td>BGP</td><td>hold time 90 to 180 s</td></tr>
+<tr><td>Static route</td><td>never, the route stays and traffic disappears</td></tr></table>
+<p>Making the hellos faster everywhere costs CPU in every protocol. <b>BFD</b> (Bidirectional Forwarding Detection) solves it once for all of them: two neighbors exchange tiny packets every few hundred milliseconds. If <i>interval × multiplier</i> passes without one, the session goes down, and BFD tells its clients at once.</p>
+<pre>interval 300 ms × multiplier 3 = detection after 900 ms</pre>
+<h2>How a session comes up</h2>
+<table><tr><th>State</th><th>Meaning</th></tr>
+<tr><td>Down</td><td>no session yet, or it failed</td></tr>
+<tr><td>Init</td><td>I hear the neighbor, but it does not hear me yet</td></tr>
+<tr><td>Up</td><td>both hear each other (three-way handshake)</td></tr></table>
+<p>Each side picks a random <b>discriminator</b> and finds the other's in the packets, so both know which session a packet belongs to. Single-hop BFD uses UDP port 3784 and TTL 255, so packets from farther away cannot fake a session.</p>
+${note('BFD decides nothing itself: it only says "neighbor reachable" or "neighbor gone". OSPF, BGP or a static route are its clients and react. Both neighbors must run BFD, otherwise the session never comes up.')}` },
+      { type: 'quiz', title: 'Quick check', questions: [
+        { q: 'Interval 300 ms and multiplier 3. After how many milliseconds without a packet is the neighbor declared dead?', input: ['900'], unit: 'ms' },
+        { q: 'A router sends BFD packets, the neighbor has BFD turned off. Which state does the session stay in?', options: ['Up', 'Init', 'Down'], correct: 2, explain: 'Without packets from the neighbor, the session never even reaches Init.' },
+        { q: 'Why does a static route need BFD more than OSPF does?', options: ['Static routes are slower', 'A static route has no hellos at all and never notices a dead next hop behind a switch', 'OSPF cannot use BFD', 'It does not'], correct: 1 }] }
+    ] },
+
+    { id: 'm10-l4', title: 'BFD in the lab', minutes: 18, steps: [
+      { type: 'lab', title: 'The provider drops everything', topo: () => bfdTopo(), edit: 'config',
+        intro: '<p>pc1 reaches the server via r1 and r2. The direct path runs through the switch of a provider (cost 10), the backup via r3 is more expensive. All routers run OSPF with the standard timers (hello 10 s, dead 40 s).</p>',
+        presets: { pc1: ['ping -c 1 10.2.0.10', 'ping -c 60 10.2.0.10'], r1: ['show ip route', 'show ip ospf neighbor', 'show bfd peers'], r2: ['show bfd peers'] },
+        goals: [
+          { text: 'Ping the server (10.2.0.10) from pc1.', check: pingOk('pc1', '10.2.0.10') },
+          { text: 'Start a long ping (ping -c 60 10.2.0.10). While it runs, click the cable between prov and r2 and set its packet loss to 100 %: the provider silently drops everything, both ports stay up.', check: provCut },
+          { text: 'How long does OSPF wait with the standard timers before it gives up a silent neighbor? (seconds)', ask: true, expect: () => ['40'], placeholder: 'seconds' },
+          { text: 'Set the loss back to 0. Turn on BFD on r1 and r2 and let it watch the OSPF neighbors. Wait until show bfd peers says Up on both.', check: bfdUpBoth },
+          { text: 'Ping again and set the loss to 100 % once more. This time the ping loses at most two replies.', check: fastFailover },
+          { text: 'BFD on r1 runs with interval 300 ms and multiplier 3. After how many milliseconds did it give up the neighbor?', ask: true, expect: () => ['900'], placeholder: 'ms' }],
+        hints: ['The fast-forward button helps while OSPF waits its 40 seconds; the ping keeps counting.', 'BFD is under Configuration on each router: Add a feature, BFD. Check "BFD enabled" and "Watch the OSPF neighbors".', 'The loss is in the cable settings: click the cable, Line quality.'],
+        outro: '<p>Without BFD the ping lost about 40 replies: OSPF had to wait for its dead interval, because the port of r1 never went down. With BFD the failure was noticed after 900 ms, OSPF dropped the neighbor at once and rerouted via r3.</p>' }
     ] }
   ]
 };
@@ -3133,9 +3318,10 @@ __PACKETPILOT_FILE_END__
   cat > "$W/js/engine.js" <<'__PACKETPILOT_FILE_END__'
 // PacketPilot simulation engine: event-driven, no DOM
 import { BCAST, VXLAN_PORT, PROTO, STP_MAC, isGroupMac, macFor, inNet, parseCidr, isIp,
-  netOf, intToIp, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp } from './net.js';
+  netOf, intToIp, ipToInt, hashFlow, framePayloadLen, clone, IP_HDR, ICMP_HDR, TCP_HDR, isMcastIp } from './net.js';
+const ipCmp = (a, b) => (ipToInt(a) ?? 0) - (ipToInt(b) ?? 0);
 import { ethFrame, arpPacket, ipPacket, icmp, udp, tcp, ipChecksum, summary, icmpName, fmtBid } from './packets.js';
-import { dhcpOn67, natIn, natOut, Vrrp, Ospf, DHCP_TIMING, vrrpMac } from './services.js';
+import { dhcpOn67, natIn, natOut, Vrrp, Ospf, Bfd, BFD_PORT, DHCP_TIMING, vrrpMac } from './services.js';
 
 export const PORTS = {
   pc: ['eth1'], server: ['eth1'],
@@ -3305,9 +3491,17 @@ export class Sim {
 }
 
 /** Periodic control frames that would flood the log: VRRP advertisements and OSPF hellos */
+/** Hash for ECMP: l3 like Linux by default (addresses only), l4 adds protocol and ports */
+export function flowHash(ip, policy = 'l3') {
+  const l4 = ip.l4 || {};
+  const key = policy === 'l4' ? `${ip.src}|${ip.dst}|${ip.proto}|${l4.sport ?? l4.ident ?? 0}|${l4.dport ?? 0}` : `${ip.src}|${ip.dst}`;
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
+  return (h >>> 0) % 9973;
+}
 export function isHello(f) {
   const l4 = f?.type === 'ipv4' ? f.payload.l4 : null;
-  return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello'));
+  return !!l4 && (l4.kind === 'vrrp' || (l4.kind === 'ospf' && l4.type === 'hello') || (l4.kind === 'udp' && l4.payload?.kind === 'bfd'));
 }
 export function traceOf(f) {
   if (!f || f.type !== 'ipv4') return null;
@@ -3334,6 +3528,9 @@ export function normalizeDevice(cfg) {
     cfg.vrrp ??= [];
     cfg.nat = { outside: '', masquerade: true, forwards: [], ...(cfg.nat || {}) };
     cfg.ospf = { enabled: false, timers: 'fast', rid: '', ...(cfg.ospf || {}) };
+    cfg.bfd = { enabled: false, interval: 300, mult: 3, ospf: false, ...(cfg.bfd || {}) };
+    cfg.maxPaths ??= 4;
+    cfg.ecmpHash ??= 'l3';
     cfg.ospf.ifaces ??= {};
   }
   if (t === 'router' || t === 'server') cfg.dhcpServer = { enabled: false, pools: [], ...(cfg.dhcpServer || {}) };
@@ -3438,21 +3635,40 @@ class L3 {
       const p = parseCidr(r.dst);
       if (!p || !isIp(r.via)) continue;
       const nh = out.find(c => c.proto === 'C' && inNet(r.via, c.net, c.len));
-      out.push({ net: p.net, len: p.len, via: r.via, dev: nh ? nh.dev : null, proto: 'S', active: !!nh, auto: r.auto, dhcp: r.dhcp });
+      // A static route watched by BFD only counts while the BFD session to its next hop is up
+      const bfdDown = !!r.bfd && !this.dev.bfd?.isUp(r.via);
+      out.push({ net: p.net, len: p.len, via: r.via, dev: nh && !bfdDown ? nh.dev : null, proto: 'S', active: !!nh && !bfdDown, bfd: !!r.bfd, bfdDown, auto: r.auto, dhcp: r.dhcp,
+        distance: Number(r.distance) > 0 ? Number(r.distance) : 1 });
     }
     for (const r of this.dev.ospf?.routes || []) out.push({ net: r.net, len: r.len, via: r.via, dev: r.dev, proto: 'O', metric: r.cost });
     return out;
   }
-  lookup(dst) {
-    // Longest prefix first, then the administrative distance: connected 0, static 1, OSPF 110
-    const AD = { C: 0, S: 1, O: 110 };
-    let best = null;
+  /** All equally good routes to dst: longest prefix, then the administrative distance
+   *  (connected 0, static 1, OSPF 110), then the metric */
+  lookupAll(dst) {
+    // A static route can carry its own distance (a "floating" backup route, e.g. 200)
+    const ad = r => r.proto === 'S' ? r.distance || 1 : { C: 0, O: 110 }[r.proto] ?? 255;
+    let best = [];
+    const better = (a, b) => a.len !== b.len ? a.len > b.len : ad(a) !== ad(b) ? ad(a) < ad(b) : (a.metric || 0) < (b.metric || 0);
     for (const r of this.routes()) {
       if (r.proto === 'S' && !r.dev) continue;
       if (!inNet(dst, r.net, r.len)) continue;
-      if (!best || r.len > best.len || (r.len === best.len && AD[r.proto] < AD[best.proto])) best = r;
+      if (!best.length || better(r, best[0])) best = [r];
+      else if (!better(best[0], r) && !best.some(b => b.via === r.via && b.dev === r.dev)) best.push(r);
     }
-    return best;
+    return best.sort((a, b) => ipCmp(a.via || '0.0.0.0', b.via || '0.0.0.0') || a.dev.localeCompare(b.dev));
+  }
+  /** One route for a packet. With several equal routes (ECMP) a hash over the flow picks
+   *  one, so all packets of a flow take the same path */
+  lookup(dst, pkt) {
+    const all = this.lookupAll(dst);
+    if (!all.length) return null;
+    const max = Math.max(1, Number(this.cfg.maxPaths ?? 4));
+    const cand = all.slice(0, max);
+    if (cand.length === 1) return cand[0];
+    if (!pkt) return cand[0];
+    const h = flowHash(pkt, this.cfg.ecmpHash === 'l4' ? 'l4' : 'l3');
+    return { ...cand[h % cand.length], ecmp: cand.length, hash: this.cfg.ecmpHash === 'l4' ? 'l4' : 'l3' };
   }
   srcFor(dst) {
     const r = this.lookup(dst);
@@ -3463,7 +3679,7 @@ class L3 {
   // ---- Sending
   output(pkt, ctx = {}) {
     if (this.isOwn(pkt.dst)) { this.sim.schedule(0.01, () => this.deliver(pkt, 'lo')); return { ok: true }; }
-    const r = this.lookup(pkt.dst);
+    const r = this.lookup(pkt.dst, pkt);
     if (!r) {
       if (ctx.forwarded) {
         this.dev.record('drop', `no route to ${pkt.dst}, sends ICMP Network Unreachable to ${pkt.src}`, { tag: 'no-route', data: { dst: pkt.dst } });
@@ -3712,7 +3928,7 @@ class L3 {
       this.icmpError(ip, 11, 0);
       return;
     }
-    const r = this.lookup(ip.dst);
+    const r = this.lookup(ip.dst, ip);
     const out = clone(ip);
     out.ttl = ip.ttl - 1;
     const clamp = Number(this.cfg.mssClamp || 0);
@@ -3723,8 +3939,9 @@ class L3 {
     const nat = this.cfg.nat;
     if (nat?.outside && r?.dev === nat.outside && inIf !== nat.outside) natOut(this, out, frame);
     out.checksum = ipChecksum(out);
-    if (r) this.dev.record('fwd', `forwards ${ip.src} > ${ip.dst}: route ${r.net}/${r.len}${r.via ? ' via ' + r.via : ' direct'} out ${r.dev}, TTL ${ip.ttl} → ${out.ttl}`,
-      { frame, tag: 'forwarded', data: { dst: ip.dst, route: `${r.net}/${r.len}`, from: inIf, to: r.dev } });
+    const ecmp = r?.ecmp ? ` (ECMP: ${r.ecmp} equal paths, the ${r.hash === 'l4' ? 'hash over addresses and ports' : 'hash over the addresses'} picks this one)` : '';
+    if (r) this.dev.record('fwd', `forwards ${ip.src} > ${ip.dst}: route ${r.net}/${r.len}${r.via ? ' via ' + r.via : ' direct'} out ${r.dev}, TTL ${ip.ttl} → ${out.ttl}${ecmp}`,
+      { frame, tag: 'forwarded', data: { dst: ip.dst, route: `${r.net}/${r.len}`, from: inIf, to: r.dev, via: r.via, ecmp: r.ecmp || 0 } });
     this.output(out, { forwarded: true, inIf });
   }
   icmpError(orig, type, code, extra = {}) {
@@ -3785,6 +4002,7 @@ class L3 {
     }
     if (l4.kind === 'tcp') return this.onTcp(ip, frame);
     if (l4.kind === 'udp') {
+      if (l4.dport === BFD_PORT && l4.payload?.kind === 'bfd') { this.dev.bfd?.onPacket(ip); return; }
       if (l4.dport === 67 && l4.payload?.kind === 'dhcp' && dhcpOn67(this, ip, ifname, frame)) return;
       if (this.dev.onUdp?.(ip, ifname, frame)) return;
       for (const s of [...this.sessions]) if (s.onUdp?.(ip)) return;
@@ -4303,20 +4521,23 @@ class Router extends Host {
   // VRRP and OSPF only restart when their own settings change, not on every configuration change
   start() {
     super.start();
-    this.vrrp?.stop(); this.ospf?.stop();
+    this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop();
+    this.bfd = new Bfd(this);
     this.vrrp = new Vrrp(this); this.vrrp.start(); this.vrrpSnap = JSON.stringify(this.cfg.vrrp);
     this.ospf = new Ospf(this); this.ospf.start(); this.ospfSnap = JSON.stringify(this.cfg.ospf);
+    this.bfd.start(); this.bfdSnap = JSON.stringify(this.cfg.bfd);
     this.addrSnap = JSON.stringify(this.l3.ifaces());
   }
-  stop() { this.vrrp?.stop(); this.ospf?.stop(); }
+  stop() { this.vrrp?.stop(); this.ospf?.stop(); this.bfd?.stop(); }
   onConfig() {
-    const v = JSON.stringify(this.cfg.vrrp), o = JSON.stringify(this.cfg.ospf), a = JSON.stringify(this.l3.ifaces());
+    const v = JSON.stringify(this.cfg.vrrp), o = JSON.stringify(this.cfg.ospf), a = JSON.stringify(this.l3.ifaces()), b = JSON.stringify(this.cfg.bfd);
+    if (b !== this.bfdSnap) { this.bfdSnap = b; this.bfd.start(); } else this.bfd.sync();
     if (v !== this.vrrpSnap) { this.vrrpSnap = v; this.vrrp.start(); }
     if (o !== this.ospfSnap) { this.ospfSnap = o; this.ospf.start(); }
     else if (a !== this.addrSnap) this.ospf.originate();
     this.addrSnap = a;
   }
-  onLink(ifname, up) { this.vrrp?.onLink(ifname, up); this.ospf?.onLink(ifname, up); }
+  onLink(ifname, up) { this.bfd?.onLink(ifname, up); this.vrrp?.onLink(ifname, up); this.ospf?.onLink(ifname, up); }
 }
 
 // ---------------------------------------------------------------- DHCP client (DORA)
@@ -4922,8 +5143,16 @@ const BLOCKS = {
   udp: { name: 'UDP', size: 8, kind: 'udp', note: 'Ports, length, checksum' },
   tcp: { name: 'TCP', size: 20, kind: 'tcp', note: 'Ports, sequence, flags (without options)' },
   vxlan: { name: 'VXLAN', size: 8, kind: 'vxlan', note: 'Flags, VNI' },
+  // Protocols on top: where they may sit (in) and whether anything may follow (last)
+  dhcp: { name: 'DHCP', size: 300, kind: 'data', in: ['udp'], last: true, note: 'Discover, Offer, Request, ACK on UDP 67/68' },
+  dns: { name: 'DNS', size: 32, kind: 'data', in: ['udp'], last: true, note: 'Query or answer on UDP 53 (size depends on the name)' },
+  vrrp: { name: 'VRRP', size: 12, kind: 'rt', in: ['ip'], last: true, note: 'Advertisement: group, priority, virtual IP (protocol 112)' },
+  ospf: { name: 'OSPF Hello', size: 48, kind: 'rt', in: ['ip'], last: true, note: 'Router ID, area, timers, neighbors (protocol 89)' },
+  bfd: { name: 'BFD', size: 24, kind: 'rt', in: ['udp'], last: true, note: 'Control packet: state, discriminators, intervals (UDP 3784)' },
   data: { name: 'Data', size: null, kind: 'data', note: 'Application payload' }
 };
+// Headings in the palette, so the growing list stays easy to scan
+const GROUP = { eth: 'Layer 2', vlan: 'Layer 2', arp: 'Layer 2', stp: 'Layer 2', ip: 'Layer 3', icmp: 'Layer 3', udp: 'Transport', tcp: 'Transport', vxlan: 'Tunnels' };
 const PRESETS = {
   'Ping': ['eth', 'ip', 'icmp', 'data'],
   'ARP request': ['eth', 'arp'],
@@ -4931,6 +5160,11 @@ const PRESETS = {
   'DNS over UDP': ['eth', 'ip', 'udp', 'data'],
   'TCP SYN': ['eth', 'ip', 'tcp'],
   'BPDU': ['eth', 'stp'],
+  'DHCP Discover': ['eth', 'ip', 'udp', 'dhcp'],
+  'DNS query': ['eth', 'ip', 'udp', 'dns'],
+  'OSPF Hello': ['eth', 'ip', 'ospf'],
+  'VRRP': ['eth', 'ip', 'vrrp'],
+  'BFD': ['eth', 'ip', 'udp', 'bfd'],
   'Ping over VXLAN': ['eth', 'ip', 'udp', 'vxlan', 'eth', 'ip', 'icmp', 'data']
 };
 
@@ -4953,6 +5187,9 @@ function validate(seq) {
     if (b === 'data' && !['udp', 'tcp', 'icmp'].includes(prev)) err(i, 'Application data is carried in UDP, TCP or ICMP.');
     if (b === 'data' && next) err(i + 1, 'Only the FCS comes after the data.');
     if (b === 'vlan' && seq.filter(x => x === 'vlan').length > 2) err(i, 'More than two tags (QinQ) are unusual.');
+    const B = BLOCKS[b];
+    if (B.in && !B.in.includes(prev)) err(i, `${B.name} is carried in ${B.in.map(x => BLOCKS[x].name).join(' or ')}.`);
+    if (B.last && next) err(i + 1, `Nothing follows ${B.name}, it is the payload itself.`);
   }
   return { msgs: msgs.length ? msgs : ['Valid frame.'], bad, ok: !msgs.length };
 }
@@ -4962,7 +5199,10 @@ export function renderFrameBuilder(root) {
   let dataLen = 56;
   let dragFrom = null;
   const pal = h('div', { class: 'fb-pal' });
+  let lastGroup = null;
   for (const [k, b] of Object.entries(BLOCKS)) {
+    const g = GROUP[k] || 'Protocols and data';
+    if (g !== lastGroup) { pal.append(h('div', { class: 'fb-grp' }, g)); lastGroup = g; }
     const el = h('div', { class: 'fb-blk', draggable: 'true', style: { '--lc': `var(--l-${b.kind})` }, tabindex: '0', role: 'button', title: `${b.note}. Click to append at the end.` },
       b.name, h('span', { class: 'sz' }, b.size === null ? 'variable' : `${b.size} B`));
     el.addEventListener('dragstart', e => { e.dataTransfer.setData('text/fb', k); dragFrom = null; });
@@ -5129,6 +5369,11 @@ export const GLOSSARY = [
   ['packet loss', 'Packets that never arrive, in percent.'],
   ['loopback', 'A virtual interface that is always up, often used as a stable router address.'],
   ['ECMP', 'Equal-Cost Multi-Path: several equally good routes used at the same time.'],
+  ['BFD', 'Bidirectional Forwarding Detection: neighbors exchange tiny packets every few hundred milliseconds and report a dead neighbor to OSPF, BGP or static routes in under a second.'],
+  ['discriminator', 'A random number that identifies one BFD session on each side, so both routers know which session a packet belongs to.', ['discriminators']],
+  ['floating static route', 'A backup static route with a higher administrative distance; it only enters the routing table when the better route disappears.', ['floating static routes', 'floating route']],
+  ['hash policy', 'Which header fields a router feeds into the hash that picks one of several ECMP paths: layer 3 (addresses) or layer 4 (addresses, protocol and ports).'],
+  ['detection time', 'How long BFD waits without a packet before it declares the neighbor dead: interval × multiplier.'],
   ['RFC 1918', 'The standard that reserves 10/8, 172.16/12 and 192.168/16 for private networks.']
 ];
 
@@ -5984,7 +6229,7 @@ export class Lab {
           h('li', {}, 'Ctrl+Z undoes a change, Ctrl+Y redoes it. Right-click on a device, cable, area or packet shows what you can do with it.'),
           h('li', {}, 'Clicking a packet takes it apart into its layers in the packet inspector.')),
         h('h4', {}, 'Layer colors'),
-        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'VRRP, OSPF']]
+        h('div', { class: 'row small' }, ...[['eth', 'Ethernet'], ['vlan', '802.1Q'], ['arp', 'ARP'], ['stp', 'STP'], ['ip', 'IPv4'], ['icmp', 'ICMP'], ['udp', 'UDP'], ['tcp', 'TCP'], ['vxlan', 'VXLAN'], ['rt', 'Routing (OSPF, VRRP, BFD)']]
           .map(([k, n]) => h('span', { class: 'chip' }, h('i', { class: `bg-${k}`, style: { width: '10px', height: '10px', borderRadius: '2px', display: 'inline-block' } }), n)))));
       return;
     }
@@ -6389,7 +6634,7 @@ export class Lab {
     toast(`Fast-forwarded ${ms / 1000} s, now t = ${(this.sim.time / 1000).toFixed(1)} s`);
   }
   toggleBpdu() { this.showBpdu = !this.showBpdu; this.bpduBtn.classList.toggle('on', this.showBpdu); this.drawPackets(); }
-  hasHellos() { return this.sim.topo.devices.some(d => d.type === 'router' && (d.vrrp?.length || d.ospf?.enabled)); }
+  hasHellos() { return this.sim.topo.devices.some(d => d.type === 'router' && (d.vrrp?.length || d.ospf?.enabled || d.bfd?.enabled)); }
   updateBpduBar() {
     const stp = this.sim.topo.devices.some(d => d.type === 'switch' && d.stp?.enabled), hellos = this.hasHellos();
     this.bpduBar?.classList.toggle('hidden', !stp && !hellos);
@@ -6598,6 +6843,7 @@ export function udpPayloadLen(udp) {
   if (p.kind === 'vxlan') return VXLAN_HDR + frameLen(p.frame);
   if (p.kind === 'dns') return dnsLen(p);
   if (p.kind === 'dhcp') return DHCP_LEN;
+  if (p.kind === 'bfd') return 24;
   return p.len || 0;
 }
 export function ipTotalLen(ip) { return IP_HDR + l4Len(ip); }
@@ -6694,6 +6940,7 @@ export function shortLabel(f) {
   if (l4.kind === 'udp' && l4.payload?.kind === 'vxlan') return 'VXLAN';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dns') return 'DNS';
   if (l4.kind === 'udp' && l4.payload?.kind === 'dhcp') return 'DHCP ' + (DHCP_NAME[l4.payload.op] || '');
+  if (l4.kind === 'udp' && l4.payload?.kind === 'bfd') return 'BFD';
   if (l4.kind === 'vrrp') return 'VRRP';
   if (l4.kind === 'ospf') return l4.type === 'hello' ? 'Hello' : 'LSU';
   if (l4.kind === 'udp') return 'UDP';
@@ -6724,7 +6971,7 @@ export function layerKinds(f) {
     if (l4.kind === 'udp') {
       out.push('udp');
       if (l4.payload?.kind === 'vxlan') { out.push('vxlan'); cur = l4.payload.frame; continue; }
-      out.push('data');
+      out.push(l4.payload?.kind === 'bfd' ? 'rt' : 'data');
     }
     if (l4.kind === 'tcp') { out.push('tcp'); if (l4.dataLen) out.push('data'); }
     break;
@@ -6765,6 +7012,9 @@ export function summary(f) {
     const what = { DISCOVER: `Discover from ${d.chaddr}`, OFFER: `Offer ${d.yiaddr} to ${d.chaddr}`, REQUEST: `Request ${d.requested || d.ciaddr} for ${d.chaddr}`,
       ACK: `ACK ${d.yiaddr} for ${d.chaddr}`, NAK: `NAK for ${d.chaddr}`, RELEASE: `Release ${d.ciaddr} from ${d.chaddr}` }[d.op] || d.op;
     s = `DHCP ${what} (${base}${d.giaddr && d.giaddr !== '0.0.0.0' ? ', relayed via ' + d.giaddr : ''})`;
+  } else if (l4.kind === 'udp' && l4.payload?.kind === 'bfd') {
+    const b = l4.payload;
+    s = `BFD control ${base}: state ${b.state}, discriminators ${b.myDisc}/${b.yourDisc || 0}, every ${b.interval} ms × ${b.mult}${b.diag ? `, ${b.diag}` : ''}`;
   } else if (l4.kind === 'vrrp') {
     s = `VRRP advertisement ${base}: group ${l4.vrid}, priority ${l4.prio}, virtual IP ${(l4.vips || []).join(', ')}`;
   } else if (l4.kind === 'ospf') {
@@ -6903,6 +7153,16 @@ export function dissect(f, depth = 0) {
       ['Relay agent (giaddr)', d.giaddr || '0.0.0.0', d.giaddr && d.giaddr !== '0.0.0.0' ? 'Set by the relay, the server picks the pool by it' : 'No relay involved'],
       ...(d.requested ? [['Option 50: requested IP', d.requested, '']] : []), ...(d.server ? [['Option 54: server ID', d.server, '']] : []),
       ...(d.op === 'OFFER' || d.op === 'ACK' ? [['Option 1: subnet mask', `/${d.prefix}`, ''], ['Option 3: router', d.router || '-', 'Default gateway'], ['Option 6: DNS', d.dns || '-', ''], ['Option 51: lease time', `${d.lease} s`, '']] : [])] });
+  } else if (l4.kind === 'udp' && l4.payload?.kind === 'bfd') {
+    const b = l4.payload;
+    layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), 'From 49152 up'], ['Destination port', String(l4.dport), '3784: BFD single hop'], ['Length', `${UDP_HDR + 24} bytes`, '']] });
+    layers.push({ kind: 'rt', depth, name: `${pre}BFD Control`, bytes: 24, fields: [
+      ['Version / Diagnostic', `1 / ${b.diag || 'No Diagnostic'}`, 'Why the session last went down'],
+      ['State', b.state, { Down: 'No session yet, or it failed', Init: 'I hear you, do you hear me?', Up: 'Both sides hear each other' }[b.state] || ''],
+      ['Detect multiplier', String(b.mult), 'Missed packets before the session goes down'],
+      ['My discriminator', String(b.myDisc), 'Random number that names the session on the sender'],
+      ['Your discriminator', String(b.yourDisc || 0), 'The number the neighbor uses, 0 while unknown'],
+      ['Desired min TX / required min RX', `${b.interval} ms`, `Detection time = ${b.interval} × ${b.mult} = ${b.interval * b.mult} ms`]] });
   } else if (l4.kind === 'udp' && l4.payload?.kind === 'dns') {
     const d = l4.payload;
     layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), ''], ['Destination port', String(l4.dport), l4.dport === 53 || l4.sport === 53 ? 'DNS' : ''], ['Length', `${UDP_HDR + udpPayloadLen(l4)} bytes`, '']] });
@@ -7115,6 +7375,10 @@ export function configPanel(dev, ctx) {
           status: (dev.vrrp?.table() || []).map(g => `${g.vrid}: ${g.state}`).join(', ') || plural(c.vrrp.length, 'group'), render: () => vrrpEditor(dev, upd, rerender) },
         { id: 'ospf', title: 'OSPF', desc: 'Learn routes automatically from neighboring routers', inUse: c.ospf.enabled,
           status: c.ospf.enabled ? `on, ${plural(fullNbrs, 'neighbor')}` : 'off', render: () => ospfEditor(dev, upd, rerender) },
+        { id: 'ecmp', title: 'Load balancing (ECMP)', desc: 'Use several equally good routes at the same time', inUse: Number(c.maxPaths) !== 4 || c.ecmpHash === 'l4',
+          status: Number(c.maxPaths) === 1 ? 'off (1 path)' : `up to ${c.maxPaths} paths, ${c.ecmpHash === 'l4' ? 'L4' : 'L3'} hash`, render: () => ecmpEditor(dev, upd) },
+        { id: 'bfd', title: 'BFD', desc: 'Notice a dead neighbor in under a second', inUse: !!c.bfd.enabled,
+          status: c.bfd.enabled ? (dev.bfd?.table() || []).map(x => `${x.peer} ${x.state}`).join(', ') || 'on, no peers' : 'off', render: () => bfdEditor(dev, upd, rerender) },
         { id: 'adv', title: 'Advanced', desc: 'IP forwarding on or off, MSS clamping', inUse: c.forwarding === false || !!c.mssClamp,
           status: c.forwarding === false || c.mssClamp ? 'changed' : '', render: () => advancedEditor(dev, upd) }
       ], rerender, locked));
@@ -7294,8 +7558,13 @@ function routesEditor(dev, upd) {
       list.append(h('div', { class: 'item' },
         h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, dst, h('span', { class: 'small muted' }, 'via'),
           ipInput(r.via, v => upd(() => r.via = v, `${dev.name}: next hop ${v}`), 'Next hop'),
+          (() => { const d = numInput(r.distance ?? '', 1, 255, v => upd(() => { if (!v || v === 1) delete r.distance; else r.distance = v; }, `${dev.name}: route ${r.dst} distance ${v ?? 1}`), '1');
+            d.title = 'Distance (administrative distance): lower wins. A backup route with e.g. 200 is only used when the main route is gone.'; d.setAttribute('aria-label', 'Distance'); return d; })(),
           h('button', { class: 'btn icon ghost', title: 'Remove route', html: I.trash, onclick: () => { upd(() => c.routes.splice(idx, 1), `${dev.name}: route removed`); draw(); } })),
-        act && !act.dev ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, 'Inactive: the next hop is not in any directly connected network') : null));
+        c.bfd?.enabled ? (() => { const cb = h('input', { type: 'checkbox', checked: r.bfd ? true : null });
+          cb.addEventListener('change', () => upd(() => { if (cb.checked) r.bfd = true; else delete r.bfd; }, `${dev.name}: BFD for route ${r.dst} ${cb.checked ? 'on' : 'off'}`));
+          return h('label', { class: 'row small' }, cb, 'Watch the next hop with BFD, withdraw the route when it fails'); })() : null,
+        act && !act.dev ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, act.bfdDown ? 'Inactive: BFD says the next hop is gone' : 'Inactive: the next hop is not in any directly connected network') : null));
     });
     if (!c.routes.length) list.append(h('div', { class: 'empty' }, 'None. The device knows directly connected networks on its own.'));
     wrap.append(list, h('button', { class: 'btn', style: { marginTop: '6px' }, html: I.plus + ' Add route',
@@ -7423,6 +7692,34 @@ function natEditor(dev, upd, rerender) {
   return wrap;
 }
 
+function ecmpEditor(dev, upd) {
+  const c = dev.cfg;
+  return h('div', {},
+    h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr' } },
+      h('span', { class: 'small' }, 'Equal paths used'), select([1, 2, 4, 8].map(n => [n, n === 1 ? '1 (ECMP off)' : String(n) + (n === 4 ? ' (default)' : '')]), c.maxPaths, v => upd(() => c.maxPaths = Number(v), `${dev.name}: maximum ${v} paths`)),
+      h('span', { class: 'small' }, 'Hash over'), select([['l3', 'Addresses (L3, Linux default)'], ['l4', 'Addresses and ports (L4)']], c.ecmpHash, v => upd(() => c.ecmpHash = v, `${dev.name}: ECMP hash ${v.toUpperCase()}`))),
+    h('p', { class: 'small muted', style: { marginTop: '6px' } }, 'When several routes to a network are equally good (same prefix, same source, same metric), the router uses all of them. A hash over each packet picks the path, so a flow always stays on one path and its packets do not overtake each other.'));
+}
+
+function bfdEditor(dev, upd, rerender) {
+  const b = dev.cfg.bfd;
+  const on = h('input', { type: 'checkbox', checked: b.enabled ? true : null });
+  on.addEventListener('change', () => { upd(() => b.enabled = on.checked, `${dev.name}: BFD ${on.checked ? 'on' : 'off'}`); rerender?.(); });
+  const ospf = h('input', { type: 'checkbox', checked: b.ospf ? true : null });
+  ospf.addEventListener('change', () => upd(() => b.ospf = ospf.checked, `${dev.name}: BFD for OSPF ${ospf.checked ? 'on' : 'off'}`));
+  const t = dev.bfd?.table() || [];
+  return h('div', {},
+    h('label', { class: 'row', style: { fontSize: '.88rem' } }, on, 'BFD enabled'),
+    b.enabled ? h('div', {},
+      h('div', { class: 'cfg-grid', style: { gridTemplateColumns: '120px 1fr', marginTop: '6px' } },
+        h('span', { class: 'small' }, 'Interval (ms)'), numInput(b.interval, 50, 10000, v => upd(() => b.interval = v ?? 300, `${dev.name}: BFD interval ${v} ms`)),
+        h('span', { class: 'small' }, 'Multiplier'), numInput(b.mult, 2, 50, v => upd(() => b.mult = v ?? 3, `${dev.name}: BFD multiplier ${v}`))),
+      h('label', { class: 'row small', style: { marginTop: '6px' } }, ospf, 'Watch the OSPF neighbors'),
+      h('p', { class: 'small muted', style: { margin: '4px 0 0' } }, 'Static routes get a BFD checkbox above. Both neighbors must run BFD.'),
+      t.length ? h('table', { class: 'rtable', style: { marginTop: '8px' } }, h('tr', {}, h('th', {}, 'Peer'), h('th', {}, 'Port'), h('th', {}, 'State')), t.map(x => h('tr', {}, h('td', {}, x.peer), h('td', {}, x.ifname), h('td', {}, x.state)))) : null) : null,
+    h('p', { class: 'small muted', style: { marginTop: '6px' } }, `Every ${b.interval || 300} ms a control packet; after ${(b.interval || 300) * (b.mult || 3)} ms without one the neighbor counts as gone.`));
+}
+
 function relayEditor(dev, upd) {
   const c = dev.cfg;
   const rows = ifaceNames(dev).filter(n => isIp(c.ifaces[n].ip));
@@ -7527,7 +7824,7 @@ export function tablesPanel(dev, sim) {
   };
   if (dev.l3) {
     box.append(h('h4', {}, 'Routing table'),
-      tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.dhcp ? 'DHCP' : (r.dev ? 'S' : 'S inactive')])));
+      tbl(['Destination', 'via', 'dev', ''], dev.l3.routes().map(r => [`${r.net}/${r.len}`, r.via || 'direct', r.dev || '–', r.proto === 'C' ? 'C' : r.proto === 'O' ? `O ${r.metric}` : r.dhcp ? 'DHCP' : (r.dev ? (r.bfd ? 'S, BFD' : 'S') : r.bfdDown ? 'S, BFD down' : 'S inactive')])));
     box.append(h('h4', {}, 'ARP table'),
       tbl(['IP', 'MAC', 'dev', 'State'], dev.l3.arpTable().map(e => [e.ip, e.mac || '–', e.ifname, e.state])));
     if (dev.l3.pmtu.size) box.append(h('h4', {}, 'Learned path MTU'), tbl(['Destination', 'MTU'], [...dev.l3.pmtu].map(([k, v]) => [k, v])));
@@ -7538,6 +7835,7 @@ export function tablesPanel(dev, sim) {
     if (dev.cfg.dhcpServer?.enabled) box.append(h('h4', {}, 'DHCP leases handed out'), tbl(['IP', 'MAC', 'State'], [...dev.l3.dhcpLeases].map(([m, l]) => [l.ip, m, l.state])));
     if (dev.cfg.nat?.outside) box.append(h('h4', {}, 'NAT translations'), tbl(['Inside', 'Outside', 'Remote'], dev.l3.natTable.map(e => [`${e.inIp}:${e.inPort}`, `${e.outIp}:${e.outPort}`, `${e.remIp}:${e.remPort}`])));
     if (dev.vrrp?.groups.length) box.append(h('h4', {}, 'VRRP'), tbl(['Group', 'Port', 'Virtual IP', 'State', 'Prio'], dev.vrrp.table().map(g => [g.vrid, g.ifname, g.vip, g.state, g.prio])));
+    if (dev.bfd?.table().length) box.append(h('h4', {}, 'BFD sessions'), tbl(['Peer', 'Port', 'State', 'For'], dev.bfd.table().map(x => [x.peer, x.ifname, x.state, x.clients.join(', ')])));
     if (dev.ospf?.enabled) box.append(h('h4', {}, 'OSPF neighbors'), tbl(['Router ID', 'Address', 'Port', 'State'], dev.ospf.neighborTable().map(n => [n.rid, n.ip, n.ifname, n.state])));
     if (dev.cfg.services?.length) box.append(h('h4', {}, 'Listening services'), tbl(['Proto', 'Port', 'Service'], dev.cfg.services.map(s => [s.proto.toUpperCase(), s.port, s.name || ''])));
   }
@@ -7887,6 +8185,12 @@ export const PRESETS = [
   { id: 'rstp', title: 'Rapid spanning tree', topics: ['RSTP', 'Proposal/agreement', 'Fast failover'],
     text: 'The triangle with RSTP and the standard timers. Ports between switches are negotiated in milliseconds, a cable cut costs no ping.',
     make: () => stpTriangle({ enabled: true, rootPrio: 4096, timers: 'standard', edge: true, mode: 'rstp' }) },
+  { id: 'ecmp', title: 'Two equal paths (ECMP)', topics: ['ECMP', 'OSPF', 'Load balancing'],
+    text: 'r1 reaches the server over two paths with the same cost and uses both. Compare the L3 and the L4 hash.',
+    make: () => ecmpTopo() },
+  { id: 'bfd', title: 'Provider link with BFD', topics: ['BFD', 'OSPF', 'Failover'],
+    text: 'The primary path runs through a provider switch. Set the loss of its cable to 100 % and compare OSPF alone with OSPF plus BFD.',
+    make: () => bfdTopo({ bfd: ['r1', 'r2', 'r3'] }) },
   { id: 'stpsquare', title: 'Four switches in a ring', topics: ['STP', 'Port costs', 'Port roles'],
     text: 'Which port blocks, and how do you move it with port costs?',
     make: () => stpSquare() },
@@ -8087,6 +8391,47 @@ export function vrrpTopo({ vrrpB = true, prioB = 100 } = {}) {
   [link('pc1', 'eth1', 'sw1', 'eth1'), link('pc2', 'eth1', 'sw1', 'eth2'), link('ra', 'eth1', 'sw1', 'eth7'), link('rb', 'eth1', 'sw1', 'eth8'),
     link('ra', 'eth2', 'core', 'eth1'), link('rb', 'eth2', 'core', 'eth2'), link('core', 'eth3', 'srv', 'eth1')],
   [{ x: 20, y: 40, w: 410, h: 470, label: 'LAN 10.0.0.0/24, gateway 10.0.0.1 (virtual)', color: 'orange' }]);
+}
+
+// -------------------------------------------------------------- ECMP and BFD
+/** A diamond: two equal paths r1 → r2 → r4 and r1 → r3 → r4 */
+export function ecmpTopo({ hash = 'l3', maxPaths = 4 } = {}) {
+  const r = (name, x, y, ifaces, lan) => {
+    const d = router(name, x, y, ifaces, [], { maxPaths, ecmpHash: hash });
+    d.ospf = ospfOn(Object.fromEntries(Object.keys(ifaces).map(k => [k, k === lan ? { passive: true } : {}])));
+    return d;
+  };
+  const srv = server('srv', 940, 250, '10.4.0.10', 24, '10.4.0.1');
+  srv.services = [{ proto: 'tcp', port: 80, name: 'http', size: 3000 }];
+  return topo('Two equal paths (ECMP)', [
+    host('c1', 70, 150, '10.1.0.10', 24, '10.1.0.1'), host('c2', 70, 350, '10.1.0.11', 24, '10.1.0.1'), sw('sw1', 200, 250),
+    r('r1', 370, 250, { eth1: '10.0.12.1/24', eth2: '10.0.13.1/24', eth3: '10.1.0.1/24' }, 'eth3'),
+    r('r2', 570, 110, { eth1: '10.0.12.2/24', eth2: '10.0.24.2/24' }),
+    r('r3', 570, 390, { eth1: '10.0.13.3/24', eth2: '10.0.34.3/24' }),
+    r('r4', 770, 250, { eth1: '10.0.24.4/24', eth2: '10.0.34.4/24', eth3: '10.4.0.1/24' }, 'eth3'), srv],
+  [link('c1', 'eth1', 'sw1', 'eth1'), link('c2', 'eth1', 'sw1', 'eth2'), link('sw1', 'eth8', 'r1', 'eth3'),
+    link('r1', 'eth1', 'r2', 'eth1'), link('r1', 'eth2', 'r3', 'eth1'), link('r2', 'eth2', 'r4', 'eth1'), link('r3', 'eth2', 'r4', 'eth2'), link('r4', 'eth3', 'srv', 'eth1')],
+  [{ x: 300, y: 40, w: 560, h: 420, label: 'Two paths with the same OSPF cost', color: 'green' }]);
+}
+/** Primary path through a provider switch (the link stays up when the far side fails), backup via r3 */
+export function bfdTopo({ bfd = [], timers = 'standard' } = {}) {
+  const on = name => bfd.includes(name);
+  const r = (name, x, y, ifaces, costs, lan) => {
+    const d = router(name, x, y, ifaces);
+    d.ospf = ospfOn(Object.fromEntries(Object.keys(ifaces).map(k => [k, { cost: costs[k] || 10, ...(k === lan ? { passive: true } : {}) }])), { timers });
+    d.bfd = { enabled: on(name), interval: 300, mult: 3, ospf: on(name) };
+    return d;
+  };
+  return topo('Provider link and a backup path', [
+    host('pc1', 70, 250, '10.1.0.10', 24, '10.1.0.1'),
+    r('r1', 250, 250, { eth1: '10.0.12.1/24', eth2: '10.0.13.1/24', eth3: '10.1.0.1/24' }, { eth2: 30 }, 'eth3'),
+    sw('prov', 470, 120),
+    r('r2', 690, 250, { eth1: '10.0.12.2/24', eth2: '10.0.23.2/24', eth3: '10.2.0.1/24' }, { eth2: 30 }, 'eth3'),
+    r('r3', 470, 420, { eth1: '10.0.13.3/24', eth2: '10.0.23.3/24' }, {}),
+    server('srv', 880, 250, '10.2.0.10', 24, '10.2.0.1')],
+  [link('pc1', 'eth1', 'r1', 'eth3'), link('r1', 'eth1', 'prov', 'eth1'), link('prov', 'eth2', 'r2', 'eth1'),
+    link('r1', 'eth2', 'r3', 'eth1'), link('r3', 'eth2', 'r2', 'eth2'), link('r2', 'eth3', 'srv', 'eth1')],
+  [{ x: 380, y: 40, w: 180, h: 150, label: 'Provider network', color: 'gray' }]);
 }
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"
@@ -8447,6 +8792,7 @@ export class Ospf {
   setState(n, s, why) {
     const prev = n.state;
     n.state = s;
+    if (prev === 'Down' || s === 'Down') this.dev.bfd?.sync();
     const ok = s === 'Full';
     this.dev.record(ok ? 'ok' : 'info', `OSPF neighbor ${n.rid} (${n.ip} on ${n.ifname}): ${prev} → ${s}, ${why}`, { tag: 'ospf-neighbor', data: { rid: n.rid, state: s, ifname: n.ifname } });
     if (ok) { this.sendLsu(n.ifname, [...this.lsdb.values()]); this.originate(); }
@@ -8456,6 +8802,7 @@ export class Ospf {
     this.nbrs.delete(this.key(n.ifname, n.rid));
     this.dev.record('err', `OSPF neighbor ${n.rid} (${n.ifname}): ${n.state} → Down, ${why}`, { tag: 'ospf-neighbor', data: { rid: n.rid, state: 'Down', ifname: n.ifname } });
     this.originate();
+    this.dev.bfd?.sync();
   }
   onLink(ifname, up) {
     if (!this.enabled) return;
@@ -8516,9 +8863,14 @@ export class Ospf {
       for (const l of linksOf(u)) {
         if (l.type !== 'router' || !linksOf(l.rid).some(b => b.type === 'router' && b.rid === u)) continue;
         const nd = dist.get(u) + l.cost;
+        // First hops are a list: equal-cost paths are all kept (ECMP)
+        const hops = u === me ? [{ rid: l.rid, ifname: l.ifname }] : first.get(u);
         if (!dist.has(l.rid) || nd < dist.get(l.rid)) {
           dist.set(l.rid, nd);
-          first.set(l.rid, u === me ? { rid: l.rid, ifname: l.ifname } : first.get(u));
+          first.set(l.rid, [...hops]);
+        } else if (nd === dist.get(l.rid) && !done.has(l.rid)) {
+          const cur = first.get(l.rid);
+          for (const hp of hops) if (!cur.some(x => x.rid === hp.rid && x.ifname === hp.ifname)) cur.push(hp);
         }
       }
     }
@@ -8526,19 +8878,20 @@ export class Ospf {
     const best = new Map();
     for (const [r, d] of dist) {
       if (r === me) continue;
-      const hop = first.get(r);
-      const n = hop && [...this.nbrs.values()].find(x => x.rid === hop.rid && x.ifname === hop.ifname && x.state === 'Full');
-      if (!n) continue;
+      const nbrs = (first.get(r) || []).map(hop => [...this.nbrs.values()].find(x => x.rid === hop.rid && x.ifname === hop.ifname && x.state === 'Full')).filter(Boolean);
+      if (!nbrs.length) continue;
       for (const l of linksOf(r)) {
         if (l.type !== 'stub') continue;
         const k = `${l.net}/${l.len}`;
         if (connected.includes(k)) continue;
         const cost = d + l.cost;
         const cur = best.get(k);
-        if (!cur || cost < cur.cost) best.set(k, { net: l.net, len: l.len, via: n.ip, dev: n.ifname, cost, adv: r });
+        const add = nbrs.map(n => ({ net: l.net, len: l.len, via: n.ip, dev: n.ifname, cost, adv: r }));
+        if (!cur || cost < cur[0].cost) best.set(k, add);
+        else if (cost === cur[0].cost) for (const x of add) if (!cur.some(c => c.via === x.via && c.dev === x.dev)) cur.push(x);
       }
     }
-    const routes = [...best.values()].sort((a, b) => ipCmp(a.net, b.net) || a.len - b.len);
+    const routes = [...best.values()].flat().sort((a, b) => ipCmp(a.net, b.net) || a.len - b.len || ipCmp(a.via, b.via));
     const fmt = rs => new Set(rs.map(x => `${x.net}/${x.len} via ${x.via} cost ${x.cost}`));
     const before = fmt(this.routes), after = fmt(routes);
     const added = [...after].filter(x => !before.has(x)), removed = [...before].filter(x => !after.has(x));
@@ -8552,6 +8905,103 @@ export class Ospf {
     }
   }
   neighborTable() { return [...this.nbrs.values()].map(n => ({ rid: n.rid, ip: n.ip, ifname: n.ifname, state: n.state })); }
+}
+
+// ================================================================ BFD (RFC 5880, single hop, simplified)
+// Two routers send each other small control packets many times per second. If none arrives
+// for interval × multiplier, the session goes Down and the protocols that asked for it
+// (OSPF, static routes) react at once instead of waiting for their own, much slower timers.
+export const BFD_PORT = 3784;
+export class Bfd {
+  constructor(dev) { this.dev = dev; this.sim = dev.sim; this.l3 = dev.l3; this.sessions = new Map(); this.gen = 0; }
+  get cfg() { return this.dev.cfg.bfd || {}; }
+  get interval() { return Math.max(50, Number(this.cfg.interval) || 300); }
+  get mult() { return Math.max(2, Number(this.cfg.mult) || 3); }
+  start() { this.stop(); this.sync(); }
+  stop() {
+    this.gen++;
+    for (const s of this.sessions.values()) { this.sim.cancel(s.tx); this.sim.cancel(s.detect); }
+    this.sessions = new Map();
+  }
+  /** Peers BFD should watch: next hops of static routes marked "BFD", and OSPF neighbors */
+  wanted() {
+    const want = new Map();
+    if (!this.cfg.enabled) return want;
+    const add = (peer, ifname, client) => {
+      if (!isIp(peer) || !ifname) return;
+      if (!want.has(peer)) want.set(peer, { ifname, clients: new Set() });
+      want.get(peer).clients.add(client);
+    };
+    for (const r of this.dev.cfg.routes || []) {
+      if (!r.bfd || !isIp(r.via)) continue;
+      const i = this.l3.ifaces().find(x => x.name !== 'lo' && inNet(r.via, intToIp(netOf(x.ip, x.prefix)), x.prefix));
+      add(r.via, i?.name, 'static');
+    }
+    if (this.cfg.ospf && this.dev.ospf?.enabled) for (const n of this.dev.ospf.nbrs.values()) add(n.ip, n.ifname, 'ospf');
+    return want;
+  }
+  sync() {
+    const want = this.wanted(), gen = this.gen;
+    for (const [peer, s] of this.sessions) if (!want.has(peer)) { this.sim.cancel(s.tx); this.sim.cancel(s.detect); this.sessions.delete(peer); }
+    for (const [peer, w] of want) {
+      let s = this.sessions.get(peer);
+      if (!s) {
+        s = { peer, ifname: w.ifname, state: 'Down', myDisc: 1 + Math.floor(this.sim.random() * 65535), yourDisc: 0, tx: null, detect: null, clients: w.clients, sport: 49152 + Math.floor(this.sim.random() * 16000) };
+        this.sessions.set(peer, s);
+        this.dev.record('info', `BFD: session to ${peer} on ${w.ifname} created for ${[...w.clients].map(c => c === 'ospf' ? 'OSPF' : 'a static route').join(' and ')} (every ${this.interval} ms, × ${this.mult})`, { tag: 'bfd-session', data: { peer } });
+        const tick = () => {
+          if (gen !== this.gen || this.sessions.get(peer) !== s) return;
+          this.send(s);
+          s.tx = this.sim.schedule(this.interval * (0.75 + this.sim.random() * 0.25), tick);
+        };
+        s.tx = this.sim.schedule(5 + this.sim.random() * this.interval * 0.5, tick);
+      }
+      s.clients = w.clients; s.ifname = w.ifname;
+    }
+  }
+  send(s) {
+    const src = this.l3.ifIp(s.ifname);
+    if (!src || !this.l3.linkUp(s.ifname)) return;
+    this.l3.output(ipPacket({ src, dst: s.peer, ttl: 255, proto: PROTO.UDP,
+      l4: udp(s.sport, BFD_PORT, { kind: 'bfd', state: s.state, myDisc: s.myDisc, yourDisc: s.yourDisc, interval: this.interval, mult: this.mult, diag: s.diag || '' }) }), {});
+  }
+  onPacket(ip) {
+    const s = this.sessions.get(ip.src), b = ip.l4.payload;
+    if (!s) return;
+    s.yourDisc = b.myDisc;
+    // Detection time: the neighbor's interval times its multiplier
+    this.sim.cancel(s.detect);
+    const det = b.interval * b.mult, gen = this.gen;
+    s.detect = this.sim.schedule(det, () => {
+      if (gen !== this.gen || this.sessions.get(s.peer) !== s || s.state === 'Down') return;
+      s.yourDisc = 0;
+      this.setState(s, 'Down', `no BFD packet for ${det} ms (detection time ${b.interval} ms × ${b.mult})`, 'Control Detection Time Expired');
+    });
+    if (s.state === 'Down' && b.state === 'Down') this.setState(s, 'Init', 'the neighbor answers');
+    else if (s.state === 'Down' && b.state === 'Init') this.setState(s, 'Up', 'three-way handshake complete');
+    else if (s.state === 'Init' && (b.state === 'Init' || b.state === 'Up')) this.setState(s, 'Up', 'three-way handshake complete');
+    else if (s.state === 'Up' && b.state === 'Down') this.setState(s, 'Down', 'the neighbor reports its session as down', 'Neighbor Signaled Session Down');
+  }
+  setState(s, st, why, diag = '') {
+    const prev = s.state;
+    if (prev === st) return;
+    s.state = st; s.diag = diag;
+    this.dev.record(st === 'Up' ? 'ok' : st === 'Down' ? 'err' : 'info', `BFD session to ${s.peer}: ${prev} → ${st}, ${why}`, { tag: 'bfd-state', data: { peer: s.peer, state: st } });
+    if (st === 'Down') this.send(s);
+    if (prev !== 'Up' && st !== 'Up') return;
+    // Tell the clients: OSPF drops the neighbor, static routes are withdrawn or come back
+    if (st === 'Down' && s.clients.has('ospf')) {
+      const n = [...(this.dev.ospf?.nbrs.values() || [])].find(x => x.ip === s.peer);
+      if (n) this.dev.ospf.down(n, 'BFD reports the neighbor as unreachable');
+    }
+    if (s.clients.has('static')) this.dev.record(st === 'Up' ? 'ok' : 'err', st === 'Up' ? `static route via ${s.peer} is active again (BFD Up)` : `static route via ${s.peer} withdrawn, BFD says the next hop is gone`, { tag: 'bfd-route', data: { peer: s.peer, up: st === 'Up' } });
+    this.sim.emit('config', this.dev.id);
+  }
+  onLink(ifname, up) {
+    if (!up) for (const s of this.sessions.values()) if (s.ifname === ifname) this.setState(s, 'Down', `${ifname} is down`, 'Path Down');
+  }
+  isUp(peer) { return this.sessions.get(peer)?.state === 'Up'; }
+  table() { return [...this.sessions.values()].map(s => ({ peer: s.peer, ifname: s.ifname, state: s.state, clients: [...s.clients], myDisc: s.myDisc, yourDisc: s.yourDisc })); }
 }
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js"

@@ -90,6 +90,7 @@ export function udpPayloadLen(udp) {
   if (p.kind === 'vxlan') return VXLAN_HDR + frameLen(p.frame);
   if (p.kind === 'dns') return dnsLen(p);
   if (p.kind === 'dhcp') return DHCP_LEN;
+  if (p.kind === 'bfd') return 24;
   return p.len || 0;
 }
 export function ipTotalLen(ip) { return IP_HDR + l4Len(ip); }

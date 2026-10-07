@@ -354,6 +354,7 @@ export class Ospf {
   setState(n, s, why) {
     const prev = n.state;
     n.state = s;
+    if (prev === 'Down' || s === 'Down') this.dev.bfd?.sync();
     const ok = s === 'Full';
     this.dev.record(ok ? 'ok' : 'info', `OSPF neighbor ${n.rid} (${n.ip} on ${n.ifname}): ${prev} → ${s}, ${why}`, { tag: 'ospf-neighbor', data: { rid: n.rid, state: s, ifname: n.ifname } });
     if (ok) { this.sendLsu(n.ifname, [...this.lsdb.values()]); this.originate(); }
@@ -363,6 +364,7 @@ export class Ospf {
     this.nbrs.delete(this.key(n.ifname, n.rid));
     this.dev.record('err', `OSPF neighbor ${n.rid} (${n.ifname}): ${n.state} → Down, ${why}`, { tag: 'ospf-neighbor', data: { rid: n.rid, state: 'Down', ifname: n.ifname } });
     this.originate();
+    this.dev.bfd?.sync();
   }
   onLink(ifname, up) {
     if (!this.enabled) return;
@@ -423,9 +425,14 @@ export class Ospf {
       for (const l of linksOf(u)) {
         if (l.type !== 'router' || !linksOf(l.rid).some(b => b.type === 'router' && b.rid === u)) continue;
         const nd = dist.get(u) + l.cost;
+        // First hops are a list: equal-cost paths are all kept (ECMP)
+        const hops = u === me ? [{ rid: l.rid, ifname: l.ifname }] : first.get(u);
         if (!dist.has(l.rid) || nd < dist.get(l.rid)) {
           dist.set(l.rid, nd);
-          first.set(l.rid, u === me ? { rid: l.rid, ifname: l.ifname } : first.get(u));
+          first.set(l.rid, [...hops]);
+        } else if (nd === dist.get(l.rid) && !done.has(l.rid)) {
+          const cur = first.get(l.rid);
+          for (const hp of hops) if (!cur.some(x => x.rid === hp.rid && x.ifname === hp.ifname)) cur.push(hp);
         }
       }
     }
@@ -433,19 +440,20 @@ export class Ospf {
     const best = new Map();
     for (const [r, d] of dist) {
       if (r === me) continue;
-      const hop = first.get(r);
-      const n = hop && [...this.nbrs.values()].find(x => x.rid === hop.rid && x.ifname === hop.ifname && x.state === 'Full');
-      if (!n) continue;
+      const nbrs = (first.get(r) || []).map(hop => [...this.nbrs.values()].find(x => x.rid === hop.rid && x.ifname === hop.ifname && x.state === 'Full')).filter(Boolean);
+      if (!nbrs.length) continue;
       for (const l of linksOf(r)) {
         if (l.type !== 'stub') continue;
         const k = `${l.net}/${l.len}`;
         if (connected.includes(k)) continue;
         const cost = d + l.cost;
         const cur = best.get(k);
-        if (!cur || cost < cur.cost) best.set(k, { net: l.net, len: l.len, via: n.ip, dev: n.ifname, cost, adv: r });
+        const add = nbrs.map(n => ({ net: l.net, len: l.len, via: n.ip, dev: n.ifname, cost, adv: r }));
+        if (!cur || cost < cur[0].cost) best.set(k, add);
+        else if (cost === cur[0].cost) for (const x of add) if (!cur.some(c => c.via === x.via && c.dev === x.dev)) cur.push(x);
       }
     }
-    const routes = [...best.values()].sort((a, b) => ipCmp(a.net, b.net) || a.len - b.len);
+    const routes = [...best.values()].flat().sort((a, b) => ipCmp(a.net, b.net) || a.len - b.len || ipCmp(a.via, b.via));
     const fmt = rs => new Set(rs.map(x => `${x.net}/${x.len} via ${x.via} cost ${x.cost}`));
     const before = fmt(this.routes), after = fmt(routes);
     const added = [...after].filter(x => !before.has(x)), removed = [...before].filter(x => !after.has(x));
@@ -459,4 +467,101 @@ export class Ospf {
     }
   }
   neighborTable() { return [...this.nbrs.values()].map(n => ({ rid: n.rid, ip: n.ip, ifname: n.ifname, state: n.state })); }
+}
+
+// ================================================================ BFD (RFC 5880, single hop, simplified)
+// Two routers send each other small control packets many times per second. If none arrives
+// for interval × multiplier, the session goes Down and the protocols that asked for it
+// (OSPF, static routes) react at once instead of waiting for their own, much slower timers.
+export const BFD_PORT = 3784;
+export class Bfd {
+  constructor(dev) { this.dev = dev; this.sim = dev.sim; this.l3 = dev.l3; this.sessions = new Map(); this.gen = 0; }
+  get cfg() { return this.dev.cfg.bfd || {}; }
+  get interval() { return Math.max(50, Number(this.cfg.interval) || 300); }
+  get mult() { return Math.max(2, Number(this.cfg.mult) || 3); }
+  start() { this.stop(); this.sync(); }
+  stop() {
+    this.gen++;
+    for (const s of this.sessions.values()) { this.sim.cancel(s.tx); this.sim.cancel(s.detect); }
+    this.sessions = new Map();
+  }
+  /** Peers BFD should watch: next hops of static routes marked "BFD", and OSPF neighbors */
+  wanted() {
+    const want = new Map();
+    if (!this.cfg.enabled) return want;
+    const add = (peer, ifname, client) => {
+      if (!isIp(peer) || !ifname) return;
+      if (!want.has(peer)) want.set(peer, { ifname, clients: new Set() });
+      want.get(peer).clients.add(client);
+    };
+    for (const r of this.dev.cfg.routes || []) {
+      if (!r.bfd || !isIp(r.via)) continue;
+      const i = this.l3.ifaces().find(x => x.name !== 'lo' && inNet(r.via, intToIp(netOf(x.ip, x.prefix)), x.prefix));
+      add(r.via, i?.name, 'static');
+    }
+    if (this.cfg.ospf && this.dev.ospf?.enabled) for (const n of this.dev.ospf.nbrs.values()) add(n.ip, n.ifname, 'ospf');
+    return want;
+  }
+  sync() {
+    const want = this.wanted(), gen = this.gen;
+    for (const [peer, s] of this.sessions) if (!want.has(peer)) { this.sim.cancel(s.tx); this.sim.cancel(s.detect); this.sessions.delete(peer); }
+    for (const [peer, w] of want) {
+      let s = this.sessions.get(peer);
+      if (!s) {
+        s = { peer, ifname: w.ifname, state: 'Down', myDisc: 1 + Math.floor(this.sim.random() * 65535), yourDisc: 0, tx: null, detect: null, clients: w.clients, sport: 49152 + Math.floor(this.sim.random() * 16000) };
+        this.sessions.set(peer, s);
+        this.dev.record('info', `BFD: session to ${peer} on ${w.ifname} created for ${[...w.clients].map(c => c === 'ospf' ? 'OSPF' : 'a static route').join(' and ')} (every ${this.interval} ms, × ${this.mult})`, { tag: 'bfd-session', data: { peer } });
+        const tick = () => {
+          if (gen !== this.gen || this.sessions.get(peer) !== s) return;
+          this.send(s);
+          s.tx = this.sim.schedule(this.interval * (0.75 + this.sim.random() * 0.25), tick);
+        };
+        s.tx = this.sim.schedule(5 + this.sim.random() * this.interval * 0.5, tick);
+      }
+      s.clients = w.clients; s.ifname = w.ifname;
+    }
+  }
+  send(s) {
+    const src = this.l3.ifIp(s.ifname);
+    if (!src || !this.l3.linkUp(s.ifname)) return;
+    this.l3.output(ipPacket({ src, dst: s.peer, ttl: 255, proto: PROTO.UDP,
+      l4: udp(s.sport, BFD_PORT, { kind: 'bfd', state: s.state, myDisc: s.myDisc, yourDisc: s.yourDisc, interval: this.interval, mult: this.mult, diag: s.diag || '' }) }), {});
+  }
+  onPacket(ip) {
+    const s = this.sessions.get(ip.src), b = ip.l4.payload;
+    if (!s) return;
+    s.yourDisc = b.myDisc;
+    // Detection time: the neighbor's interval times its multiplier
+    this.sim.cancel(s.detect);
+    const det = b.interval * b.mult, gen = this.gen;
+    s.detect = this.sim.schedule(det, () => {
+      if (gen !== this.gen || this.sessions.get(s.peer) !== s || s.state === 'Down') return;
+      s.yourDisc = 0;
+      this.setState(s, 'Down', `no BFD packet for ${det} ms (detection time ${b.interval} ms × ${b.mult})`, 'Control Detection Time Expired');
+    });
+    if (s.state === 'Down' && b.state === 'Down') this.setState(s, 'Init', 'the neighbor answers');
+    else if (s.state === 'Down' && b.state === 'Init') this.setState(s, 'Up', 'three-way handshake complete');
+    else if (s.state === 'Init' && (b.state === 'Init' || b.state === 'Up')) this.setState(s, 'Up', 'three-way handshake complete');
+    else if (s.state === 'Up' && b.state === 'Down') this.setState(s, 'Down', 'the neighbor reports its session as down', 'Neighbor Signaled Session Down');
+  }
+  setState(s, st, why, diag = '') {
+    const prev = s.state;
+    if (prev === st) return;
+    s.state = st; s.diag = diag;
+    this.dev.record(st === 'Up' ? 'ok' : st === 'Down' ? 'err' : 'info', `BFD session to ${s.peer}: ${prev} → ${st}, ${why}`, { tag: 'bfd-state', data: { peer: s.peer, state: st } });
+    if (st === 'Down') this.send(s);
+    if (prev !== 'Up' && st !== 'Up') return;
+    // Tell the clients: OSPF drops the neighbor, static routes are withdrawn or come back
+    if (st === 'Down' && s.clients.has('ospf')) {
+      const n = [...(this.dev.ospf?.nbrs.values() || [])].find(x => x.ip === s.peer);
+      if (n) this.dev.ospf.down(n, 'BFD reports the neighbor as unreachable');
+    }
+    if (s.clients.has('static')) this.dev.record(st === 'Up' ? 'ok' : 'err', st === 'Up' ? `static route via ${s.peer} is active again (BFD Up)` : `static route via ${s.peer} withdrawn, BFD says the next hop is gone`, { tag: 'bfd-route', data: { peer: s.peer, up: st === 'Up' } });
+    this.sim.emit('config', this.dev.id);
+  }
+  onLink(ifname, up) {
+    if (!up) for (const s of this.sessions.values()) if (s.ifname === ifname) this.setState(s, 'Down', `${ifname} is down`, 'Path Down');
+  }
+  isUp(peer) { return this.sessions.get(peer)?.state === 'Up'; }
+  table() { return [...this.sessions.values()].map(s => ({ peer: s.peer, ifname: s.ifname, state: s.state, clients: [...s.clients], myDisc: s.myDisc, yourDisc: s.yourDisc })); }
 }

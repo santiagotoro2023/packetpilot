@@ -22,6 +22,8 @@ const TRY = {
   vrrp: sim => { sim.runFor(8000); runCommand(sim.dev('pc1'), 'ping -c 40 10.50.0.5'); sim.runFor(3000); runCommand(sim.dev('ra'), 'ip link set eth1 down'); sim.runFor(40000); },
   slow: sim => run(sim, 'client', 'curl http://web.lab/', 60000),
   mtu: sim => run(sim, 'client', 'curl http://10.0.2.80/', 30000),
+  ecmp: sim => { sim.runFor(12000); run(sim, 'c1', 'ping -c 1 10.4.0.10'); run(sim, 'c2', 'ping -c 1 10.4.0.10'); },
+  bfd: sim => { sim.runFor(15000); runCommand(sim.dev('pc1'), 'ping -c 40 10.2.0.10'); sim.runFor(3500); linkOf(sim, 'prov', 'r2').loss = 100; sim.runFor(50000); },
   rstp: sim => { sim.runFor(35000); runCommand(sim.dev('pc1'), 'ping -c 40 10.0.0.3'); sim.runFor(3000); runCommand(sim.dev('sw3'), `ip link set ${sim.dev('sw3').bridge.stpTable().rootPort} down`); sim.runFor(45000); }
 };
 const FIX = {
@@ -38,6 +40,12 @@ const FIX = {
     sim => { cfg(sim, 'rb').vrrp = [{ ifname: 'eth1', vrid: 1, vip: '10.0.0.1', priority: 100, preempt: true }]; changed(sim, 'rb'); }],
   slow: [sim => { delete linkOf(sim, 'r1', 'sw1').loss; }, sim => { const l = linkOf(sim, 'client', 'r1'); delete l.loss; delete l.delay; }],
   mtu: [sim => { cfg(sim, 'r1').mssClamp = 1360; }, sim => { cfg(sim, 'fw').acl.unshift({ action: 'allow', proto: 'icmp', icmpType: 3, src: 'any', dst: 'any' }); }],
+  ecmp: [sim => { cfg(sim, 'r1').maxPaths = 4; changed(sim, 'r1'); },
+    sim => { cfg(sim, 'r1').ospf.ifaces.eth2.cost = 10; changed(sim, 'r1'); },
+    sim => { cfg(sim, 'r3').ospf.ifaces.eth2.cost = 10; changed(sim, 'r3'); }],
+  bfd: [sim => { cfg(sim, 'r2').bfd.enabled = true; changed(sim, 'r2'); },
+    sim => { for (const id of ['r1', 'r2']) { cfg(sim, id).bfd.ospf = true; changed(sim, id); } },
+    sim => { cfg(sim, 'r2').bfd = { enabled: true, interval: 300, mult: 3, ospf: true }; changed(sim, 'r2'); }],
   rstp: [sim => { cfg(sim, 'sw3').stp.mode = 'rstp'; changed(sim, 'sw3'); },
     sim => { for (const id of ['sw2', 'sw4']) if (cfg(sim, id).stp.mode !== 'rstp') { cfg(sim, id).stp.mode = 'rstp'; changed(sim, id); } }]
 };

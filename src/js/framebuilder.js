@@ -11,8 +11,16 @@ const BLOCKS = {
   udp: { name: 'UDP', size: 8, kind: 'udp', note: 'Ports, length, checksum' },
   tcp: { name: 'TCP', size: 20, kind: 'tcp', note: 'Ports, sequence, flags (without options)' },
   vxlan: { name: 'VXLAN', size: 8, kind: 'vxlan', note: 'Flags, VNI' },
+  // Protocols on top: where they may sit (in) and whether anything may follow (last)
+  dhcp: { name: 'DHCP', size: 300, kind: 'data', in: ['udp'], last: true, note: 'Discover, Offer, Request, ACK on UDP 67/68' },
+  dns: { name: 'DNS', size: 32, kind: 'data', in: ['udp'], last: true, note: 'Query or answer on UDP 53 (size depends on the name)' },
+  vrrp: { name: 'VRRP', size: 12, kind: 'rt', in: ['ip'], last: true, note: 'Advertisement: group, priority, virtual IP (protocol 112)' },
+  ospf: { name: 'OSPF Hello', size: 48, kind: 'rt', in: ['ip'], last: true, note: 'Router ID, area, timers, neighbors (protocol 89)' },
+  bfd: { name: 'BFD', size: 24, kind: 'rt', in: ['udp'], last: true, note: 'Control packet: state, discriminators, intervals (UDP 3784)' },
   data: { name: 'Data', size: null, kind: 'data', note: 'Application payload' }
 };
+// Headings in the palette, so the growing list stays easy to scan
+const GROUP = { eth: 'Layer 2', vlan: 'Layer 2', arp: 'Layer 2', stp: 'Layer 2', ip: 'Layer 3', icmp: 'Layer 3', udp: 'Transport', tcp: 'Transport', vxlan: 'Tunnels' };
 const PRESETS = {
   'Ping': ['eth', 'ip', 'icmp', 'data'],
   'ARP request': ['eth', 'arp'],
@@ -20,6 +28,11 @@ const PRESETS = {
   'DNS over UDP': ['eth', 'ip', 'udp', 'data'],
   'TCP SYN': ['eth', 'ip', 'tcp'],
   'BPDU': ['eth', 'stp'],
+  'DHCP Discover': ['eth', 'ip', 'udp', 'dhcp'],
+  'DNS query': ['eth', 'ip', 'udp', 'dns'],
+  'OSPF Hello': ['eth', 'ip', 'ospf'],
+  'VRRP': ['eth', 'ip', 'vrrp'],
+  'BFD': ['eth', 'ip', 'udp', 'bfd'],
   'Ping over VXLAN': ['eth', 'ip', 'udp', 'vxlan', 'eth', 'ip', 'icmp', 'data']
 };
 
@@ -42,6 +55,9 @@ function validate(seq) {
     if (b === 'data' && !['udp', 'tcp', 'icmp'].includes(prev)) err(i, 'Application data is carried in UDP, TCP or ICMP.');
     if (b === 'data' && next) err(i + 1, 'Only the FCS comes after the data.');
     if (b === 'vlan' && seq.filter(x => x === 'vlan').length > 2) err(i, 'More than two tags (QinQ) are unusual.');
+    const B = BLOCKS[b];
+    if (B.in && !B.in.includes(prev)) err(i, `${B.name} is carried in ${B.in.map(x => BLOCKS[x].name).join(' or ')}.`);
+    if (B.last && next) err(i + 1, `Nothing follows ${B.name}, it is the payload itself.`);
   }
   return { msgs: msgs.length ? msgs : ['Valid frame.'], bad, ok: !msgs.length };
 }
@@ -51,7 +67,10 @@ export function renderFrameBuilder(root) {
   let dataLen = 56;
   let dragFrom = null;
   const pal = h('div', { class: 'fb-pal' });
+  let lastGroup = null;
   for (const [k, b] of Object.entries(BLOCKS)) {
+    const g = GROUP[k] || 'Protocols and data';
+    if (g !== lastGroup) { pal.append(h('div', { class: 'fb-grp' }, g)); lastGroup = g; }
     const el = h('div', { class: 'fb-blk', draggable: 'true', style: { '--lc': `var(--l-${b.kind})` }, tabindex: '0', role: 'button', title: `${b.note}. Click to append at the end.` },
       b.name, h('span', { class: 'sz' }, b.size === null ? 'variable' : `${b.size} B`));
     el.addEventListener('dragstart', e => { e.dataTransfer.setData('text/fb', k); dragFrom = null; });
