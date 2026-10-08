@@ -1,13 +1,24 @@
 // Browser helpers for the tests in test/browser/ (Playwright with Chromium).
 import { chromium } from 'playwright';
+@@IF lib:auth@@
+import { signIn } from './auth.mjs';
+@@END@@
 
 export const BASE = process.env.BASE || 'http://127.0.0.1:8080/';
 export const OUT = process.env.OUT || 'test/.output';
 
 /** A page with error collection: errors[] gets every page error, console error and failed request */
+@@IF lib:auth@@
+// Signed in as the test administrator (test/lib/auth.mjs); open({ signedIn: false }) for the sign-in page
+export async function open({ width = 1440, height = 900, colorScheme = 'light', path = '', signedIn = true } = {}) {
+  const browser = await chromium.launch();
+  const context = await browser.newContext({ viewport: { width, height }, colorScheme });
+  if (signedIn) await signIn(context, BASE);
+@@ELSE@@
 export async function open({ width = 1440, height = 900, colorScheme = 'light', path = '' } = {}) {
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width, height }, colorScheme });
+@@END@@
   const page = await context.newPage();
   const errors = [], requests = [];
   page.on('pageerror', e => errors.push(`pageerror: ${e.message}`));

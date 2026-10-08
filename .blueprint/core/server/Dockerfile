@@ -16,6 +16,10 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
 FROM node:22-alpine
 ARG VERSION=dev
+@@IF packages@@
+# System packages the app server needs (APP_PACKAGES in project.conf)
+RUN apk add --no-cache @@APP_PACKAGES@@
+@@END@@
 LABEL org.opencontainers.image.title="@@APP_NAME@@" \
       org.opencontainers.image.description="@@APP_DESCRIPTION@@" \
       org.opencontainers.image.source="https://github.com/@@APP_REPO@@" \
@@ -33,6 +37,11 @@ COPY package.json ./
 COPY server/ ./server/
 COPY src/ ./web/
 RUN rm -f web/site.json web/package.json && chmod -R a+rX /app
+@@IF lib:secrets@@
+# The key for the stored secrets: a volume here (Compose), or @@APP_ENV@@_SECRET_KEY (Kubernetes)
+RUN mkdir -p /var/lib/@@APP_ID@@ && chown node:node /var/lib/@@APP_ID@@ && chmod 700 /var/lib/@@APP_ID@@
+ENV @@APP_ENV@@_SECRET_KEY_FILE=/var/lib/@@APP_ID@@/@@APP_ID@@.key
+@@END@@
 USER node
 
 EXPOSE 8080

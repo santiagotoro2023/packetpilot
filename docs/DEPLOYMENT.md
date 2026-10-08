@@ -1,6 +1,6 @@
 # Deploying PacketPilot
 
-<!-- Written by the blueprint (1.0.0) from project.conf: do not edit, run build.sh. -->
+<!-- Written by the blueprint (1.1.1) from project.conf: do not edit, run build.sh. -->
 
 PacketPilot is a static web app: nginx serves HTML, CSS and JavaScript, and everything
 else runs in the browser. **Nothing is stored on the server.** Every user's data lives in

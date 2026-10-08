@@ -42,7 +42,7 @@
 # =============================================================================
 set -euo pipefail
 
-# Made from blueprint 1.0.0 (https://github.com/santiagotoro2023/project-blueprint)
+# Made from blueprint 1.1.1 (https://github.com/santiagotoro2023/project-blueprint)
 APP_ID="packetpilot"
 APP_NAME="PacketPilot"
 APP_VERSION="3.0.0"
@@ -7871,7 +7871,7 @@ export async function unpack(code) {
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js/core"
   cat > "$W/js/core/shell.js" <<'__PACKETPILOT_FILE_END__'
-// The app shell of every blueprint project (blueprint 1.0.0): theme switch,
+// The app shell of every blueprint project (blueprint 1.1.1): theme switch,
 // the active menu entry, the move card and the start of the hash router.
 import { toast } from './ui.js';
 import { I } from './icons.js';
@@ -7927,7 +7927,7 @@ __PACKETPILOT_FILE_END__
   mkdir -p "$W/js/core"
   cat > "$W/js/core/site.js" <<'__PACKETPILOT_FILE_END__'
 // Facts about this installation (site.json, written by the installer, the container or
-// the app server) and moving a user's data between addresses (blueprint 1.0.0).
+// the app server) and moving a user's data between addresses (blueprint 1.1.1).
 // Browser data lives per address, so when a server gets a new main address, users take
 // their data along with one click.
 import { h, toast } from './ui.js';
@@ -7995,7 +7995,7 @@ export async function receiveMigration(code, store, route) {
 __PACKETPILOT_FILE_END__
   mkdir -p "$W/js/core"
   cat > "$W/js/core/storage.js" <<'__PACKETPILOT_FILE_END__'
-// Storage in the browser for PacketPilot (blueprint 1.0.0).
+// Storage in the browser for PacketPilot (blueprint 1.1.1).
 // One key, packetpilot.v1, holds everything. Its shape only ever grows: new fields get
 // defaults, nothing is renamed, so an update never loses what a user did.
 // The project describes its data (src/js/store.js): createStore() does the rest.

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The blueprint tool. Every project carries it in .blueprint/tools/ at the version it uses.
 //
-//   node tools/blueprint.mjs new <dir> --id myapp --name "My App" --repo owner/myapp --profile static|server
+//   node tools/blueprint.mjs new <dir> --id myapp --name "My App" --repo owner/myapp --profile static|server [--library auth,audit] [--packages "a b"]
 //   node .blueprint/tools/blueprint.mjs render      write all blueprint files from project.conf (build.sh runs it)
 //   node .blueprint/tools/blueprint.mjs check       does the project follow the blueprint? (CI runs it)
 //   node .blueprint/tools/blueprint.mjs update [--to 1.2.0]   move to another blueprint version
@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseConf, checkConf, variables, layerFiles, libraryFiles, libraryElements, renderFile, renderText, walk, sha256, CONF_KEYS } from './lib/render.mjs';
 import { logoSvg, railSvg, faviconHref } from './make-logo.mjs';
@@ -88,7 +88,8 @@ export function integrity(dir) {
 // ---------------------------------------------------------------- Rendering
 /** Every file the blueprint owns in a project: [{ dest, content }] */
 export function coreOutput(bpDir, vars) {
-  const out = [...layerFiles(bpDir, 'core', vars).filter(f => !f.dest.startsWith('_blocks/')), ...libraryFiles(bpDir, vars)].map(f => ({ dest: f.dest, content: renderFile(f, vars) }));
+  // A core file that renders empty (all of it inside @@IF lib:…@@ of an element that is off) is not written
+  const out = [...layerFiles(bpDir, 'core', vars).filter(f => !f.dest.startsWith('_blocks/')), ...libraryFiles(bpDir, vars)].map(f => ({ dest: f.dest, content: renderFile(f, vars) })).filter(f => f.content.length > 0);
   // The logo: always made from LOGO_PATTERN and LOGO_COLORS
   const opts = { pattern: vars.LOGO_PATTERN, colors: vars.LOGO_COLORS.split(',') };
   for (const theme of ['light', 'dark']) out.push({ dest: `assets/logo/${vars.APP_ID}-icon-${theme}.svg`, content: Buffer.from(logoSvg({ ...opts, theme }) + '\n') });
@@ -178,12 +179,15 @@ async function cmdNew(pos, opt) {
     LOGO_PATTERN: opt.pattern || 'bars',
     LOGO_COLORS: opt.colors || 'blue,green,brown,orange'
   };
+  // Library elements and packages already at the start: the template wires them in
+  if (opt.library) conf.LIBRARY = String(opt.library);
+  if (opt.packages) conf.APP_PACKAGES = String(opt.packages);
   const errors = checkConf(conf);
   if (errors.length) die(`Settings:\n  ${errors.join('\n  ')}`);
   say(`New ${conf.APP_PROFILE} project ${conf.APP_NAME} in ${dir}`);
   fs.mkdirSync(dir, { recursive: true });
   const order = Object.keys(CONF_KEYS);
-  fs.writeFileSync(path.join(dir, 'project.conf'), '# Blueprint settings of this project (see .blueprint/spec/03-repository.md, "project.conf").\n# Every blueprint file is rendered from them: change them, then run build.sh.\n' + order.map(k => `${k}="${conf[k].replace(/(["\\$`])/g, '\\$1')}"`).join('\n') + '\n');
+  fs.writeFileSync(path.join(dir, 'project.conf'), '# Blueprint settings of this project (see .blueprint/spec/03-repository.md, "project.conf").\n# Every blueprint file is rendered from them: change them, then run build.sh.\n' + [...order, 'LIBRARY', 'APP_PACKAGES'].filter(k => k in conf).map(k => `${k}="${conf[k].replace(/(["\\$`])/g, '\\$1')}"`).join('\n') + '\n');
   fs.writeFileSync(path.join(dir, 'VERSION'), '0.1.0\n');
   vendor(BP, path.join(dir, '.blueprint'));
   const p = project(dir);
@@ -258,8 +262,10 @@ function cmdUpdate(opt) {
   const notes = changelogBetween(path.join(src, 'CHANGELOG.md'), from, to);
   say(`Blueprint ${from} → ${to}`);
   vendor(src, p.bpDir);
-  const n = render(project(p.dir));
-  ok(`${n} file(s) updated`);
+  // Render with the tool of the new version: it may know markers this one does not
+  const r = spawnSync(process.execPath, [path.join(p.bpDir, 'tools', 'blueprint.mjs'), 'render'], { cwd: p.dir, encoding: 'utf8' });
+  process.stdout.write(r.stdout); process.stderr.write(r.stderr);
+  if (r.status !== 0) die('Rendering with the new blueprint failed (see above).');
   if (notes) console.log(`\nWhat changed (read the "Projects must" lines):\n\n${notes.trim().replace(/^/gm, '  ')}\n`);
   console.log('Next: bash build.sh, run all tests, fix what check reports, then commit:');
   console.log(`  git commit -am "Blueprint ${to}"`);

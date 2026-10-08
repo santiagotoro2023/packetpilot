@@ -56,6 +56,13 @@ spec:
                   name: {{ include "@@APP_ID@@.dbSecret" . }}
                   key: {{ ternary .Values.database.existingSecretKey "url" (not (empty .Values.database.existingSecret)) }}
 @@END@@
+@@IF lib:secrets@@
+            - name: @@APP_ENV@@_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "@@APP_ID@@.keySecret" . }}
+                  key: {{ ternary .Values.secretKey.existingSecretKey "key" (not (empty .Values.secretKey.existingSecret)) }}
+@@END@@
           ports:
             - name: http
               containerPort: 8080

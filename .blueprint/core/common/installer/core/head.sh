@@ -120,6 +120,10 @@ APP_AUTO_BACKUP_SET="no"
 APP_PURGE="no"
 APP_RESTORE_FILE=""
 @@END@@
+@@IF lib:secrets@@
+APP_KEY_DIR="/var/lib/${APP_ID}"
+APP_KEY_FILE="${APP_KEY_DIR}/${APP_ID}.key"   # encrypts the stored secrets: back it up apart from the database
+@@END@@
 
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m ✓ \033[0m %s\n' "$*"; }

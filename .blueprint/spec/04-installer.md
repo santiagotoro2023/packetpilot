@@ -68,6 +68,7 @@ for features, 13-updating.md for versions), never only in one app.
 | `/etc/systemd/system/<id>-renew.timer` | daily certificate renewal (with Let's Encrypt) |
 | `/etc/systemd/system/<id>-backup.timer` | server: daily backup |
 | `/var/backups/<id>/` | server: `pg_dump` backups, the newest 14 kept |
+| `/var/lib/<id>/<id>.key` | with the library element `secrets`: the key for the stored secrets (640, root:<id>); kept by `--uninstall`, removed by `--purge` |
 | PostgreSQL database `<id>`, role `<id>` | server: local database, peer authentication (no password) |
 
 ## 4.4 Behavior that every app shares
@@ -88,6 +89,11 @@ for features, 13-updating.md for versions), never only in one app.
 - **Server profile:** before every update the database is backed up; the service is started and
   must answer `/healthz` within 60 seconds, otherwise the script shows its log and stops; `--restore`
   backs up the current state first; `--uninstall` keeps database and backups.
+
+- **Packages of the app** (`APP_PACKAGES`, server profile) are installed with apt together with
+  the core's packages.
+- **Library elements** add their parts: `secrets` makes the key once and keeps it, `auth` prints
+  the setup code of the first administrator at the end of the first install.
 
 ## 4.5 The app's additions: `installer/app.sh`
 

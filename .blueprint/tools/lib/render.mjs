@@ -38,7 +38,9 @@ export function parseConf(text) {
 
 // Optional settings
 export const CONF_OPTIONAL = {
-  LIBRARY: v => v === '' || /^[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*$/.test(v) || 'comma-separated names of library elements (see .blueprint/library/), or empty'
+  LIBRARY: v => v === '' || /^[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*$/.test(v) || 'comma-separated names of library elements (see .blueprint/library/), or empty',
+  // System packages the app server needs (server profile): the same names in Debian and Alpine
+  APP_PACKAGES: v => v === '' || /^[a-z0-9][a-z0-9.+-]*( [a-z0-9][a-z0-9.+-]*)*$/.test(v) || 'package names separated by single spaces, the same in Debian and Alpine (e.g. "ansible-core openssh-client")'
 };
 
 export function checkConf(conf) {
@@ -50,6 +52,7 @@ export function checkConf(conf) {
     if (r !== true) errors.push(`${k}="${conf[k]}": ${r}`);
   }
   for (const k of Object.keys(conf)) if (!(k in CONF_KEYS) && !(k in CONF_OPTIONAL)) errors.push(`${k} is not a blueprint setting`);
+  if (conf.APP_PACKAGES && conf.APP_PROFILE === 'static') errors.push('APP_PACKAGES is for the server profile only (a static app has no app server)');
   return errors;
 }
 
@@ -62,21 +65,30 @@ export function variables(conf, { version, blueprintVersion }) {
     APP_OWNER: owner,
     APP_OWNER_LC: owner.toLowerCase(),
     APP_REPO_NAME: repoName,
+    APP_PACKAGES: conf.APP_PACKAGES || '',
+    LIBRARY: conf.LIBRARY || '',
     VERSION: version,
     BLUEPRINT_VERSION: blueprintVersion
   };
 }
 
-const MARK = /@@(IF (static|server)|ELSE|END)@@/;
+const MARK = /@@(IF (static|server|packages|lib:[a-z][a-z0-9-]*)|ELSE|END)@@/;
 
-/** Replace @@KEY@@ placeholders and keep only the blocks of this profile */
+/** Does a block condition hold: the profile, APP_PACKAGES set, or a library element switched on */
+function holds(cond, vars) {
+  if (cond === 'packages') return !!vars.APP_PACKAGES;
+  if (cond.startsWith('lib:')) return (vars.LIBRARY || '').split(',').includes(cond.slice(4));
+  return cond === vars.APP_PROFILE;
+}
+
+/** Replace @@KEY@@ placeholders and keep only the blocks of this profile (and its packages and library elements) */
 export function renderText(text, vars, file = '') {
   const lines = text.split('\n'), out = [], stack = [];
   for (const [i, line] of lines.entries()) {
     const m = line.match(MARK);
     if (m && line.trim() !== m[0]) throw new Error(`${file}:${i + 1}: ${m[0]} must stand alone on its line`);
     if (m) {
-      if (m[1].startsWith('IF')) stack.push({ keep: m[2] === vars.APP_PROFILE, line: i + 1 });
+      if (m[1].startsWith('IF')) stack.push({ keep: holds(m[2], vars), line: i + 1 });
       else if (m[1] === 'ELSE') { if (!stack.length) throw new Error(`${file}:${i + 1}: @@ELSE@@ without @@IF@@`); stack.at(-1).keep = !stack.at(-1).keep; }
       else if (!stack.pop()) throw new Error(`${file}:${i + 1}: @@END@@ without @@IF@@`);
       continue;

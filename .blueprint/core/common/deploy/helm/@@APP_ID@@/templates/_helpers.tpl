@@ -55,6 +55,23 @@ app.kubernetes.io/component: database
 {{- end }}
 
 @@END@@
+@@IF lib:secrets@@
+{{/* The Secret with the key for the stored secrets */}}
+{{- define "@@APP_ID@@.keySecret" -}}
+{{- .Values.secretKey.existingSecret | default (printf "%s-key" (include "@@APP_ID@@.fullname" .)) }}
+{{- end }}
+
+{{/* The key: kept from the existing Secret, or new (32 random bytes, base64) */}}
+{{- define "@@APP_ID@@.keyValue" -}}
+{{- $s := lookup "v1" "Secret" .Release.Namespace (printf "%s-key" (include "@@APP_ID@@.fullname" .)) }}
+{{- if and $s $s.data (hasKey $s.data "key") }}
+{{- index $s.data "key" | b64dec }}
+{{- else }}
+{{- randAlphaNum 32 | b64enc }}
+{{- end }}
+{{- end }}
+
+@@END@@
 
 {{/* The public address: set explicitly, or from the first Ingress host */}}
 {{- define "@@APP_ID@@.canonical" -}}

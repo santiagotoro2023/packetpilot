@@ -109,6 +109,16 @@ database:
   existingSecret: ""
   existingSecretKey: url
 @@END@@
+@@IF lib:secrets@@
+
+# The key that encrypts the stored secrets. Empty: generated at the first install and kept in
+# the Secret <release>-@@APP_ID@@-key, which helm uninstall never deletes. Back it up:
+#   kubectl get secret <release>-@@APP_ID@@-key -o jsonpath='{.data.key}' | base64 -d
+secretKey:
+  # ... or an existing Secret that holds the key (32 random bytes, base64)
+  existingSecret: ""
+  existingSecretKey: key
+@@END@@
 
 autoscaling:
   enabled: false
@@ -135,6 +145,12 @@ networkPolicy:
   enabled: false
   ingressNamespaceSelector:
     kubernetes.io/metadata.name: ingress-nginx
+@@IF server@@
+  # More connections the app may open, as NetworkPolicy egress rules, e.g.
+  #   - to: [{ ipBlock: { cidr: 10.0.0.0/8 } }]
+  #     ports: [{ port: 22, protocol: TCP }]
+  extraEgress: []
+@@END@@
 
 nodeSelector: {}
 tolerations: []

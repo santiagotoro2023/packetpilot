@@ -32,6 +32,19 @@ stringData:
   password: change-me
   url: postgres://@@APP_ID@@:change-me@db:5432/@@APP_ID@@
 ---
+@@IF lib:secrets@@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: @@APP_ID@@-key
+  namespace: @@APP_ID@@
+type: Opaque
+stringData:
+  # The key that encrypts the stored secrets: put in a new one before the first apply
+  # (openssl rand -base64 32), back it up, and never change it afterwards
+  key: ""
+---
+@@END@@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -168,6 +181,11 @@ spec:
             - name: @@APP_ENV@@_DATABASE_URL
               valueFrom:
                 secretKeyRef: { name: @@APP_ID@@-db, key: url }
+@@END@@
+@@IF lib:secrets@@
+            - name: @@APP_ENV@@_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: @@APP_ID@@-key, key: key }
 @@END@@
           ports:
             - name: http

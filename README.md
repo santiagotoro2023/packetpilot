@@ -146,7 +146,7 @@ For presentations there is also the icon with the name PacketPilot next to it (`
 <!-- blueprint:development -->
 ## Development
 
-PacketPilot follows the [project blueprint](https://github.com/santiagotoro2023/project-blueprint) 1.0.0 (`.blueprint/`, specification in `.blueprint/spec/`): the same design, installer, deployment, tests and repository layout as every project of the family. `project.conf` holds the settings every blueprint file is made from; [DEVIATIONS.md](DEVIATIONS.md) lists where this project deliberately differs.
+PacketPilot follows the [project blueprint](https://github.com/santiagotoro2023/project-blueprint) 1.1.1 (`.blueprint/`, specification in `.blueprint/spec/`): the same design, installer, deployment, tests and repository layout as every project of the family. `project.conf` holds the settings every blueprint file is made from; [DEVIATIONS.md](DEVIATIONS.md) lists where this project deliberately differs.
 
 ```bash
 npm install                             # once: Playwright for the browser tests
