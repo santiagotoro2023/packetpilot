@@ -63,6 +63,14 @@ export const store = {
   },
   markLesson(lessonId) { const p = (mem().progress[lessonId] ??= { steps: {}, done: false }); p.done = true; persist(); },
   lessonDone(lessonId) { return !!mem().progress[lessonId]?.done; },
+  /** A restructured lesson takes over the completion of the lesson it replaced (only adds, never removes) */
+  adoptLesson(lessonId, oldId, steps) {
+    const m = mem();
+    if (!m.progress[oldId]?.done || m.progress[lessonId]?.done) return;
+    const p = (m.progress[lessonId] ??= { steps: {}, done: false });
+    for (let i = 0; i < steps; i++) p.steps[i] = true;
+    p.done = true; persist();
+  },
   lessonSteps(lessonId) { return Object.keys(mem().progress[lessonId]?.steps || {}).length; },
   resetProgress() { base.update(d => ({ ...d, progress: {}, answers: {}, practice: empty().practice })); },
   // Partial answers of an exercise or lab step, so they survive navigation and reloads

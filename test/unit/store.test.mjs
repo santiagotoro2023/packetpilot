@@ -45,4 +45,14 @@ test('merging keeps the best of both sides', () => {
 test('a file that is not a backup is refused', () => {
   assert.throws(() => store.importAll('{"hello": 1}'), /Not a valid PacketPilot file/);
 });
+test('a restructured lesson takes over the completion of the lesson it replaced', () => {
+  store.resetProgress();
+  store.adoptLesson('new-a', 'old', 3);
+  assert.equal(store.lessonDone('new-a'), false, 'nothing to take over');
+  store.markStep('old', 0); store.markLesson('old');
+  store.adoptLesson('new-a', 'old', 3); store.adoptLesson('new-b', 'old', 2);
+  assert.ok(store.lessonDone('new-a') && store.lessonDone('new-b'));
+  assert.equal(store.lessonSteps('new-a'), 3); assert.ok(store.stepDone('new-b', 1));
+  assert.ok(store.lessonDone('old'), 'the old entry stays');
+});
 console.log(`\n${passed} storage tests passed`);

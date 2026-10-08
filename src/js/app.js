@@ -379,7 +379,13 @@ const ALIAS = { lektion: 'lesson', labor: 'lab', netze: 'networks', baukasten: '
 function markNav(nav) {
   markRail(n => (n === 'course' && (nav === '' || nav === 'lesson' || nav === 'print')) || n === nav);
 }
+// A lesson that replaced an older one (lesson.formerly) counts as done when the older one was:
+// completed lessons stay completed when the course is restructured
+function adoptReplacedLessons() {
+  for (const l of MODULES.flatMap(m => m.lessons)) if (l.formerly) store.adoptLesson(l.id, l.formerly, l.steps.length);
+}
 function route() {
+  adoptReplacedLessons();
   clear();
   const parts = routeParts();
   const nav = ALIAS[parts[0]] || parts[0] || '';

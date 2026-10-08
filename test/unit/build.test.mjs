@@ -41,7 +41,7 @@ const REAL = {
   'm1-garp': () => { const s = new Sim(failoverTopo()); s.dev('srvB').cfg.ifaces.eth1.ip = '10.0.0.100'; go(s, 'srvB', 'arping -U -c 1 10.0.0.100'); return sent(s, 'srvB', f => f.type === 'arp'); },
   'm3-stick': () => { const s = new Sim(stickTopo(true)); go(s, 'a1', 'ping -c 1 10.20.0.11'); return sent(s, 'r1', f => f.vlan?.vid === 20 && f.payload.l4?.type === 8); },
   'm4-l2': () => { const s = new Sim(stpTriangle({ enabled: true, rootPrio: 4096 })); s.runFor(5000); return s.log.filter(e => e.dev === 'sw1' && e.frame?.type === 'stp' && e.frame.src === s.dev('sw1').mac('eth1')).pop().frame; },
-  'm12-l2': () => { const s = new Sim(ipv6Topo()); s.runFor(4000); const a2 = s.dev('pc2').l3.v6.allAddrs().find(a => a.origin === 'slaac').ip;
+  'm12-nd': () => { const s = new Sim(ipv6Topo()); s.runFor(4000); const a2 = s.dev('pc2').l3.v6.allAddrs().find(a => a.origin === 'slaac').ip;
     go(s, 'pc1', 'ping -6 -c 1 ' + a2, 3000); return sent(s, 'pc1', f => f.type === 'ipv6' && f.payload.l4?.type === 135 && f.payload.l4.target === a2); },
   'm13-l2': () => { const s = new Sim(vpnTopo()); go(s, 'pcA', 'ping -c 2 10.2.0.10', 5000); return s.log.filter(e => e.dev === 'gwA' && e.kind === 'send' && e.frame?.payload?.l4?.payload?.inner?.l4?.type === 8).pop().frame; },
   'm14-l1': () => { const s = new Sim(bgpPairTopo()); s.runFor(3000); return sent(s, 'r1', f => f.payload?.l4?.bgp?.type === 'OPEN'); },

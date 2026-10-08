@@ -23,7 +23,7 @@ Before you move users from one server to another, read
 ## The image
 
 ```
-ghcr.io/santiagotoro2023/packetpilot:3.0.1      a fixed version (recommended)
+ghcr.io/santiagotoro2023/packetpilot:3.1.0      a fixed version (recommended)
 ghcr.io/santiagotoro2023/packetpilot:latest     the newest version from main
 ```
 
@@ -63,7 +63,7 @@ docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=$(cat
 docker run -d --name packetpilot --restart unless-stopped \
   -p 8080:8080 \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-  ghcr.io/santiagotoro2023/packetpilot:3.0.1
+  ghcr.io/santiagotoro2023/packetpilot:3.1.0
 ```
 
 Open `http://<host>:8080`. The container speaks plain HTTP; put a reverse proxy with TLS in
@@ -123,7 +123,7 @@ Install straight from the registry:
 
 ```bash
 helm install packetpilot oci://ghcr.io/santiagotoro2023/charts/packetpilot \
-  --version 3.0.1 --namespace packetpilot --create-namespace \
+  --version 3.1.0 --namespace packetpilot --create-namespace \
   -f my-values.yaml
 ```
 
