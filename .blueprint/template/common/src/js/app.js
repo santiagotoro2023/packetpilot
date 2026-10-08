@@ -13,6 +13,9 @@ import { store } from './store.js';
 @@IF server@@
 import { api } from './core/api.js';
 @@END@@
+@@IF lib:auth@@
+import { session, guard } from './lib/auth.js';
+@@END@@
 
 const main = document.querySelector('.main');
 let cleanup = [];
@@ -235,6 +238,9 @@ function viewParts() {
 // ---------------------------------------------------------------- Router
 function route() {
   clear();
+@@IF lib:auth@@
+  if (guard(main)) return;   // sign-in, setup and first steps (library element auth)
+@@END@@
   const [nav = '', id] = routeParts();
   markNav(n => n === (nav === '' || nav === 'step' ? 'home' : nav));
   if (nav === 'step') viewStep(id);
@@ -244,4 +250,7 @@ function route() {
   else viewHome();
   document.title = '@@APP_NAME@@';
 }
+@@IF lib:auth@@
+await session.load();
+@@END@@
 startApp({ store, route });

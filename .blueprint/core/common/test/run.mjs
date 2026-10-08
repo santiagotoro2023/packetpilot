@@ -64,6 +64,14 @@ async function testDatabase() {
 const dbUrl = await testDatabase();
 env.@@APP_ENV@@_TEST_DATABASE_URL = dbUrl;
 @@END@@
+@@IF lib:secrets@@
+// A fresh key for the stored secrets of every test run
+env.@@APP_ENV@@_SECRET_KEY = (await import('node:crypto')).randomBytes(32).toString('base64');
+@@END@@
+@@IF lib:auth@@
+// The setup code of the first administrator (test/lib/browser.mjs signs in with it)
+env.@@APP_ENV@@_SETUP_CODE = 'test-setup-code';
+@@END@@
 
 if (browser) {
 @@IF static@@

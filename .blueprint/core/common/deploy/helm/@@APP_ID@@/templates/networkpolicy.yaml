@@ -32,5 +32,8 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 @@END@@
 {{- end }}

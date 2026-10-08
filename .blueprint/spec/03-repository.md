@@ -37,7 +37,9 @@ server/               server profile only
   main.mjs            starts the core with this app's routes
   core/               config, log, db, http, server             (blueprint)
   api/                this app's API, one module per area
+  lib/                library elements (blueprint) and the app's own shared modules
   migrations/         0001_name.sql, 0002_… (only ever added)
+  migrations-lib/     the tables of library elements, per element  (blueprint)
 installer/
   core/head.sh, core/tail.sh                                     (blueprint)
   app.sh              this app's additions to the installer (usually empty)
@@ -79,6 +81,7 @@ Shell syntax, `KEY="value"`, one per line. Every blueprint file is made from it.
 | `APP_DATA_NOTE` | one sentence the installer prints about where users' data lives | ends with a period |
 | `LOGO_PATTERN`, `LOGO_COLORS` | the logo (02-logo.md) | a pattern and 1–4 signal colors |
 | `LIBRARY` (optional) | library elements this app uses (12-library.md) | comma-separated names |
+| `APP_PACKAGES` (optional) | system packages the app server needs (server profile): the installer installs them with apt, the image with apk | names separated by spaces, the same in Debian and Alpine (`ansible-core openssh-client`) |
 
 Changing a setting: edit `project.conf`, run `bash build.sh`, run the tests, commit everything
 that changed. `APP_ID` and `APP_PROFILE` are not changed after the first release; doing so is a

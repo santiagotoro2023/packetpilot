@@ -35,6 +35,8 @@ own the same way and document them in `docs/` (never secrets in the image or rep
 | `<ID>_HOST` | server | listen address, default all |
 | `<ID>_WEB_DIR` | server | where the web app is, set by the image and the installer |
 | `<ID>_LOG_LEVEL` | server | `debug`, `info` (default), `warn`, `error` |
+| `<ID>_SECRET_KEY`, `<ID>_SECRET_KEY_FILE`, `<ID>_SECRET_KEY_PREVIOUS` | server, element `secrets` | the key for the stored secrets (installer: a file in `/var/lib/<id>/`, Compose: volume `keys`, Helm: a kept Secret) |
+| `<ID>_SETUP_CODE` | server, element `auth` | the setup code of the first administrator (default: made once, in the log) |
 
 ## 5.3 Docker Compose
 
@@ -54,7 +56,9 @@ own the same way and document them in `docs/` (never secrets in the image or rep
   the first Ingress host), `ingress`, `service` (ClusterIP, NodePort, LoadBalancer),
   `podDisruptionBudget`, `topologySpread`, `autoscaling` (HPA), `networkPolicy`, `resources`, and in
   the server profile `database` (bundled PostgreSQL with a generated password that survives
-  upgrades and a Secret that `helm uninstall` keeps, or `url`, or `existingSecret`). `helm test`
+  upgrades and a Secret that `helm uninstall` keeps, or `url`, or `existingSecret`),
+  `networkPolicy.extraEgress` (more connections the app may open), and with the element `secrets`
+  `secretKey` (a generated key in a Secret that `helm uninstall` keeps, or `existingSecret`). `helm test`
   calls `/healthz` and `/site.json`. The bundled database's pods carry their own name label so the
   app's selectors never match them.
 - Labels and selectors never change between versions: upgrades must work with `helm upgrade`.

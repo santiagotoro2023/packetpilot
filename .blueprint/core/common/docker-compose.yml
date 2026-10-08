@@ -28,6 +28,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+@@IF lib:secrets@@
+    volumes:
+      # The key for the stored secrets, made on the first start. Back it up apart from the database:
+      # docker compose cp @@APP_ID@@:/var/lib/@@APP_ID@@/@@APP_ID@@.key .
+      - keys:/var/lib/@@APP_ID@@
+@@END@@
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
@@ -52,4 +58,7 @@ services:
 volumes:
   # All data of @@APP_NAME@@. Back it up: docker compose exec db pg_dump -U @@APP_ID@@ -Fc @@APP_ID@@ > backup.dump
   db:
+@@END@@
+@@IF lib:secrets@@
+  keys:
 @@END@@

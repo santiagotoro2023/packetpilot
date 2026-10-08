@@ -24,6 +24,8 @@ pipeline. A change is done when all of them pass.
 - Browser tests use `test/lib/browser.mjs`: `open({ width, height, colorScheme, path })` gives
   `page`, `errors` (every page error, console error and failed request), `shot(name)` (screenshots
   into `test/.output/`), `close()`. Every browser test ends with `assert.deepEqual(errors, [])`.
+- With the library element `auth`, `open()` signs in as the test administrator (`open({ signedIn: false })`
+  for the sign-in page) and unit tests get a signed-in API with `apiSession(base)` from `test/lib/auth.mjs`.
 - The base address comes from `BASE`, set by the runner, which serves the app itself: the static
   profile with `test/lib/serve.mjs` (the same headers as nginx), the server profile with the real
   app server against the test database.

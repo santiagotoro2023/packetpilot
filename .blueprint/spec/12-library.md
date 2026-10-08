@@ -13,6 +13,9 @@ tested, and from then on available to every app, which switches it on when it ne
 - The blueprint writes the element's files into the app (`src/css/lib/<name>.css`,
   `src/js/lib/<name>.js`, `server/lib/<name>.mjs`, its tests), links its stylesheet in the managed
   `<head>` block, and `blueprint check` treats them like every blueprint file.
+- An element can bring tables (`server/migrations-lib/<name>/`, run before the app's migrations)
+  and parts of core files: core files have `@@IF lib:<name>@@ … @@END@@` blocks that are kept only
+  when the element is on (the installer, the image, Compose, Helm, the test helpers).
 - An app that does not list an element gets none of its files: nothing it does not use can
   affect it. Using an element's files without listing it fails the check.
 - Switching an element off removes its files again (the check then finds any code that still uses
@@ -21,6 +24,10 @@ tested, and from then on available to every app, which switches it on when it ne
 | Element | Kind | Profiles | Since | What |
 |---|---|---|---|---|
 | `stats` | component | both | 1.0.0 | big numbers with a label in tiles (from PacketPilot) |
+| `auth` | feature | server | 1.1.0 | accounts, sign-in, sessions, password policy, two-factor sign-in, setup code, the pages (from FleetPilot) |
+| `audit` | module | server | 1.1.0 | who did what, when and from where, with a searchable table (from FleetPilot) |
+| `jobs` | module | server | 1.1.0 | background work in a PostgreSQL queue: replicas, retries, cancelling, schedules (from FleetPilot) |
+| `secrets` | module | server | 1.1.0 | sensitive values encrypted at rest; the key made and kept by every deployment (from FleetPilot) |
 
 ## 12.2 When something becomes a library element
 

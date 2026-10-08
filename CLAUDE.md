@@ -5,7 +5,7 @@ Understand networks by watching every packet. A network course with a packet-lev
 <!-- blueprint:rules -->
 ## The blueprint (binding, read first)
 
-This project follows the **project blueprint 1.0.0** (`.blueprint/`): the gold standard for every
+This project follows the **project blueprint 1.1.1** (`.blueprint/`): the gold standard for every
 project of this family. Design, logo, installer, deployment, repository layout, tests and docs are the
 same in all of them; only the purpose differs. Before any work, read `.blueprint/spec/README.md` and the
 spec chapters for what you are about to touch. The spec wins over your own taste and habits.

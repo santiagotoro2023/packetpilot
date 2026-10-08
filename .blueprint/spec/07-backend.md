@@ -45,11 +45,21 @@ that all of them do it the same way.
 ## 7.4 Layout
 
 ```
-server/main.mjs          await start({ routes: [items, users, …] })
+server/main.mjs          await start({ routes: [setupSecrets, auth(…), items, …], onStart, onStop })
 server/core/             blueprint: config, log, db, http, server
 server/api/<area>.mjs    export default function (app) { app.get(…); app.post(…) }
+server/lib/<element>.mjs blueprint: library elements (auth, audit, jobs, secrets)
 server/migrations/       0001_init.sql, 0002_add_note.sql, …
+server/migrations-lib/   blueprint: the tables of library elements, numbered per element, run first
 ```
+
+- Route modules may be `async` (they run once the database is migrated, before the server listens).
+- `app.use(async ctx => …)` runs before every API route: the element `auth` finds the user there.
+- `ctx.clientIp` is the browser's address (behind the installer's nginx the last `X-Forwarded-For`).
+- `onStart()` runs once the server listens (workers of the element `jobs`), `onStop()` first on SIGTERM.
+- System packages the server needs (a command-line tool it runs) go into `APP_PACKAGES` in
+  `project.conf`: the installer and the image install them. They are the only other runtime
+  dependency allowed besides `pg`.
 
 Modules in `server/api/` are small and named by area (`items.mjs`, `reports.mjs`). Shared logic of
 the app goes into `server/lib/` (the app's own, not the blueprint's).
@@ -95,11 +105,13 @@ the app goes into `server/lib/` (the app's own, not the blueprint's).
   `X-Frame-Options`, no referrer) on every response.
 - Request bodies are limited to 1 MB (raise only per route with a reason).
 - Errors never reveal internals: the client gets `internal`, the log gets the stack.
-- **Login** (when an app needs one): sessions in a PostgreSQL table, a random session id in an
-  `HttpOnly`, `SameSite=Lax` cookie (`Secure` behind HTTPS), passwords hashed with scrypt from
-  `node:crypto`, no user enumeration in messages, rate limits on login. The first app that needs
-  it builds this as the library element `auth` (12-library.md), so every later app logs in the same
-  way.
+- **Login**: the library element `auth` (12-library.md): sessions in a PostgreSQL table, a random
+  session id in an `HttpOnly`, `SameSite=Lax` cookie (`Secure` behind HTTPS), passwords hashed with
+  scrypt from `node:crypto`, no user enumeration in messages, lockouts and rate limits, two-factor
+  sign-in. Every app with accounts uses it, so all of them sign in the same way.
+- **Sensitive values** (passwords and keys of other systems, tokens): encrypted with the element
+  `secrets`; the key lives outside the database.
+- **Who did what**: the element `audit`. **Background work**: the element `jobs`.
 - Secrets only from the environment (`<ID>_…`), never in the repository or image.
 
 ## 7.8 Operation

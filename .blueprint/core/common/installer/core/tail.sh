@@ -32,6 +32,11 @@ install_packages() {
     command -v pg_dump >/dev/null 2>&1 || pkgs+=(postgresql-client)
   fi
 @@END@@
+@@IF packages@@
+  # System packages the app server needs (APP_PACKAGES in project.conf)
+  local p
+  for p in @@APP_PACKAGES@@; do dpkg -s "$p" >/dev/null 2>&1 || pkgs+=("$p"); done
+@@END@@
   if [ ${#pkgs[@]} -eq 0 ]; then
     ok "All packages are already installed"
   else
@@ -575,6 +580,26 @@ ensure_database() {
   fi
 }
 
+@@IF lib:secrets@@
+# The key that encrypts the stored secrets: made once, kept by updates and --uninstall
+ensure_secret_key() {
+  mkdir -p "$APP_KEY_DIR"
+  chown "root:${APP_USER}" "$APP_KEY_DIR"
+  chmod 750 "$APP_KEY_DIR"
+  if [ ! -s "$APP_KEY_FILE" ]; then
+    umask 077
+    head -c 32 /dev/urandom | base64 > "${APP_KEY_FILE}.new"
+    umask 022
+    mv "${APP_KEY_FILE}.new" "$APP_KEY_FILE"
+    ok "New key for the stored secrets: ${APP_KEY_FILE}"
+  else
+    ok "Keeping the key for the stored secrets (${APP_KEY_FILE})"
+  fi
+  chown "root:${APP_USER}" "$APP_KEY_FILE"
+  chmod 640 "$APP_KEY_FILE"
+}
+
+@@END@@
 write_env() {
   local url
   url="$(canonical_url)"
@@ -587,6 +612,9 @@ write_env() {
 @@APP_ENV@@_WEB_DIR=${APP_WWW}
 @@APP_ENV@@_VERSION=${APP_VERSION}
 @@APP_ENV@@_CANONICAL=${url}
+@@IF lib:secrets@@
+@@APP_ENV@@_SECRET_KEY_FILE=${APP_KEY_FILE}
+@@END@@
 NODE_ENV=production
 ENV
   umask 022
@@ -691,6 +719,9 @@ do_install() {
   ensure_le
 @@IF server@@
   ensure_user
+@@IF lib:secrets@@
+  ensure_secret_key
+@@END@@
   ensure_database
   # An update: back up first, the new version may change the database when it starts
   if [ -f "${APP_ROOT}/VERSION" ] && { ! local_db || as_postgres psql -Atqc "select 1 from pg_database where datname = '${APP_ID}'" | grep -q 1; }; then
@@ -729,8 +760,17 @@ do_install() {
   find "${APP_ROOT}/app" -type f -exec chmod 644 {} +
   write_env
   write_service
+@@IF lib:auth@@
+  local started_at setup_code=""
+  started_at="$(date +%s)"
+@@END@@
   start_service
   ensure_backup_job
+@@IF lib:auth@@
+  # No account yet: the app logs the setup code of the first administrator at every start
+  sleep 1
+  setup_code="$(journalctl -u "${APP_SERVICE}" --since "@${started_at}" -o cat --no-pager 2>/dev/null | sed -n 's/.*"setup_code":"\([^"]*\)".*/\1/p' | tail -1)"
+@@END@@
 @@END@@
   write_site
   save_settings
@@ -767,6 +807,13 @@ do_install() {
     fi
     echo
   fi
+@@IF lib:auth@@
+  if [ -n "$setup_code" ]; then
+    echo "    Open the address above and create the first administrator with this setup code:"
+    echo "      ${setup_code}"
+    echo
+  fi
+@@END@@
   echo "    @@APP_DATA_NOTE@@"
 @@IF static@@
   [ "$APP_TLS" = "yes" ] && echo "    Opened with http://, the old address hands its data over to https:// once."
@@ -775,6 +822,10 @@ do_install() {
 @@IF server@@
   echo "    Backups: ${APP_BACKUP_DIR} ($([ "$APP_AUTO_BACKUP" = "yes" ] && echo "daily, the last ${APP_BACKUP_KEEP} are kept" || echo "only with --backup")), also before every update."
   echo "    Update: sudo bash ${APP_SELF} --update. Back up now: --backup. Remove: --uninstall"
+@@END@@
+@@IF lib:secrets@@
+  echo "    Stored secrets are encrypted with the key in ${APP_KEY_FILE}. Back it up apart from"
+  echo "    the database backups: without it, the secrets in a backup cannot be read."
 @@END@@
 }
 
@@ -842,6 +893,9 @@ do_uninstall() {
       ok "Database ${APP_ID} deleted"
     fi
     rm -rf "$APP_BACKUP_DIR"
+@@IF lib:secrets@@
+    rm -rf "$APP_KEY_DIR"
+@@END@@
     userdel "$APP_USER" >/dev/null 2>&1 || true
   fi
 @@END@@
@@ -855,6 +909,9 @@ do_uninstall() {
     ok "${APP_NAME} removed with its data. nginx, Node.js and PostgreSQL stay installed."
   else
     ok "${APP_NAME} removed. Kept: the database ${APP_ID} and the backups in ${APP_BACKUP_DIR}"
+@@IF lib:secrets@@
+    echo "    Kept as well: the key for the stored secrets in ${APP_KEY_FILE}"
+@@END@@
     echo "    (a new install uses them again; delete everything with --uninstall --purge)."
   fi
 @@END@@

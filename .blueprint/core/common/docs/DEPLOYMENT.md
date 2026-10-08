@@ -91,6 +91,14 @@ docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=$(cat
 @@IF server@@
 | `@@APP_ENV@@_LOG_LEVEL` | `info` (default), `warn`, `error` or `debug`. Logs go to stdout, one JSON object per line. |
 @@END@@
+@@IF lib:secrets@@
+| `@@APP_ENV@@_SECRET_KEY` | The key that encrypts the stored secrets: 32 random bytes in base64 (`openssl rand -base64 32`). See "The key for the stored secrets" below. |
+| `@@APP_ENV@@_SECRET_KEY_FILE` | Instead: a file with the key. The image sets `/var/lib/@@APP_ID@@/@@APP_ID@@.key`; it is created on the first start when it is missing and nothing is encrypted yet. |
+| `@@APP_ENV@@_SECRET_KEY_PREVIOUS` | Only while changing the key: the old one. |
+@@END@@
+@@IF lib:auth@@
+| `@@APP_ENV@@_SETUP_CODE` | The setup code of the first administrator. Empty (the default): made once and shown in the log. |
+@@END@@
 
 ---
 
@@ -305,6 +313,45 @@ All backups are `pg_dump` custom format files: a backup from any deployment can 
 into any other. That is also how you **move** @@APP_NAME@@ (installer → Kubernetes, for
 example): back up on the old one, restore on the new one, then switch the DNS name.
 @@END@@
+@@IF lib:secrets@@
+
+## The key for the stored secrets
+
+Passwords, keys and tokens that @@APP_NAME@@ keeps for you are encrypted in the database with a
+key that is **not** in the database. A stolen database or backup is useless without it, and so is
+your own backup: **back the key up apart from the database backups**, and keep it as safe as
+the systems the secrets open.
+
+| Deployment | Where the key is | Back it up |
+|---|---|---|
+| Installer | `/var/lib/@@APP_ID@@/@@APP_ID@@.key`, made by the first install, kept by updates and `--uninstall` | `sudo cat /var/lib/@@APP_ID@@/@@APP_ID@@.key` |
+| Compose | volume `keys`, made on the first start | `docker compose cp @@APP_ID@@:/var/lib/@@APP_ID@@/@@APP_ID@@.key .` |
+| Helm | Secret `<release>-@@APP_ID@@-key`, generated at the first install, never deleted by `helm uninstall` (or `secretKey.existingSecret`) | `kubectl get secret <release>-@@APP_ID@@-key -o jsonpath='{.data.key}' \| base64 -d` |
+| Kubernetes manifest | Secret `@@APP_ID@@-key`: put a key in before the first apply | from where you made it |
+
+**Moving** to another deployment: restore the database backup and give the new deployment the
+same key (`@@APP_ENV@@_SECRET_KEY`, or the key file). With a different key the app does not start
+and says so: it never makes the stored secrets unreadable by accident.
+
+**Changing the key:** start with the new key as `@@APP_ENV@@_SECRET_KEY` and the old one as
+`@@APP_ENV@@_SECRET_KEY_PREVIOUS`; once @@APP_NAME@@ has encrypted everything again, remove the old one.
+@@END@@
+@@IF lib:auth@@
+
+## The first administrator
+
+A new @@APP_NAME@@ has no accounts. Open it in the browser and create the first administrator with
+the **setup code**. The code is in the log of the app server until the first account exists:
+
+| Deployment | The setup code |
+|---|---|
+| Installer | printed at the end of the install; later: `journalctl -u @@APP_ID@@ \| grep setup_code` |
+| Compose | `docker compose logs @@APP_ID@@ \| grep setup_code` |
+| Kubernetes, Helm | `kubectl -n <namespace> logs deploy/<name> \| grep setup_code` |
+
+Further accounts are added by administrators in the app. A forgotten password is reset by an
+administrator; a lost phone (two-factor sign-in) as well.
+@@END@@
 
 @@IF static@@
 ---
@@ -374,6 +421,10 @@ On the **home page**, in the box about the user's data:
 | "The database is newer than this version" | The database was used by a newer @@APP_NAME@@ (or a newer backup was restored). Run that version again; never downgrade over a migrated database. |
 | Bundled database pod stays `Pending` | No default StorageClass: set `database.bundled.storageClass`. |
 @@END@@
+@@IF lib:secrets@@
+| "The key for the stored secrets … is not the key they were encrypted with" | The app got another key than the one it used before (a new volume, a new Secret, another server). Give it the right key; see "The key for the stored secrets". |
+| "No key for the stored secrets" | Set `@@APP_ENV@@_SECRET_KEY` (or `@@APP_ENV@@_SECRET_KEY_FILE`). |
+@@END@@
 
 ---
 
@@ -396,4 +447,12 @@ On the **home page**, in the box about the user's data:
   reaches the local database through its Unix socket without a password.
 - Database passwords live in the environment file (`/opt/@@APP_ID@@/@@APP_ID@@.env`, mode 640),
   in Docker's `.env`, or in a Kubernetes Secret: never in the repository or the image.
+@@END@@
+@@IF lib:auth@@
+- Sign-in: passwords hashed with scrypt, sessions in an `HttpOnly` cookie (`Secure` over HTTPS),
+  lockout after wrong passwords, two-factor sign-in with an authenticator app. Put
+  @@APP_NAME@@ behind HTTPS (the installer does by default).
+@@END@@
+@@IF lib:secrets@@
+- Stored secrets are encrypted with AES-256-GCM; the key is kept apart from the database.
 @@END@@

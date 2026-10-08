@@ -5,7 +5,11 @@
 //   app.post('/api/items', async ctx => ({ status: 201, body: row }))
 //   app.del('/api/items/:id', async ctx => null)         → 204
 //   throw httpError(404, 'not_found', 'There is no such item')
-// ctx: { params, query, body, req, res, ip }. Errors are sent as { "error": { "code", "message" } }.
+// ctx: { params, query, body, req, res, ip, clientIp }. Errors are sent as { "error": { "code", "message" } }.
+//   app.use(async ctx => …)    runs before every API route (ctx without params and body yet),
+//                              e.g. to find the signed-in user (library element auth); throw to stop
+// ctx.clientIp is the address of the browser: behind the installer's nginx (a request from this
+// machine) the last X-Forwarded-For entry, otherwise the address of the connection.
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.mjs';
@@ -48,6 +52,13 @@ async function readJson(req) {
   catch { throw httpError(400, 'bad_json', 'The request is not valid JSON.'); }
 }
 
+const LOOPBACK = /^(127\.|::1$|::ffff:127\.)/;
+function clientIp(req) {
+  const direct = req.socket.remoteAddress || '';
+  const fwd = String(req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean);
+  return LOOPBACK.test(direct) && fwd.length ? fwd.at(-1) : direct;
+}
+
 export function createApp({ health }) {
   const routes = [];
   const add = method => (pattern, handler) => {
@@ -55,7 +66,8 @@ export function createApp({ health }) {
     const re = new RegExp('^' + pattern.replace(/\/:([a-zA-Z]+)/g, (_, k) => { keys.push(k); return '/([^/]+)'; }) + '/?$');
     routes.push({ method, re, keys, handler });
   };
-  const app = { get: add('GET'), post: add('POST'), put: add('PUT'), patch: add('PATCH'), del: add('DELETE') };
+  const hooks = [];
+  const app = { get: add('GET'), post: add('POST'), put: add('PUT'), patch: add('PATCH'), del: add('DELETE'), use: fn => hooks.push(fn) };
 
   app.handle = async (req, res) => {
     const t0 = Date.now();
@@ -84,9 +96,11 @@ export function createApp({ health }) {
           throw other ? httpError(405, 'method_not_allowed', 'This method is not allowed here.') : httpError(404, 'not_found', 'There is nothing here.');
         }
         const m = url.pathname.match(route.re);
-        const params = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
-        const body = await readJson(req);
-        const out = await route.handler({ params, query: Object.fromEntries(url.searchParams), body, req, res, ip: req.socket.remoteAddress });
+        const ctx = { path: url.pathname, method: req.method, query: Object.fromEntries(url.searchParams), req, res, ip: req.socket.remoteAddress, clientIp: clientIp(req) };
+        for (const hook of hooks) { await hook(ctx); if (res.writableEnded) return; }
+        ctx.params = Object.fromEntries(route.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
+        ctx.body = await readJson(req);
+        const out = await route.handler(ctx);
         if (res.writableEnded) return;
         if (out && typeof out === 'object' && 'status' in out && 'body' in out) return send(res, out.status, out.body);
         return out === null || out === undefined ? send(res, 204, null) : send(res, 200, out);
