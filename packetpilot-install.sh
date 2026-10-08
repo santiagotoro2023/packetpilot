@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 3.0.0
+#  PacketPilot 3.0.1
 #  Understand networks by watching every packet.
 #
 #  Installs PacketPilot on Debian 12 (Bookworm) or 13 (Trixie):
@@ -45,7 +45,7 @@ set -euo pipefail
 # Made from blueprint 1.1.1 (https://github.com/santiagotoro2023/project-blueprint)
 APP_ID="packetpilot"
 APP_NAME="PacketPilot"
-APP_VERSION="3.0.0"
+APP_VERSION="3.0.1"
 APP_PROFILE="static"
 APP_PORT="8080"
 APP_ROOT="/opt/${APP_ID}"
@@ -138,7 +138,7 @@ esac
 
 # Installers before 3.0.0 (before the blueprint) read the version of the new script from
 # this line when they run --update. Keep it, so every old server can still update.
-PP_VERSION="3.0.0"
+PP_VERSION="3.0.1"
 
 write_files() {
   local W="$1"
@@ -8158,10 +8158,12 @@ __PACKETPILOT_FILE_END__
 // Helpers for lesson content and goal checks
 export function bar(parts, caption = '') {
   // parts: [label, sizeText, kind, flex]
+  // Too narrow for one row (phones): the fields wrap instead of being cut off. The top border
+  // separates wrapped rows; on the first row it is pulled out of the clipped box.
   const cells = parts.map(([l, s, k, f]) =>
-    `<div style="flex:${f || 1} 0 0;min-width:54px;background:var(--l-${k});color:#fff;padding:6px 8px;border-right:1px solid rgba(255,255,255,.35)">
+    `<div style="flex:${f || 1} 0 0;min-width:min-content;background:var(--l-${k});color:#fff;padding:6px 8px;border-right:1px solid rgba(255,255,255,.35);border-top:1px solid rgba(255,255,255,.35);margin-top:-1px">
       <div style="font-weight:650;font-size:.82rem">${l}</div><div style="font-family:var(--mono);font-size:.72rem;opacity:.9">${s}</div></div>`).join('');
-  return `<div style="display:flex;border-radius:8px;overflow:hidden;margin:14px 0 4px;border:1px solid var(--line)">${cells}</div>${caption ? `<div class="small muted">${caption}</div>` : ''}`;
+  return `<div style="display:flex;flex-wrap:wrap;border-radius:8px;overflow:hidden;margin:14px 0 4px;border:1px solid var(--line)">${cells}</div>${caption ? `<div class="small muted">${caption}</div>` : ''}`;
 }
 export const note = (html, warn = false) => `<div class="note${warn ? ' warn' : ''}">${html}</div>`;
 
@@ -9758,7 +9760,20 @@ eth1: Forwarding (milliseconds)      eth1 forwards as the root port
 <tr><td>Shared link (half duplex, hub)</td><td>The handshake needs a point-to-point link, otherwise timers</td></tr></table>
 ${note('So the edge setting is more important with RSTP, not less: it is the only way a port to an end device forwards without delay. On Cisco: <code>spanning-tree portfast</code>, on Linux with mstpd: <code>mstpctl setportadminedge</code>.')}
 <h2>Topology change</h2>
-<p>In RSTP only a port that <b>starts forwarding</b> counts as a topology change, and edge ports never do. The switch that notices it flushes the MAC addresses on its other ports and sends BPDUs with the TC flag on all its root and designated ports at once. Every switch that receives one does the same, so the news spreads in milliseconds without a detour via the root.</p>` },
+<p>In RSTP only a port that <b>starts forwarding</b> counts as a topology change, and edge ports never do. The switch that notices it flushes the MAC addresses on its other ports and sends BPDUs with the TC flag on all its root and designated ports at once. Every switch that receives one does the same, so the news spreads in milliseconds without a detour via the root.</p>
+<h2>Inside an RST BPDU</h2>
+<p>Proposal, agreement, role and state all travel in a single byte. An RST BPDU is 36 bytes long, one byte more than the classic configuration BPDU:</p>
+${bar([['Protocol, version, type', '4 bytes', 'stp', 1.5], ['Flags', '1 byte', 'rt', .8], ['Root ID', '8 bytes', 'stp', 1.1], ['Root path cost', '4 bytes', 'stp', 1.2], ['Bridge ID', '8 bytes', 'stp', 1.1], ['Port ID', '2 bytes', 'stp', .8], ['Timers', '8 bytes', 'stp', .9], ['Version 1 length', '1 byte', 'stp', 1.1]], 'Version 2 and type 0x02 make it an RST BPDU. The timers are message age, max age, hello and forward delay, 2 bytes each.')}
+${bar([['TC Ack', 'bit 7', 'stp', 1], ['Agreement', 'bit 6', 'stp', 1.25], ['Forwarding', 'bit 5', 'stp', 1.25], ['Learning', 'bit 4', 'stp', 1.15], ['Port role', 'bits 3-2', 'stp', 1.5], ['Proposal', 'bit 1', 'stp', 1.15], ['TC', 'bit 0', 'stp', .85]], 'The flags byte, bit 7 on the left. Classic STP only uses the two outer bits, RSTP fills the six in between.')}
+<table><tr><th>Bit</th><th>Flag</th><th>Set when</th></tr>
+<tr><td>0</td><td>TC</td><td>the sender reports a topology change, receivers flush their MAC tables</td></tr>
+<tr><td>1</td><td>Proposal</td><td>a designated port asks whether it may forward right away</td></tr>
+<tr><td style="white-space:nowrap">3-2</td><td>Port role</td><td>role of the sending port: 01 alternate or backup, 10 root, 11 designated</td></tr>
+<tr><td>4</td><td>Learning</td><td>the sending port learns MAC addresses</td></tr>
+<tr><td>5</td><td>Forwarding</td><td>the sending port forwards</td></tr>
+<tr><td>6</td><td>Agreement</td><td>the answer to a proposal: go ahead</td></tr>
+<tr><td>7</td><td>TC Ack</td><td>only towards a neighbor that speaks classic STP: confirms its topology change report</td></tr></table>
+${note('In the lab, the packet inspector shows these bits for every RST BPDU, together with the role in plain words.')}` },
       { type: 'label', title: 'The flags byte of an RST BPDU', distractors: ['Root ID', 'Max Age', 'Priority'],
         slots: [{ label: 'TC Ack', size: 'bit 7', kind: 'stp', w: 72 }, { label: 'Agreement', size: 'bit 6', kind: 'stp', w: 92 }, { label: 'Forwarding', size: 'bit 5', kind: 'stp', w: 92 },
           { label: 'Learning', size: 'bit 4', kind: 'stp', w: 86 }, { label: 'Port role', size: 'bits 3-2', kind: 'stp', w: 110 }, { label: 'Proposal', size: 'bit 1', kind: 'stp', w: 86 },

@@ -1,10 +1,12 @@
 // Helpers for lesson content and goal checks
 export function bar(parts, caption = '') {
   // parts: [label, sizeText, kind, flex]
+  // Too narrow for one row (phones): the fields wrap instead of being cut off. The top border
+  // separates wrapped rows; on the first row it is pulled out of the clipped box.
   const cells = parts.map(([l, s, k, f]) =>
-    `<div style="flex:${f || 1} 0 0;min-width:54px;background:var(--l-${k});color:#fff;padding:6px 8px;border-right:1px solid rgba(255,255,255,.35)">
+    `<div style="flex:${f || 1} 0 0;min-width:min-content;background:var(--l-${k});color:#fff;padding:6px 8px;border-right:1px solid rgba(255,255,255,.35);border-top:1px solid rgba(255,255,255,.35);margin-top:-1px">
       <div style="font-weight:650;font-size:.82rem">${l}</div><div style="font-family:var(--mono);font-size:.72rem;opacity:.9">${s}</div></div>`).join('');
-  return `<div style="display:flex;border-radius:8px;overflow:hidden;margin:14px 0 4px;border:1px solid var(--line)">${cells}</div>${caption ? `<div class="small muted">${caption}</div>` : ''}`;
+  return `<div style="display:flex;flex-wrap:wrap;border-radius:8px;overflow:hidden;margin:14px 0 4px;border:1px solid var(--line)">${cells}</div>${caption ? `<div class="small muted">${caption}</div>` : ''}`;
 }
 export const note = (html, warn = false) => `<div class="note${warn ? ' warn' : ''}">${html}</div>`;
 

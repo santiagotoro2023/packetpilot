@@ -227,7 +227,20 @@ eth1: Forwarding (milliseconds)      eth1 forwards as the root port
 <tr><td>Shared link (half duplex, hub)</td><td>The handshake needs a point-to-point link, otherwise timers</td></tr></table>
 ${note('So the edge setting is more important with RSTP, not less: it is the only way a port to an end device forwards without delay. On Cisco: <code>spanning-tree portfast</code>, on Linux with mstpd: <code>mstpctl setportadminedge</code>.')}
 <h2>Topology change</h2>
-<p>In RSTP only a port that <b>starts forwarding</b> counts as a topology change, and edge ports never do. The switch that notices it flushes the MAC addresses on its other ports and sends BPDUs with the TC flag on all its root and designated ports at once. Every switch that receives one does the same, so the news spreads in milliseconds without a detour via the root.</p>` },
+<p>In RSTP only a port that <b>starts forwarding</b> counts as a topology change, and edge ports never do. The switch that notices it flushes the MAC addresses on its other ports and sends BPDUs with the TC flag on all its root and designated ports at once. Every switch that receives one does the same, so the news spreads in milliseconds without a detour via the root.</p>
+<h2>Inside an RST BPDU</h2>
+<p>Proposal, agreement, role and state all travel in a single byte. An RST BPDU is 36 bytes long, one byte more than the classic configuration BPDU:</p>
+${bar([['Protocol, version, type', '4 bytes', 'stp', 1.5], ['Flags', '1 byte', 'rt', .8], ['Root ID', '8 bytes', 'stp', 1.1], ['Root path cost', '4 bytes', 'stp', 1.2], ['Bridge ID', '8 bytes', 'stp', 1.1], ['Port ID', '2 bytes', 'stp', .8], ['Timers', '8 bytes', 'stp', .9], ['Version 1 length', '1 byte', 'stp', 1.1]], 'Version 2 and type 0x02 make it an RST BPDU. The timers are message age, max age, hello and forward delay, 2 bytes each.')}
+${bar([['TC Ack', 'bit 7', 'stp', 1], ['Agreement', 'bit 6', 'stp', 1.25], ['Forwarding', 'bit 5', 'stp', 1.25], ['Learning', 'bit 4', 'stp', 1.15], ['Port role', 'bits 3-2', 'stp', 1.5], ['Proposal', 'bit 1', 'stp', 1.15], ['TC', 'bit 0', 'stp', .85]], 'The flags byte, bit 7 on the left. Classic STP only uses the two outer bits, RSTP fills the six in between.')}
+<table><tr><th>Bit</th><th>Flag</th><th>Set when</th></tr>
+<tr><td>0</td><td>TC</td><td>the sender reports a topology change, receivers flush their MAC tables</td></tr>
+<tr><td>1</td><td>Proposal</td><td>a designated port asks whether it may forward right away</td></tr>
+<tr><td style="white-space:nowrap">3-2</td><td>Port role</td><td>role of the sending port: 01 alternate or backup, 10 root, 11 designated</td></tr>
+<tr><td>4</td><td>Learning</td><td>the sending port learns MAC addresses</td></tr>
+<tr><td>5</td><td>Forwarding</td><td>the sending port forwards</td></tr>
+<tr><td>6</td><td>Agreement</td><td>the answer to a proposal: go ahead</td></tr>
+<tr><td>7</td><td>TC Ack</td><td>only towards a neighbor that speaks classic STP: confirms its topology change report</td></tr></table>
+${note('In the lab, the packet inspector shows these bits for every RST BPDU, together with the role in plain words.')}` },
       { type: 'label', title: 'The flags byte of an RST BPDU', distractors: ['Root ID', 'Max Age', 'Priority'],
         slots: [{ label: 'TC Ack', size: 'bit 7', kind: 'stp', w: 72 }, { label: 'Agreement', size: 'bit 6', kind: 'stp', w: 92 }, { label: 'Forwarding', size: 'bit 5', kind: 'stp', w: 92 },
           { label: 'Learning', size: 'bit 4', kind: 'stp', w: 86 }, { label: 'Port role', size: 'bits 3-2', kind: 'stp', w: 110 }, { label: 'Proposal', size: 'bit 1', kind: 'stp', w: 86 },

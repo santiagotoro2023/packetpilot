@@ -2,8 +2,8 @@ apiVersion: v2
 name: packetpilot
 description: "PacketPilot: A network course with a packet-level lab simulator: build networks, send packets in slow motion and take every frame apart."
 type: application
-version: 3.0.0
-appVersion: "3.0.0"
+version: 3.0.1
+appVersion: "3.0.1"
 home: https://github.com/santiagotoro2023/packetpilot
 sources:
   - https://github.com/santiagotoro2023/packetpilot

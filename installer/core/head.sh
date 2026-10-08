@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 3.0.0
+#  PacketPilot 3.0.1
 #  Understand networks by watching every packet.
 #
 #  Installs PacketPilot on Debian 12 (Bookworm) or 13 (Trixie):
@@ -45,7 +45,7 @@ set -euo pipefail
 # Made from blueprint 1.1.1 (https://github.com/santiagotoro2023/project-blueprint)
 APP_ID="packetpilot"
 APP_NAME="PacketPilot"
-APP_VERSION="3.0.0"
+APP_VERSION="3.0.1"
 APP_PROFILE="static"
 APP_PORT="8080"
 APP_ROOT="/opt/${APP_ID}"
