@@ -28,7 +28,7 @@ outer:  198.51.100.1 → 203.0.113.1   UDP 51820            (visible to everyone
 <tr><td>Integrity</td><td>a changed byte is noticed, the packet is dropped</td></tr>
 <tr><td>Authenticity</td><td>only someone with the right key can send into the tunnel</td></tr></table>
 <h2>The cost: bytes</h2>
-<p>Every packet carries a second IP header, a UDP header and the VPN header with its authentication tag. With WireGuard over IPv4 that is up to 60 bytes, over IPv6 80 bytes. That is why the tunnel interface gets a smaller MTU, usually <b>1420</b>: a 1420-byte inner packet plus 80 bytes still fits into 1500.</p>
+<p>Every packet carries a second IP header, a UDP header and the VPN header with its authentication tag. With WireGuard over IPv4 that is 60 bytes (20 IP, 8 UDP, 16 WireGuard header, 16 tag), over IPv6 80 bytes. On top of that, WireGuard pads the encrypted inner packet to a multiple of 16 bytes, so up to 15 more bytes, but never beyond the MTU of the tunnel. That is why the tunnel interface gets a smaller MTU, usually <b>1420</b>: a 1420-byte inner packet plus 80 bytes still fits into 1500.</p>
 ${note('A VPN encrypts between the gateways. Inside each site the traffic is as readable as before; for end-to-end protection use TLS on top.')}
 <h2>The usual protocols</h2>
 <table><tr><th></th><th>WireGuard</th><th>IPsec (IKEv2 + ESP)</th><th>OpenVPN</th></tr>
@@ -56,12 +56,12 @@ AllowedIPs = 10.99.0.2/32, 10.2.0.0/24
 PersistentKeepalive = 25</pre>
 <h2>Cryptokey routing</h2>
 <p><b>AllowedIPs</b> work in both directions:</p>
-<ul><li><b>Sending</b>: a packet to 10.2.0.10 matches the allowed IPs of gwB, so it is encrypted with gwB's key and sent to gwB's endpoint. wg-quick also adds a route for every allowed IP into wg0.</li>
+<ul><li><b>Sending</b>: a packet to 10.2.0.10 matches the allowed IPs of gwB, so it is encrypted with the session key of the tunnel to gwB and sent to gwB's endpoint. The public keys are only used in the handshake that agrees on these session keys. wg-quick also adds a route for every allowed IP into wg0.</li>
 <li><b>Receiving</b>: after decrypting, the source of the inner packet must be in the allowed IPs of the peer that sent it. Otherwise it is dropped. A key thus decides which addresses a peer may use.</li></ul>
 <h2>Handshake and silence</h2>
 <p>Before the first data packet, one round trip creates the session keys: <i>handshake initiation</i> (148 bytes) and <i>response</i> (92 bytes). They are renewed every two minutes. A WireGuard port never answers strangers: a wrong key gets no error, just silence. That makes WireGuard invisible to port scanners, and makes troubleshooting a little harder.</p>
 <h2>Roaming and NAT</h2>
-<p>The endpoint is updated with every valid packet. A laptop that changes from Wi-Fi to mobile keeps its tunnel. A device behind NAT sends a <b>keepalive</b> every 25 seconds, so the NAT entry stays open and the other side can reach it at any time.</p>
+<p>The endpoint is updated with every valid packet. A laptop that changes from Wi-Fi to mobile keeps its tunnel. A device behind NAT should set <code>PersistentKeepalive = 25</code> (it is off by default): it then sends a <b>keepalive</b> every 25 seconds, so the NAT entry stays open and the other side can reach it at any time.</p>
 ${note('The packets on the wire show only UDP. In the packet inspector PacketPilot shows you the decrypted inner packet anyway, marked as encrypted.')}` },
       { type: 'build', title: 'Build the tunnel packet', blocks: ['eth', 'ip', 'icmp', 'udp', 'tcp', 'wg', 'data'],
         task: '<p>pcA (10.1.0.10) pings srvB (10.2.0.10). The handshake between gwA and gwB is done. Build the frame as gwA sends it on its internet side (eth2) to the provider router <b>isp</b>.</p>',

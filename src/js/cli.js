@@ -183,11 +183,13 @@ export function runCommand(dev, line) {
         }
         for (const g of groups) {
           const r = g[0], dst = r.len === 0 ? 'default' : r.net + '/' + r.len;
-          const proto = r.proto === 'O' ? ' proto ospf' : r.dhcp ? ' proto dhcp' : '';
+          const proto = r.proto === 'O' ? ' proto ospf' : r.proto === 'B' ? ' proto bgp' : r.dhcp ? ' proto dhcp' : '';
+          // FRR installs its routes into the kernel with metric 20; the OSPF cost is in show ip route
+          const metric = r.proto === 'O' || r.proto === 'B' ? ' metric 20' : r.metric ? ' metric ' + r.metric : '';
           if (r.proto === 'C') { say(`${dst} dev ${r.dev} proto kernel scope link src ${r.src}`); continue; }
-          if (g.length > 1) { say(`${dst}${proto}${r.metric ? ' metric ' + r.metric : ''}`); for (const x of g) say(`\tnexthop via ${x.via} dev ${x.dev} weight 1`); continue; }
+          if (g.length > 1) { say(`${dst}${proto}${metric}`); for (const x of g) say(`\tnexthop via ${x.via} dev ${x.dev} weight 1`); continue; }
           if (!r.dev) { say(`${dst} via ${r.via}  (inactive: ${r.bfdDown ? 'BFD says the next hop is down' : 'next hop unreachable'})`); continue; }
-          say(`${dst} via ${r.via} dev ${r.dev}${proto}${r.metric ? ' metric ' + r.metric : ''}${r.bfd ? '  (BFD watched)' : ''}`);
+          say(`${dst}${r.via ? ' via ' + r.via : ''} dev ${r.dev}${proto}${r.via ? '' : ' scope link'}${metric}${r.bfd ? '  (BFD watched)' : ''}`);
         }
         return;
       }

@@ -249,8 +249,8 @@ const SOLUTIONS = {
     const out = sim.dev('pc1').consoleLines.join('\n');
     assert.match(out, / 2 {2}10\.0\.12\.2/); assert.match(out, /From 10\.0\.12\.2 icmp_seq=1 Time to live exceeded/); assert.match(out, /ttl=61/); } },
   'm2-l4': { answers: [null, null, 'r2'], act: sim => { run(sim, 'pc1', 'ping -c 2 10.0.4.10'); run(sim, 'r2', 'ip route add 10.0.1.0/24 via 10.0.12.1'); run(sim, 'pc1', 'ping -c 2 10.0.4.10'); } },
-  'm2-l5': { answers: ['1400', null, null, '2', '1372'], act: sim => {
-    run(sim, 'pc1', 'ping -c 2 -M do -s 1472 10.0.2.20'); run(sim, 'pc1', 'ping -c 1 -M dont -s 1472 10.0.2.20'); run(sim, 'pc1', 'ping -c 1 -M do -s 1372 10.0.2.20');
+  'm2-l5': { answers: [null, '2', '1400', null, '1372'], act: sim => {
+    run(sim, 'pc1', 'ping -c 1 -M dont -s 1472 10.0.2.20'); run(sim, 'pc1', 'ping -c 2 -M do -s 1472 10.0.2.20'); run(sim, 'pc1', 'ping -c 1 -M do -s 1372 10.0.2.20');
     assert.ok(sim.log.some(e => e.tag === 'fragmented' && e.data.count === 2));
     assert.match(sim.dev('pc1').consoleLines.join('\n'), /mtu = 1400/);
     assert.ok(sim.log.some(e => e.tag === 'ping-done' && e.data.size === 1372 && e.data.received === 1)); } },

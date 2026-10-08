@@ -25,7 +25,7 @@ export default {
 <pre>10.2.0.0/24   AS_PATH 65002          learned directly from AS 65002
 10.2.0.0/24   AS_PATH 65100 65002    the same network, one AS further away</pre>
 <h2>Sessions over TCP</h2>
-<p>BGP runs over <b>TCP port 179</b>: reliable, ordered, no own retransmission needed. Neighbors are configured by hand, there is no discovery. Four messages:</p>
+<p>BGP runs over <b>TCP port 179</b>: reliable, ordered, no own retransmission needed. Neighbors are configured by hand, there is no discovery. eBGP packets leave with <b>TTL 1</b> by default: the neighbor must be directly connected (one further away needs <code>ebgp-multihop</code>). Four messages:</p>
 <table><tr><th>Message</th><th>Content</th></tr>
 <tr><td>OPEN</td><td>my AS, router ID, hold time, capabilities</td></tr>
 <tr><td>KEEPALIVE</td><td>"still here", every hold time / 3</td></tr>
@@ -35,8 +35,8 @@ export default {
 ${note('BGP announces a network only if it is in the own routing table with exactly that prefix: <code>network 10.1.0.0/24</code> does nothing if the router only knows 10.1.0.0/16.')}` },
       { type: 'stack', title: 'A session comes up', hint: 'From the first packet to the first route. The top is the first message.',
         items: [{ name: 'r1 → r2: TCP SYN to port 179', kind: 'tcp' }, { name: 'r2 → r1: SYN, ACK', kind: 'tcp' }, { name: 'r1 → r2: ACK', kind: 'tcp' },
-          { name: 'r1 → r2: OPEN (AS 65001)', kind: 'rt' }, { name: 'r2 → r1: OPEN (AS 65002)', kind: 'rt' }, { name: 'r1 → r2: KEEPALIVE', kind: 'rt' },
-          { name: 'r2 → r1: KEEPALIVE, both Established', kind: 'rt' }, { name: 'UPDATE: 10.1.0.0/24, AS_PATH 65001', kind: 'rt' }],
+          { name: 'r1 → r2: OPEN (AS 65001)', kind: 'rt' }, { name: 'r2 → r1: OPEN (AS 65002)', kind: 'rt' }, { name: 'r2 → r1: KEEPALIVE', kind: 'rt' },
+          { name: 'r1 → r2: KEEPALIVE, both Established', kind: 'rt' }, { name: 'UPDATE: 10.1.0.0/24, AS_PATH 65001', kind: 'rt' }],
         explain: 'First TCP, then the OPENs, each confirmed with a KEEPALIVE. Only then do the UPDATEs carry the networks.' },
       { type: 'build', title: 'Build the OPEN of r1', blocks: ['eth', 'ip', 'icmp', 'udp', 'tcp', 'bgp', 'data'],
         task: '<p>r1 (AS 65001, 10.0.12.1 on eth2) has opened the TCP connection to its eBGP neighbor r2 (10.0.12.2, AS 65002). Build the frame with the OPEN message r1 sends next.</p>',
@@ -66,7 +66,7 @@ ${note('BGP announces a network only if it is in the own routing table with exac
           { text: 'Which AS path does r1 see for 10.2.0.0/24?', ask: true, expect: () => ['65002', '65002 i'] },
           { text: 'Click a BGP UPDATE in the log and look at its attributes in the packet inspector.', check: inspected(isUpdate) }],
         hints: ['BGP is under Configuration on r2: Add a feature, BGP.', 'In the log of r1 you see the TCP connection being refused while r2 has BGP off.', 'Networks are entered as 10.2.0.0/24.'],
-        outro: '<p>Without BGP on r2, nobody listened on TCP 179: r1 got a reset and stayed in Active. With both sides configured, the session went through OpenSent and OpenConfirm to Established, and each router announced its network with its own AS in the path.</p>' }
+        outro: '<p>Without BGP on r2, nobody listened on TCP 179: r1 got a reset, fell back to Idle and kept trying again. Many real routers show such a session as Active. With both sides configured, the session went through OpenSent and OpenConfirm to Established, and each router announced its network with its own AS in the path.</p>' }
     ] },
 
     { id: 'm14-l3', title: 'iBGP and the next hop', minutes: 15, steps: [
@@ -133,6 +133,7 @@ ${note('The IGP (OSPF) carries the loopbacks and links of the own AS. BGP carrie
 <tr><td>7</td><td>eBGP over iBGP</td><td>eBGP</td></tr>
 <tr><td>8</td><td>IGP metric to the next hop</td><td>lower</td></tr>
 <tr><td>9</td><td>Router ID, neighbor address</td><td>lower</td></tr></table>
+<p>A router only passes on its <b>best</b> path. Its neighbors never learn about the paths it did not choose.</p>
 <h2>The way out: local preference</h2>
 <p>You decide which exit your own traffic takes. Set <b>local preference</b> higher on the routes from the provider you prefer (e.g. 200 instead of the default 100). It is passed to all iBGP neighbors, so the whole AS agrees, and it wins before the AS path length is even looked at.</p>
 <h2>The way in: AS path prepending and MED</h2>
@@ -143,7 +144,7 @@ ${note('Changing the way out does not change the way back: traffic can leave thr
         presets: { pc2: ['traceroute 198.51.100.80'], r2: ['show ip bgp', 'show ip bgp 198.51.100.0/24'], r3: ['show ip bgp 198.51.100.0/24'], isp1: ['show ip bgp 10.2.0.0/24'] },
         goals: [
           { text: 'traceroute from pc2 to the web server. Through which of our edge routers does it go?', ask: true, expect: () => ['r1'] },
-          { text: 'Why does r2 prefer that path? (show ip bgp 198.51.100.0/24 on r2 shows the reason)', ask: true, expect: () => ['as path length', 'as path', 'as-path', 'shorter as path', 'as_path'] },
+          { text: 'r3 has its own provider 2, yet the traffic leaves through r1. Why does r3 not use provider 2? (show ip bgp 198.51.100.0/24 on r3 shows the reason)', ask: true, expect: () => ['as path length', 'as path', 'as-path', 'shorter as path', 'as_path'] },
           { text: 'Make the whole AS leave through provider 2: give its routes a higher local preference on r3. Then traceroute again.', check: traceVia('pc2', '10.0.23.3') },
           { text: 'Now look at isp1: <code>show ip bgp 10.2.0.0/24</code>. Through which AS do the answers come back to us?', ask: true, expect: () => ['65001', 'directly', 'r1', 'via r1', 'as 65001'] },
           { text: 'Make provider 1 send the answers through provider 2 as well: prepend AS 65001 twice towards provider 1 on r1. isp1 then prefers the path via AS 65200.', check: sim => (sim.dev('isp1')?.bgp?.table() || []).some(r => r.prefix === '10.2.0.0/24' && r.best && r.asPath[0] === 65200) }],

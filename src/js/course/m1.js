@@ -21,7 +21,7 @@ ${bar([['Ethernet', '14 bytes', 'eth', 1.2], ['IPv4', '20 bytes', 'ip', 1.4], ['
 <tr><td>Transport</td><td>Segment (TCP), datagram (UDP)</td><td>Port</td><td>Firewall, load balancer</td></tr>
 <tr><td>Internet</td><td>Packet</td><td>IP address</td><td>Router</td></tr>
 <tr><td>Link</td><td>Frame</td><td>MAC address</td><td>Switch</td></tr></table>
-${note('<b>Every device only looks as deep as it has to.</b> A switch reads the Ethernet header. A router unwraps the frame, reads the IP header, decides and wraps the packet in a <i>new</i> frame. Neither of them touches anything above that.')}
+${note('<b>Every device only looks as deep as it has to.</b> A switch reads the Ethernet header. A router unwraps the frame, reads the IP header, decides and wraps the packet in a <i>new</i> frame. On the way it lowers the packet\'s <b>TTL</b> (time to live) by one, and at 0 the packet is dropped, so a packet cannot circle forever. Neither of them touches anything above that.')}
 <p>In the lab you can see this on every packet: the colored stripes on the envelope are its layers, from outside to inside. Clicking a packet takes it apart in the packet inspector.</p>` },
       { type: 'stack', title: 'Put the parts in the right order', retry: 'Remember: which layer goes onto the wire first?', hint: 'The top is what goes over the wire first.',
         items: [{ name: 'Ethernet header', size: '14 bytes', kind: 'eth' }, { name: 'IPv4 header', size: '20 bytes', kind: 'ip' }, { name: 'UDP header', size: '8 bytes', kind: 'udp' },
@@ -68,12 +68,12 @@ TCP payload:    1500 - 20 (IP) - 20 (TCP) - 12 (timestamps) = 1448 bytes
 
     { id: 'm1-l3', title: 'What a MAC address reveals', minutes: 8, steps: [
       { type: 'theory', title: 'Structure of the MAC address', html: `
-<p>A MAC address has 48 bits and is only valid in the local segment. The first 3 bytes are the <b>OUI</b> (Organizationally Unique Identifier), which the IEEE assigns to manufacturers. <code>00:50:56</code> belongs to VMware, which is why the addresses of your VMs on ESXi start with it.</p>
+<p>A MAC address has 48 bits and is only valid in the local segment. The first 3 bytes are the <b>OUI</b> (Organizationally Unique Identifier), which the IEEE assigns to manufacturers. <code>00:50:56</code> and <code>00:0c:29</code> belong to VMware, which is why the addresses of virtual machines on ESXi start with them.</p>
 <p>Two bits in the first byte have a special meaning:</p>
 <table><tr><th>Bit</th><th>0</th><th>1</th></tr>
 <tr><td><b>b0</b> (I/G)</td><td>Unicast: one interface</td><td>Group: multicast or broadcast</td></tr>
 <tr><td><b>b1</b> (U/L)</td><td>assigned by the manufacturer</td><td>locally administered (Docker, containerlab, random MAC on a smartphone)</td></tr></table>
-${note('You can spot locally administered addresses by the <b>second</b> hex digit: 2, 6, A or E. Examples: <code>02:42:…</code> in older Docker versions, <code>aa:c1:ab:…</code> in containerlab and here in the lab.')}
+${note('You can spot locally administered unicast addresses by the <b>second</b> hex digit: 2, 6, A or E (for group addresses it is 3, 7, B or F). Examples: <code>02:42:…</code> in older Docker versions, <code>aa:c1:ab:…</code> in containerlab and here in the lab.')}
 <table><tr><th>Address</th><th>Meaning</th></tr>
 <tr><td><code>ff:ff:ff:ff:ff:ff</code></td><td>Broadcast, everyone in the segment</td></tr>
 <tr><td><code>01:00:5e:…</code></td><td>IPv4 multicast, e.g. OSPF to 224.0.0.5</td></tr>
@@ -109,7 +109,7 @@ ${note('A <b>hub</b> learns nothing and passes every frame on to everyone. In th
         outro: '<p>With aging 0 the switch forgets every address immediately and has to flood everything like a hub. Every host then sees other hosts\' traffic: bad for security and for bandwidth. Feel free to set the aging time back to 300 afterwards.</p>' },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'From what does a switch learn which port a device is connected to?', options: ['From the destination MAC', 'From the source MAC', 'From the IP address', 'From ARP'], correct: 1, explain: 'Only the source MAC reveals who is sending on that port.' },
-        { q: 'A switch receives a frame for a MAC that is not in its table. What does it do?', options: ['Drop it', 'Ask via ARP', 'Send it to all ports in the VLAN except the incoming one', 'Send it to the router'], correct: 2,
+        { q: 'A switch receives a frame for a MAC that is not in its table. What does it do?', options: ['Drop it', 'Ask via ARP', 'Send it to all ports except the incoming one', 'Send it to the router'], correct: 2,
           explain: 'Unknown unicast flooding. When the destination replies, the switch learns its port, and from then on traffic goes there directly.' }] }
     ] },
 

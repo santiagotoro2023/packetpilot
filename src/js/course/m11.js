@@ -38,7 +38,7 @@ export default {
     { id: 'm11-l1', title: 'From the root down', minutes: 14, steps: [
       { type: 'theory', title: 'Nobody knows every name', html: `
 <p>No server in the world knows all names. DNS is a tree, read from right to left. Each level only knows who is responsible for the next level down:</p>
-<pre>.                    the root: 13 server names, hundreds of machines (anycast)
+<pre>.                    the root: 13 server names, well over a thousand machines (anycast)
 └── lab.             a top-level domain (TLD), like com. or ch.
     ├── firma.lab.   a zone of a company, on its own name servers
     │   └── www.firma.lab.  →  203.0.113.80
@@ -59,7 +59,7 @@ ${note('Authoritative servers usually refuse to resolve for strangers (status RE
           { name: 'root → resolver: referral, lab. is at ns1.nic.lab', kind: 'data' }, { name: 'resolver → ns1.nic.lab: A www.firma.lab?', kind: 'udp' },
           { name: 'ns1.nic.lab → resolver: referral, firma.lab. is at ns1.firma.lab', kind: 'data' }, { name: 'resolver → ns1.firma.lab: A www.firma.lab?', kind: 'udp' },
           { name: 'ns1.firma.lab → resolver: 203.0.113.80 (aa)', kind: 'data' }, { name: 'resolver → client: 203.0.113.80', kind: 'data' }],
-        explain: 'The client only sees the first and the last message. In between, the resolver walks down the tree, and every server only names the next one. Only the last answer is authoritative.' },
+        explain: 'The client only sees the first and the last message. In between, the resolver walks down the tree, and every server only names the next one. Only the answer from ns1.firma.lab is authoritative (aa). The referrals are not, and neither is the resolver\'s answer to the client.' },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'Which server can answer "www.firma.lab is 203.0.113.80" authoritatively?', options: ['A root server', 'The TLD server of lab.', 'The name server of the zone firma.lab', 'Any resolver'], correct: 2 },
         { q: 'What does the root server answer when asked for www.firma.lab?', options: ['The address', 'NXDOMAIN, it does not know the name', 'A referral to the servers of lab.', 'Nothing'], correct: 2,
@@ -78,7 +78,7 @@ ${note('Authoritative servers usually refuse to resolve for strangers (status RE
           { block: 'ip', fields: { src: '10.1.0.53', dst: '198.41.0.4', proto: '17', ttl: '64' } },
           { block: 'udp', fields: { sport: EPHEMERAL, dport: '53' } },
           { block: 'dns', fields: { qr: '0', name: 'www.firma.lab', qtype: 'A', rd: '0' } }],
-        explain: 'The resolver asks with its own address, not the client\'s: the root never learns who wanted to know. It asks for the full name, even though the root will only answer with a referral, and it clears RD: it does not want the root to resolve anything for it.' },
+        explain: 'The resolver asks with its own address, not the client\'s: the root never learns who wanted to know. Like the lab, a classic resolver asks for the full name, even though the root will only answer with a referral. Modern resolvers such as Unbound only ask the root about lab. (QNAME minimisation, RFC 9156), so it learns less. It clears RD: it does not want the root to resolve anything for it.' },
       { type: 'lab', title: 'From the root down', topo: () => dnsTopo(), edit: 'config',
         intro: '<p>The client uses the resolver 10.1.0.53 in its own network. On the internet there are a root server, the TLD server of <code>lab.</code> and two authoritative servers. All caches are empty.</p>',
         presets: { client: ['dig www.firma.lab', 'dig +trace portal.partner.lab', 'dig @203.0.113.53 portal.partner.lab', 'dig shop.firma.lab'], resolver: ['unbound-control dump_cache'], ns1: ['dig @203.0.113.53 www.firma.lab'] },

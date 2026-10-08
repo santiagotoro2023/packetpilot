@@ -210,7 +210,7 @@ ${note('Both DAD messages go to the same group, ff02::1:ff12:3456: link-local an
     ] },
     { id: 'm12-l3', title: 'IPv6 in the LAN', minutes: 18, steps: [
       { type: 'lab', title: 'Dual stack in action', topo: () => ipv6Topo(), edit: 'config',
-        intro: '<p>pc1 and pc2 have an IPv4 address and get IPv6 by themselves: r1 sends router advertisements on the LAN. The servers have static IPv6 addresses, r1 and r2 static IPv6 routes. The name www.lab has an A and an AAAA record.</p>',
+        intro: '<p>pc1 and pc2 have an IPv4 address and get IPv6 by themselves: r1 sends router advertisements on the LAN. The servers have static IPv6 addresses, r1 and r2 static IPv6 routes. The name www.lab has an A and an AAAA record.</p><p>DNS translates names like www.lab into addresses: an <b>A</b> record holds an IPv4 address, an <b>AAAA</b> record ("quad A") an IPv6 address. DNS follows in detail in a later module. <code>curl</code> fetches a web page on the command line.</p>',
         presets: { pc1: ['ip -6 addr', 'ip -6 route', 'rdisc6 eth1', 'ping -6 -c 2 2001:db8:2::80', 'ip -6 neigh', 'ping -6 -c 1 ff02::1%eth1', 'curl http://www.lab/'], r1: ['show ipv6 route', 'ip -6 neigh'] },
         goals: [
           { text: 'Look at the IPv6 addresses of pc1 (<code>ip -6 addr</code>). Which prefix did pc1 get from r1?', ask: true, expect: () => ['2001:db8:1::/64', '2001:db8:1::', '2001:db8:1:0::/64'], placeholder: 'prefix' },
@@ -220,14 +220,15 @@ ${note('Both DAD messages go to the same group, ff02::1:ff12:3456: link-local an
           { text: 'Ping all nodes of the LAN at once: <code>ping -6 -c 1 ff02::1%eth1</code>.', check: tag('pc1', 'ping-done', d => String(d.dst).startsWith('ff02::1') && (d.from || []).length >= 2) },
           { text: 'Open <code>http://www.lab/</code> with curl. Which address does curl use?', ask: true, expect: () => ['2001:db8:2::80'] }],
         hints: ['ip -6 addr shows "scope global dynamic" for the SLAAC address.', 'The interface ID is everything after 2001:db8:1:0:', 'The NS of r1 says "asks its solicited-node group …".'],
-        outro: '<p>pc1 asked DNS for AAAA first, because it has a global IPv6 address and an IPv6 default route, and preferred IPv6, like every modern operating system. The group ff02::1 reached pc2 and r1 at once: multicast replaces the broadcast. And the hop limit of the reply was 62, two routers on the way, just like the TTL in IPv4.</p>' }
+        outro: '<p>pc1 got the AAAA record for www.lab and preferred IPv6, because it has a global IPv6 address and an IPv6 default route, like every modern operating system (RFC 6724). Real systems ask for A and AAAA at the same time and then sort the answers; the lab simply asks for AAAA first. The group ff02::1 reached pc2 and r1 at once: multicast replaces the broadcast. And the hop limit of the reply was 62, two routers on the way, just like the TTL in IPv4.</p>' }
     ] },
 
     { id: 'm12-l4', title: 'Building IPv6 routing yourself', minutes: 20, steps: [
       { type: 'theory', title: 'What a router needs for IPv6', html: `
-<p>A router does not pass anything on just because it has IPv6 addresses. Three things are needed:</p>
+<p>A router does not pass anything on just because it has IPv6 addresses. Four things are needed:</p>
 <table><tr><th>What</th><th>Linux / FRR</th><th>Effect</th></tr>
-<tr><td>Router advertisements on the LAN</td><td><code>ipv6 nd prefix 2001:db8:1::/64</code> (radvd, FRR)</td><td>hosts get a prefix and a default router</td></tr>
+<tr><td>IPv6 forwarding switched on</td><td><code>sysctl -w net.ipv6.conf.all.forwarding=1</code> (Cisco: <code>ipv6 unicast-routing</code>)</td><td>the device forwards IPv6 at all. Off by default on Linux; the routers in the lab have it on</td></tr>
+<tr><td>Router advertisements on the LAN</td><td>FRR: <code>no ipv6 nd suppress-ra</code> and <code>ipv6 nd prefix 2001:db8:1::/64</code> on the interface. radvd: <code>AdvSendAdvert on</code> with a <code>prefix</code> block</td><td>hosts get a prefix and a default router</td></tr>
 <tr><td>Routes to the other networks</td><td><code>ip -6 route add 2001:db8:2::/64 via 2001:db8:12::2</code></td><td>like IPv4: static, OSPFv3 or BGP</td></tr>
 <tr><td>Optionally DNS in the RA</td><td>RDNSS option</td><td>hosts find a DNS server without DHCPv6</td></tr></table>
 <p>The RA has two flags for DHCPv6: <b>M</b> (managed: take addresses from DHCPv6) and <b>O</b> (other: only DNS and similar from DHCPv6). With both off, SLAAC and RDNSS do everything.</p>
@@ -241,16 +242,16 @@ ${note('IPv6 has no NAT in normal networks: every device has a global address. T
           { text: 'Put the DNS server 2001:db8:2::53 into the router advertisement of r1. pc1 learns it.', check: sim => (sim.dev('pc1')?.l3.v6.rdnss || []).includes('2001:db8:2::53') },
           { text: 'Open http://www.lab/ on pc1. It goes over IPv6.', check: curl6('pc1') },
           { text: 'Through which router address does pc1 reach everything outside its LAN? (ip -6 route on pc1)', ask: true, expect: sim => [sim.dev('r1') ? linkLocalFor(sim.dev('r1').mac('eth1')) : ''], placeholder: 'fe80::…' }],
-        hints: ['A route needs both routers: r1 must know 2001:db8:2::/64 and r2 must know the way back to 2001:db8:1::/64.', 'The router advertisement is repeated every 30 seconds and sent at once after a change.', 'The default route of pc1 points to a link-local address.'],
+        hints: ['A route needs both routers: r1 must know 2001:db8:2::/64 and r2 must know the way back to 2001:db8:1::/64.', 'In the lab the router advertisement is repeated every 30 seconds (real routers: every few minutes) and sent at once after a change.', 'The default route of pc1 points to a link-local address.'],
         outro: '<p>The PCs never got a manual setting: prefix, default router and DNS server all came from the router advertisement. The default router is the link-local address of r1, which stays the same even if the global prefix changes.</p>' }
     ] },
 
     { id: 'm12-l5', title: 'Dual stack and the way to IPv6', minutes: 10, steps: [
       { type: 'theory', title: 'Two protocols side by side', html: `
 <p>The internet will not switch over in one night. Most networks run <b>dual stack</b>: every device has an IPv4 and an IPv6 address, and every application decides which one to use.</p>
-<ol><li>The name is resolved for <b>AAAA</b> and <b>A</b>.</li>
+<ol><li>The name is resolved for <b>AAAA</b> (IPv6) and <b>A</b> (IPv4) at the same time.</li>
 <li>If the device has a global IPv6 address and a default route, IPv6 is preferred (RFC 6724).</li>
-<li><b>Happy Eyeballs</b>: browsers start IPv6 and, after a short head start of 50 to 250 ms, IPv4 in parallel. Whichever connects first wins. A broken IPv6 path then only costs a fraction of a second.</li></ol>
+<li><b>Happy Eyeballs</b>: browsers and curl start IPv6 and, after a head start of about 250 ms (RFC 8305, Chrome 300 ms), IPv4 in parallel. Whichever connects first wins. A broken IPv6 path then only costs a fraction of a second.</li></ol>
 <h2>When only one side has IPv6</h2>
 <table><tr><th>Technique</th><th>Idea</th></tr>
 <tr><td>NAT64 + DNS64</td><td>An IPv6-only network reaches IPv4 servers: DNS invents an AAAA record inside <code>64:ff9b::/96</code>, a gateway translates.</td></tr>

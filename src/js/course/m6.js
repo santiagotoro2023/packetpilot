@@ -29,7 +29,7 @@ ${bar([['Ethernet', '14', 'eth', 1], ['IPv4', '20', 'ip', 1], ['UDP 68 → 67', 
 <tr><td>1</td><td>Subnet mask</td></tr><tr><td>3</td><td>Router, the default gateway</td></tr>
 <tr><td>6</td><td>DNS servers</td></tr><tr><td>51</td><td>Lease time</td></tr><tr><td>53</td><td>Message type (Discover, Offer, …)</td></tr>
 <tr><td>54</td><td>Server identifier</td></tr></table>
-${note('Halfway through the lease (T1), the client asks the same server directly to extend it. Only if that fails for a long time does it start over with a broadcast. If a client gets no answer at all, Linux keeps the interface without an address, Windows picks one from <code>169.254.0.0/16</code> (APIPA): a sure sign that DHCP failed.')}` },
+${note('Halfway through the lease (T1), the client asks the same server directly to extend it. If that server does not answer, at 87.5 % (T2) it asks any server by broadcast. Only when the lease has run out does it give up the address and start over with a Discover. If a client gets no answer at all, Linux keeps the interface without an address, Windows picks one from <code>169.254.0.0/16</code> (APIPA): a sure sign that DHCP failed.')}` },
       { type: 'stack', title: 'Put the DHCP messages in order', hint: 'The top is the first message.',
         items: [{ name: 'DHCP Discover from the client (broadcast)', kind: 'data' }, { name: 'DHCP Offer from the server', kind: 'data' },
           { name: 'DHCP Request from the client (broadcast)', kind: 'data' }, { name: 'DHCP ACK from the server', kind: 'data' }],
@@ -51,7 +51,7 @@ ${note('Halfway through the lease (T1), the client asks the same server directly
           { text: 'Which destination IP does the Offer have?', ask: true, expect: () => ['255.255.255.255'] },
           { text: 'Release the address of client1 (<code>dhclient -r</code>) and ask again (<code>dhclient</code>).', check: boundAfter('client1', 'dhcp-released-client') },
           { text: 'Which address did client2 get?', ask: true, expect: sim => [leaseOf(sim, 'client2')].filter(Boolean), placeholder: '10.10.0.…' }],
-        hints: ['A Discover and a Request come from 0.0.0.0. The server answers to the broadcast address too, because the client cannot receive anything else yet.', 'The server shows its leases with show ip dhcp binding.'],
+        hints: ['A Discover and a Request come from 0.0.0.0. In the lab the server answers to the broadcast address too. Real clients that cannot receive a unicast before they have an address set the broadcast flag; for the others (e.g. Linux dhclient) the server sends the Offer straight to the new address and the client\'s MAC.', 'The server shows its leases with show ip dhcp binding.'],
         outro: '<p>client1 got the same address again: the server remembers which address belongs to which MAC and offers it again. That is why devices often keep their address even though it is assigned dynamically.</p>' },
       { type: 'build', title: 'Build the DHCP Discover', blocks: ['eth', 'vlan', 'arp', 'ip', 'icmp', 'udp', 'tcp', 'dhcp'],
         task: '<p><b>client1</b> starts and has no address. Build the first frame it sends.</p>',

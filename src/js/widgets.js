@@ -186,7 +186,7 @@ function stack(step, el, done, saved, save) {
 }
 
 // ---------------------------------------------------------------- MAC decoder
-const OUI = { '00:50:56': 'VMware (ESXi)', '00:0c:29': 'VMware (Workstation)', '52:54:00': 'QEMU/KVM (locally administered)', 'aa:c1:ab': 'containerlab (locally administered)',
+const OUI = { '00:50:56': 'VMware (vCenter or set by hand)', '00:0c:29': 'VMware (ESXi, Workstation)', '52:54:00': 'QEMU/KVM (locally administered)', 'aa:c1:ab': 'containerlab (locally administered)',
   '02:42:ac': 'Docker (older versions)', '00:1b:21': 'Intel', '3c:fd:fe': 'Intel', 'f4:4d:30': 'Elitegroup', '00:00:5e': 'IANA (VRRP: 00:00:5e:00:01:xx)', '01:00:5e': 'IPv4 multicast', '33:33:00': 'IPv6 multicast' };
 export function classifyMac(m) {
   if (m === 'ff:ff:ff:ff:ff:ff') return 'Broadcast';

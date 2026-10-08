@@ -57,7 +57,10 @@ export const MODES = {
   same: {
     title: 'Same subnet?', text: 'Decide whether two hosts are in the same subnet and can talk without a router.',
     make(level) {
-      const len = prefixFor(level); const ip = randomIp(); const i = info(ip, len);
+      const len = prefixFor(level);
+      // Both hosts must be real hosts: never the network or broadcast address of the subnet
+      let ip; do ip = randomIp(); while (ip === info(ip, len).net || ip === info(ip, len).bc);
+      const i = info(ip, len);
       const base = ipToInt(i.net), size = 2 ** (32 - len);
       const same = Math.random() < .5;
       const step = base + 2 * size <= 0xffffffff ? size : -size;
@@ -86,7 +89,7 @@ export function explain(mode, q) {
     const bits = 32 - q.len;
     const e = q.len % 8 === 0 && q.len ? `The mask ends exactly at an octet boundary.` : `${q.len} ones: ${Math.floor(q.len / 8)} full octets of 255, then ${q.len % 8} more bits = ${256 - 2 ** (8 - q.len % 8)}.`;
     return mode === 'mask' ? `<p>/${q.len} means ${q.len} ones followed by ${bits} zeros. ${e} So /${q.len} = <code>${maskStr(q.len)}</code>.</p>`
-      : `<p>With ${bits} host bits there are 2<sup>${bits}</sup> − 2 = ${2 ** bits - 2} usable addresses (network and broadcast are reserved). ${bits - 1} host bits would only give ${2 ** (bits - 1) - 2}, too few for ${q.hosts}. So the prefix is 32 − ${bits} = <b>/${q.len}</b>.</p>`;
+      : `<p>With ${bits} host bits there are 2<sup>${bits}</sup> − 2 = ${2 ** bits - 2} usable addresses (network and broadcast are reserved). ${bits === 2 ? 'One host bit (/31) gives only 2 addresses, which on a normal LAN would both be reserved (only point-to-point links may use both, RFC 3021).' : `${bits - 1} host bits would only give ${2 ** (bits - 1) - 2}, too few for ${q.hosts}.`} So the prefix is 32 − ${bits} = <b>/${q.len}</b>.</p>`;
   }
   const x = explainOctet(q.ip, q.len), i = info(q.ip, q.len);
   if (q.len % 8 === 0) return `<p>/${q.len} ends at an octet boundary: the first ${q.len / 8} octets are the network, the rest are host bits. Network <code>${i.net}</code> (all host bits 0), broadcast <code>${i.bc}</code> (all host bits 1).</p>
@@ -95,7 +98,7 @@ export function explain(mode, q) {
   let s = `<p>The prefix /${q.len} ends in octet ${x.octet} after ${x.bits} bit${x.bits === 1 ? '' : 's'}. Mask in that octet: 256 − ${x.block} = ${x.maskOctet}, so the subnets there come in blocks of <b>${x.block}</b>.</p>
 <p>Octet ${x.octet} of <code>${q.ip}</code> is ${x.val} = <code>${mark}</code> in binary (network bits | host bits). ${x.val} lies in the block <b>${x.start} to ${x.end}</b>.</p>
 <p><b>Network</b> = start of the block, all host bits 0: <code>${i.net}</code>. <b>Broadcast</b> = end of the block, all host bits 1: <code>${i.bc}</code>.</p>
-<p><b>First host</b> = network + 1 = <code>${i.first}</code>, <b>last host</b> = broadcast − 1 = <code>${i.last}</code>. ${x.octet === 4 && x.start ? `Not .1 or .254: those belong to other blocks, this block only runs from ${x.start} to ${x.end}.` : ''} 2<sup>${32 - q.len}</sup> − 2 = ${i.hosts.toLocaleString('en')} usable.</p>`;
+<p><b>First host</b> = network + 1 = <code>${i.first}</code>, <b>last host</b> = broadcast − 1 = <code>${i.last}</code>. ${x.octet === 4 && (x.start > 0 || x.end < 255) ? `Not ${[x.start > 0 && '.1', x.end < 255 && '.254'].filter(Boolean).join(' or ')}: ${x.start > 0 && x.end < 255 ? 'those belong to other blocks' : 'that belongs to another block'}, this block only runs from ${x.start} to ${x.end}.` : ''} 2<sup>${32 - q.len}</sup> − 2 = ${i.hosts.toLocaleString('en')} usable.</p>`;
   if (mode === 'same') s += `<p>${q.other} ${info(q.other, q.len).net === i.net ? 'lies in the same block, so: <b>yes</b>' : `belongs to the network ${info(q.other, q.len).net}, so: <b>no</b>, the hosts need a router`}.</p>`;
   return s;
 }

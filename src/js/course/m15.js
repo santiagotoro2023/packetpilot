@@ -10,7 +10,7 @@ export default {
     { id: 'm15-l1', title: 'Why VXLAN needs a control plane', minutes: 14, steps: [
       { type: 'theory', title: 'From flood and learn to EVPN', html: `
 <p>Plain VXLAN works like a big switch stretched over IP: unknown destinations are flooded to all VTEPs of the segment, and MAC addresses are learned from the packets that come back (<b>flood and learn</b>). That has three problems:</p>
-<ul><li>Every VTEP needs a <b>static flood list</b> of all other VTEPs. A new VTEP means touching every other one.</li>
+<ul><li>Without multicast in the underlay, every VTEP needs a <b>static flood list</b> of all other VTEPs. A new VTEP means touching every other one.</li>
 <li>Broadcast, unknown unicast and multicast (BUM) are copied to every VTEP. Every ARP request crosses the whole fabric.</li>
 <li>A MAC is only known after it has sent something, and after a move the old entry stays until it ages out.</li></ul>
 <p><b>EVPN</b> (Ethernet VPN, RFC 7432 and 8365) solves this with BGP: the VTEPs announce what they know, like routers announce networks. The address family is <code>l2vpn evpn</code>, the transport iBGP or eBGP as usual.</p>
@@ -19,10 +19,10 @@ export default {
 <tr><td><b>2</b></td><td>MAC/IP advertisement</td><td>"The host with this MAC (and IP) is behind me, in VNI 10010"</td></tr>
 <tr><td><b>3</b></td><td>Inclusive multicast</td><td>"I take part in VNI 10010: send me its flooded traffic"</td></tr>
 <tr><td>5</td><td>IP prefix</td><td>routing between VNIs (not in this course)</td></tr>
-<tr><td>1, 4</td><td>Ethernet segment</td><td>one host connected to two VTEPs (multihoming)</td></tr></table>
-<p>Type 3 routes build the flood lists automatically. Type 2 routes fill the MAC tables of all VTEPs, so even unknown unicast no longer has to be flooded. With <b>ARP suppression</b> a VTEP even answers an ARP request itself when it knows the IP from a type 2 route.</p>
+<tr><td>1, 4</td><td>Ethernet auto-discovery (1), Ethernet segment (4)</td><td>one host connected to two VTEPs (multihoming)</td></tr></table>
+<p>Type 3 routes build the flood lists automatically. Type 2 routes fill the MAC tables of all VTEPs, so unicast to every announced host goes straight to the right VTEP. Only MACs that nobody has announced yet are still flooded. With <b>ARP suppression</b> a VTEP even answers an ARP request itself when it knows the IP from a type 2 route.</p>
 <h2>Who talks to whom</h2>
-<p>In a leaf-spine fabric the leaves are VTEPs. They do not peer with each other: the spines are <b>route reflectors</b>, every leaf has one iBGP session per spine. The route reflector itself does not need VXLAN, it only passes the EVPN routes on.</p>
+<p>In a leaf-spine fabric the leaves are VTEPs. They do not peer with each other. In an iBGP fabric the spines are <b>route reflectors</b>, every leaf has one iBGP session per spine (fabrics with eBGP between leaf and spine need none). The route reflector itself does not need VXLAN, it only passes the EVPN routes on.</p>
 ${note('Each route also carries a route distinguisher and route targets, so that several tenants can use the same MAC or IP. Here every VNI simply has its own.')}` },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'A new VTEP joins VNI 10010. Which route tells the others to include it in their flood list?', options: ['Type 2', 'Type 3', 'Type 5', 'A static entry'], correct: 1 },

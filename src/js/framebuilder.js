@@ -56,7 +56,7 @@ function validate(seq) {
   if (seq[0] !== 'eth') err(0, 'A frame always starts with the Ethernet header.');
   for (let i = 0; i < seq.length; i++) {
     const b = seq[i], prev = seq[i - 1], next = seq[i + 1];
-    if (b === 'vlan' && prev !== 'eth') err(i, 'The 802.1Q tag follows directly after the Ethernet header (after the source MAC).');
+    if (b === 'vlan' && prev !== 'eth' && !(prev === 'vlan' && seq[i - 2] === 'eth')) err(i, 'The 802.1Q tag follows directly after the Ethernet header (after the source MAC). A second tag may follow the first (QinQ).');
     if (b === 'eth' && i > 0 && prev !== 'vxlan') err(i, 'A second Ethernet header only makes sense after a VXLAN header (inner frame).');
     if (b === 'arp' && !['eth', 'vlan'].includes(prev)) err(i, 'ARP belongs directly in the Ethernet frame (EtherType).');
     if ((b === 'ip' || b === 'ipv6') && !['eth', 'vlan', 'wg', 'esp'].includes(prev)) err(i, `${BLOCKS[b].name} belongs directly in the Ethernet frame (EtherType), or inside a VPN tunnel.`);
@@ -74,7 +74,7 @@ function validate(seq) {
     if (b === 'vxlan' && next !== 'eth') err(i, 'The inner Ethernet frame follows the VXLAN header.');
     if (b === 'data' && !['udp', 'tcp', 'icmp', 'icmp6'].includes(prev)) err(i, 'Application data is carried in UDP, TCP or ICMP.');
     if (b === 'data' && next) err(i + 1, 'Only the FCS comes after the data.');
-    if (b === 'vlan' && seq.filter(x => x === 'vlan').length > 2) err(i, 'More than two tags (QinQ) are unusual.');
+    if (b === 'vlan' && seq.slice(0, i + 1).filter(x => x === 'vlan').length === 3) err(i, 'Two tags are QinQ (802.1ad, the outer one with TPID 0x88A8). More than two are unusual.');
     const B = BLOCKS[b];
     if (B.in && !B.in.includes(prev)) err(i, `${B.name} is carried in ${B.in.map(x => BLOCKS[x].name).join(' or ')}.`);
     if (B.last && next) err(i + 1, `Nothing follows ${B.name}, it is the payload itself.`);

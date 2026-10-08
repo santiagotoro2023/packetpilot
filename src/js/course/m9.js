@@ -27,7 +27,7 @@ export default {
 ${bar([['Ethernet', 'src 00:00:5e:00:01:01', 'eth', 1.6], ['IPv4 → 224.0.0.18', 'proto 112, TTL 255', 'ip', 1.6], ['VRRP', 'VRID, priority, virtual IP', 'rt', 2]], 'A VRRP advertisement: the master sends it with the virtual MAC as its source, so the switches always know where the virtual MAC is.')}
 <h2>The takeover</h2>
 <p>If the backups miss about three advertisements, the one with the highest priority becomes master. It sends a <b>gratuitous ARP</b> for the virtual IP with the virtual MAC, and the switches learn its new port. The hosts do not have to do anything: their ARP entry for the gateway (virtual IP → virtual MAC) stays the same.</p>
-${note('Linux implements VRRP with keepalived, Cisco has its own HSRP that works the same way. On the routers, the LAN interface also keeps its own address: the virtual IP comes on top.')}` },
+${note('On Linux, keepalived implements VRRP. By default it uses the router\'s own MAC and updates the hosts with gratuitous ARPs, only with <code>use_vmac</code> does it use the virtual MAC. Cisco\'s HSRP follows the same idea with its own MAC range (<code>0000.0c07.acXX</code>) and with preempt off by default. On the routers, the LAN interface also keeps its own address: the virtual IP comes on top.')}` },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'Which virtual MAC address does VRRP group 5 use?', input: ['00:00:5e:00:01:05', '0000.5e00.0105', '00-00-5e-00-01-05'] },
         { q: 'ra has priority 110, rb priority 100. Which router is master?', options: ['ra', 'rb', 'The one that started first'], correct: 0 },
@@ -58,7 +58,7 @@ ${note('Linux implements VRRP with keepalived, Cisco has its own HSRP that works
           { text: 'Give rb the priority 120. It takes over the master role.', check: sim => stateOf(sim, 'rb') === 'master' && stateOf(sim, 'ra') === 'backup' },
           { text: 'pc1 still reaches the server.', check: sim => sim.log.some(e => e.dev === 'pc1' && e.tag === 'ping-done' && e.data.received > 0 && stateOf(sim, 'rb') === 'master') },
           { text: 'Did pc1 have to learn a new MAC address for its gateway? (yes or no)', ask: true, expect: () => ['no'] }],
-        hints: ['Configuration → VRRP on rb, "+ Group". Interface eth1, group 1, virtual IP 10.0.0.1.', 'With preempt on, the router with the higher priority takes over immediately when it hears a lower one.'],
+        hints: ['Configuration → VRRP on rb, "+ Group". Interface eth1, group 1, virtual IP 10.0.0.1.', 'With preempt on, the router with the higher priority ignores the advertisements of a lower master and takes over when its master down timer runs out, after about three advertisement intervals.'],
         outro: '<p>Priorities decide who is master in normal operation, for example the router with the faster uplink. In real networks, the priority is often lowered automatically when the uplink fails (tracking), so the other router takes over.</p>' }
     ] }
   ]

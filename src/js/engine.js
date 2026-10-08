@@ -1640,7 +1640,7 @@ class Bridge {
       this.stp.lastFlush = this.sim.time;
       this.fdb.clear();
       this.stp.tcUntil = Math.max(this.stp.tcUntil, this.sim.time + this.timers().fwd * 1000);
-      this.dev.record('info', 'Topology change reported: MAC table flushed, addresses are learned again', { tag: 'stp-tc-flush' });
+      this.dev.record('info', 'Topology change reported: MAC table flushed, addresses are learned again (simplified: classic 802.1D only lets the entries expire after the forward delay)', { tag: 'stp-tc-flush' });
     }
     this.stpRecompute();
   }
@@ -1719,7 +1719,7 @@ class Bridge {
     if (this.sim.time - this.stp.lastFlush > 5000) {
       this.stp.lastFlush = this.sim.time;
       this.fdb.clear();
-      this.dev.record('info', 'Topology change: MAC table flushed and change reported via BPDU', { tag: 'stp-tc', data: {} });
+      this.dev.record('info', 'Topology change: MAC table flushed and change reported via BPDU (simplified: classic 802.1D only lets the entries expire after the forward delay)', { tag: 'stp-tc', data: {} });
     }
   }
 

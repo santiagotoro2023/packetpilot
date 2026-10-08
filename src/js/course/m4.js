@@ -86,7 +86,7 @@ ${note('BPDUs are not Ethernet II frames. They use the older 802.3 format with a
         expected: [
           { block: 'eth', fields: { dst: '01:80:c2:00:00:00', src: macFor('sw1/eth1'), type: 'len' } },
           { block: 'stp', fields: { root: `4096.${bmac('sw1')}`, cost: '0', bridge: `4096.${bmac('sw1')}` } }],
-        explain: 'The root has a cost of 0 to itself and is also the sender. The destination MAC is the reserved multicast address for bridges, which no switch forwards. Instead of an EtherType, the header contains the payload length (802.3), followed by the LLC header.' },
+        explain: 'The root has a cost of 0 to itself and is also the sender. The destination MAC is the reserved multicast address for bridges: a switch that runs spanning tree processes it and never forwards it. Instead of an EtherType, the header contains the payload length (802.3), followed by the LLC header.' },
       { type: 'lab', title: 'Find the root and pick a new one', topo: () => stpTriangle({ enabled: true }), edit: 'config',
         intro: `<p>All three switches have the default priority 32768. Find out who became root, and then choose a new root yourself. Use <code>show spanning-tree</code> in a switch's console or look under Tables to see the state.</p>`,
         presets: { sw1: ['show spanning-tree'], sw2: ['show spanning-tree'], sw3: ['show spanning-tree'] },
@@ -120,7 +120,7 @@ sw3: two paths with cost 8, via sw2 or via sw4
 Segment sw2–sw3: sw2 offers 4, sw3 offers 8 → sw2 is designated
 Segment sw3–sw4: the same, sw4 is designated
 → The port of sw3 towards the "loser" is left over: alternate, blocking</pre>
-${note('The roles tell you where traffic flows. A frame from one end of the ring to the other always takes the path via the root, even if a shorter path exists that is currently blocked.')}` },
+${note('The roles tell you where traffic flows. Frames only travel along the tree. Between the two switches on either side of the blocked port, traffic goes the long way around the ring (here via the root), although a direct cable exists.')}` },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'How many root ports does the root bridge have?', input: ['0', 'none', 'zero'], explain: 'The root does not need a path to itself. All of its ports are designated.' },
         { q: 'A switch reaches the root directly via a 100 Mbit link (cost 19) or via two gigabit hops (4 + 4). Which path becomes the root port?', options: ['The direct 100 Mbit link', 'The path via two gigabit hops', 'Both, STP balances the load'], correct: 1,
@@ -171,8 +171,9 @@ ${note('<b>RSTP</b> (802.1w, the standard today) negotiates new ports in fractio
 <tr><td>direct: its own root port loses the link</td><td>immediately</td><td>30 s (listening + learning)</td></tr>
 <tr><td>indirect: the path breaks somewhere else</td><td>BPDUs stop arriving, after max age the information expires</td><td>up to 50 s (20 + 15 + 15)</td></tr></table>
 <h2>Topology change</h2>
-<p>After failing over, the MAC tables are no longer correct: they still point to the old path. Without countermeasures, frames would run into nowhere until aging (300 s). That is why a switch reports a <b>topology change</b> (TC) towards the root, the root sets the TC flag in its BPDUs, and all switches then quickly flush their MAC tables. After that, addresses are learned again via the new path.</p>
-${note('A TC also occurs when an ordinary port of an end device goes to Forwarding. Without PortFast, every PC that is switched on briefly triggers a flush of the MAC tables in the entire network. Another reason for edge ports.')}` },
+<p>After failing over, the MAC tables are no longer correct: they still point to the old path. Without countermeasures, frames would run into nowhere until aging (300 s). That is why a switch reports a <b>topology change</b> (TC) towards the root, the root sets the TC flag in its BPDUs, and while it is set, all switches let their MAC entries expire after the forward delay (15 s) instead of 300 s. Stale entries disappear quickly and addresses are learned again via the new path.</p>
+${note('In the lab the switches simply flush their MAC tables at once when they hear a topology change. That is what RSTP does, see the end of this module; classic 802.1D only shortens the aging time.')}
+${note('A TC also occurs when an ordinary port of an end device goes to Forwarding. Without PortFast, every PC that is switched on makes the MAC tables of the entire network age out quickly for a while, which causes a burst of flooding. Another reason for edge ports.')}` },
       { type: 'lab', title: 'Pull a cable', topo: () => stpTriangle({ enabled: true, rootPrio: 4096 }), edit: 'config',
         intro: '<p>sw1 is root. Let the network converge and check with a ping that everything works. Then interrupt the cable between sw1 and sw2 and watch how STP releases the backup path.</p>',
         presets: { pc1: ['ping -c 1 10.0.0.2', 'ping -c 12 10.0.0.2'], sw2: ['show spanning-tree', 'ip link set eth1 down'], sw3: ['show spanning-tree'] },
@@ -199,7 +200,7 @@ ${note('A TC also occurs when an ordinary port of an end device goes to Forwardi
 <p>The good news first: the root election, the bridge ID, the costs and the port roles work exactly as you learned. RSTP changes <i>how fast</i> the tree is built, not <i>which</i> tree.</p>
 <table><tr><th></th><th>STP (802.1D)</th><th>RSTP (802.1w)</th></tr>
 <tr><td>Port states</td><td>Blocking, Listening, Learning, Forwarding</td><td><b>Discarding</b>, Learning, Forwarding</td></tr>
-<tr><td>Roles</td><td>Root, Designated, Alternate</td><td>the same, plus <b>Backup</b></td></tr>
+<tr><td>Roles</td><td>Root, Designated, all other ports simply block</td><td>Root, Designated, plus <b>Alternate</b> and <b>Backup</b> for the discarding ports</td></tr>
 <tr><td>BPDUs</td><td>come from the root, the others relay them</td><td>every switch sends its own every hello, like a keepalive</td></tr>
 <tr><td>Neighbor gone</td><td>after max age, 20 s</td><td>after 3 missed hellos, 6 s. A dead link at once</td></tr>
 <tr><td>New forwarding port</td><td>30 s of timers</td><td><b>proposal and agreement</b>, milliseconds</td></tr>
@@ -222,10 +223,10 @@ eth1: Forwarding (milliseconds)      eth1 forwards as the root port
 <p>The <b>sync</b> is the trick: before sw2 agrees, it blocks its own ports towards the rest of the network. So there is never an open loop, and the handshake travels down the tree like a wave, one link at a time. A blocked alternate port agrees right away because it does not forward anyway.</p>
 <h2>When the handshake does not work</h2>
 <table><tr><th>Situation</th><th>What happens</th></tr>
-<tr><td>Port to an end device without <b>edge</b> setting</td><td>A PC does not answer proposals: the port waits 2 × forward delay, 30 s, as in STP</td></tr>
+<tr><td>Port to an end device without <b>edge</b> setting</td><td>A PC does not answer proposals. Switches with <b>automatic edge detection</b> (802.1D-2004, the default of mstpd on Linux) treat a port that hears no BPDU for about 3 s as an edge port. Without it (e.g. Cisco, and in the lab) the port waits 2 × forward delay, 30 s, as in STP</td></tr>
 <tr><td>Neighbor only speaks 802.1D</td><td>It ignores RST BPDUs and sends old ones. The RSTP switch falls back to STP on that port, with timers</td></tr>
 <tr><td>Shared link (half duplex, hub)</td><td>The handshake needs a point-to-point link, otherwise timers</td></tr></table>
-${note('So the edge setting is more important with RSTP, not less: it is the only way a port to an end device forwards without delay. On Cisco: <code>spanning-tree portfast</code>, on Linux with mstpd: <code>mstpctl setportadminedge</code>.')}
+${note('So the edge setting is more important with RSTP, not less: it is the only reliable way a port to an end device forwards without delay. On Cisco: <code>spanning-tree portfast</code>, on Linux with mstpd: <code>mstpctl setportadminedge</code>.')}
 <h2>Topology change</h2>
 <p>In RSTP only a port that <b>starts forwarding</b> counts as a topology change, and edge ports never do. The switch that notices it flushes the MAC addresses on its other ports and sends BPDUs with the TC flag on all its root and designated ports at once. Every switch that receives one does the same, so the news spreads in milliseconds without a detour via the root.</p>
 <h2>Inside an RST BPDU</h2>
@@ -253,7 +254,7 @@ ${note('In the lab, the packet inspector shows these bits for every RST BPDU, to
           explain: 'The alternate port already is a loop-free path to the root. It becomes the root port and forwards at once.' },
         { q: 'What does a switch do before it answers a proposal on its root port with an agreement?', options: ['It waits 15 seconds', 'It blocks all its other non-edge designated ports (sync)', 'It asks the root', 'It flushes its MAC table only'], correct: 1 },
         { q: 'After how many missed hellos does RSTP discard the information of a neighbor?', input: ['3', 'three'], explain: 'With hello 2 s that is 6 s instead of max age 20 s.' },
-        { q: 'In an RSTP network, a PC is plugged into a port without edge setting. How many seconds until the port forwards (standard timers)?', input: ['30'], unit: 'seconds',
+        { q: 'In an RSTP network without automatic edge detection, as in the lab, a PC is plugged into a port without edge setting. How many seconds until the port forwards (standard timers)?', input: ['30'], unit: 'seconds',
           explain: 'The PC never answers the proposal, so only the fallback with 2 × forward delay remains.' }] }
     ] },
 
@@ -288,9 +289,9 @@ ${note('In the lab, the packet inspector shows these bits for every RST BPDU, to
           { text: 'Disconnect the cable of pc3, reconnect it and ping pc3 from pc1 right away. The port forwards immediately and the reply comes.',
             check: sim => { const up = sim.log.filter(e => e.tag === 'link-up' && e.text.includes('pc3')).pop();
               return !!up && sim.log.some(e => e.seq > up.seq && e.dev === 'sw3' && e.tag === 'stp-state' && e.data?.port === 'eth5' && e.data.edge) && pingOkAfter('pc1', '10.0.0.3', e => e === up)(sim); } },
-          { text: 'Without the edge setting: how many seconds would the port of pc3 wait with the standard timers?', ask: true, expect: () => ['30'], placeholder: 'seconds' }],
+          { text: 'Without the edge setting: how many seconds would the port of pc3 wait in the lab with the standard timers?', ask: true, expect: () => ['30'], placeholder: 'seconds' }],
         hints: ['The neighbors of an STP-only switch log: "receives a classic 802.1D BPDU … falls back to STP".', 'The edge setting is in the spanning tree section of the configuration, or: spanning-tree portfast eth5 on'],
-        outro: '<p>Two classics from practice. A single old switch makes RSTP slow on all its links, and a missing edge setting makes every PC wait half a minute, even in a modern network. Real switches report the old neighbor as "Peer(STP)", and they also need a nudge to try RSTP again later: on Cisco <code>clear spanning-tree detected-protocols</code>.</p>' }
+        outro: '<p>Two classics from practice. A single old switch makes RSTP slow on all its links, and on switches without automatic edge detection a missing edge setting makes every PC wait half a minute, even in a modern network. Real switches report the old neighbor as "Peer(STP)", and they also need a nudge to try RSTP again later: on Cisco <code>clear spanning-tree detected-protocols</code>.</p>' }
     ] }
   ]
 };

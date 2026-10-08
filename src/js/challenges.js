@@ -72,7 +72,7 @@ export const CHALLENGES = [
     presets: { pc1: ['ping -c 2 10.0.0.2'], sw1: ['show spanning-tree'], sw2: ['show spanning-tree'], sw3: ['show spanning-tree'] } },
 
   { id: 'rstp', level: 2, title: 'Rapid spanning tree, but not rapid', topics: ['RSTP', 'Failover'],
-    symptom: '<p>The ring was switched to rapid spanning tree last month. Still, when a cable to <b>sw3</b> fails, phone calls drop for half a minute. RSTP should fail over without losing a single packet.</p>',
+    symptom: '<p>The ring was switched to rapid spanning tree last month. Still, when a cable to <b>sw3</b> fails, phone calls drop for half a minute. RSTP should fail over in well under a second, losing a ping or two at most.</p>',
     topo: () => stpSquare({ mode: 'rstp', timers: 'standard', edge: true }),
     variants: [
       { fault: t => { dev(t, 'sw3').stp.mode = 'stp'; }, cause: 'sw3 itself still ran classic STP (802.1D). Its alternate port could only become the root port after listening and learning, 30 seconds. Its RSTP neighbors had fallen back to STP on their ports towards it, too.' },
@@ -182,7 +182,7 @@ export const CHALLENGES = [
     variants: [
       { fault: t => { dev(t, 'r1').ipv6.ra = []; }, cause: 'r1 did not send router advertisements on eth1. Without an RA the PCs got neither a prefix nor a default router, only their link-local addresses.' },
       { fault: t => { dev(t, 'r1').ipv6.ra = ['eth2']; }, cause: 'Router advertisements were turned on for eth2, the link to r2, instead of eth1 towards the LAN.' },
-      { fault: t => { dev(t, 'r1').ifaces.eth1.ip6 = ['2001:db8:1::1/56']; }, cause: 'r1 had a /56 on its LAN port. SLAAC only works with a /64: the RA contained the prefix, but without permission to form addresses from it.' },
+      { fault: t => { dev(t, 'r1').ifaces.eth1.ip6 = ['2001:db8:1::1/56']; }, cause: 'r1 had a /56 on its LAN port. The RA carried 2001:db8:1::/56, but SLAAC needs a /64: a /56 and a 64-bit interface ID do not add up to 128 bits, so the PCs ignored the prefix (their log says so).' },
       { fault: t => { dev(t, 'pc1').ipv6.slaac = false; }, cause: 'SLAAC was turned off on pc1 (accept_ra 0). pc1 ignored every router advertisement. pc2 worked fine.' }],
     goals: [{ text: 'pc1 pings the web server over IPv6 (2001:db8:2::80).', check: pingAfterStart('pc1', '2001:db8:2::80') }],
     hints: ['rdisc6 eth1 on pc1 shows whether a router advertises anything, and what.', 'Look at the IPv6 section of r1: which ports send RAs, with which prefix length?'],
@@ -201,7 +201,7 @@ export const CHALLENGES = [
     presets: { pc1: ['ping -6 -c 2 2001:db8:2::80', 'traceroute -6 2001:db8:2::80'], r1: ['show ipv6 route', 'ip -6 neigh'], r2: ['show ipv6 route', 'ip -6 neigh'], web: ['ip -6 route'] } },
 
   { id: 'ipv6dual', level: 2, title: 'www.lab is broken, but only for the new PCs', topics: ['IPv6', 'Dual stack', 'DNS'],
-    symptom: '<p>Since the PCs got IPv6, <code>curl http://www.lab/</code> fails on pc1. <code>curl -4 http://www.lab/</code> still works. Old devices without IPv6 have no problem at all.</p>',
+    symptom: '<p>Since the PCs got IPv6, <code>curl http://www.lab/</code> fails on pc1. <code>curl -4 http://www.lab/</code> still works. Old devices without IPv6 have no problem at all. (curl in the lab only tries the first address it gets. Real browsers and curl would fall back to IPv4 after a short delay, Happy Eyeballs, but every page would then load noticeably slower.)</p>',
     topo: () => ipv6Topo(),
     variants: [
       { fault: t => { dev(t, 'dns').dns.find(r => r.type === 'AAAA').ip = '2001:db8:2::81'; }, cause: 'The AAAA record of www.lab pointed to 2001:db8:2::81 instead of ::80. The PCs prefer IPv6 and tried an address nobody has. IPv4 clients only asked for the A record.' },

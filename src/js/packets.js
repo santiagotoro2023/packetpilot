@@ -252,7 +252,7 @@ export function dissect(f, depth = 0) {
   if (f.vlan) layers.push({ kind: 'vlan', depth, name: `${pre}802.1Q tag`, bytes: VLAN_TAG, fields: [
     ['TPID', '0x8100', 'Identifies the tag'],
     ['PCP (priority)', String(f.vlan.pcp || 0), '0 to 7'],
-    ['DEI', '0', 'May be dropped under congestion'],
+    ['DEI', '0', '0: normal. 1 would mark the frame as the first to drop under congestion'],
     ['VID (VLAN)', String(f.vlan.vid), 'Usable 1 to 4094'],
     ['EtherType', f.type === 'arp' ? '0x0806 (ARP)' : f.type === 'ipv6' ? '0x86DD (IPv6)' : '0x0800 (IPv4)', '']
   ]});
@@ -279,7 +279,7 @@ export function dissect(f, depth = 0) {
     ['TTL', String(ip.ttl), 'Every router subtracts 1'],
     ['Protocol', `${ip.proto} (${PROTO_NAME[ip.proto] || '?'})`, ''],
     ['Header Checksum', hex4(ip.checksum), 'Recomputed at every hop'],
-    ['Source IP', ip.src, 'Stays the same end to end'],
+    ['Source IP', ip.src, 'Stays the same end to end, unless a NAT router rewrites it'],
     ['Destination IP', ip.dst, '']
   ]});
   return l4Layers(f, ip, layers, depth, pre);
@@ -389,9 +389,9 @@ function l4Layers(f, ip, layers, depth, pre) {
       layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), 'Listen port of the sending peer'],
         ['Destination port', String(l4.dport), l4.dport === 51820 ? 'WireGuard (usual port)' : 'Listen port of the peer'], ['Length', `${UDP_HDR + udpPayloadLen(l4)} bytes`, '']] });
       const fields = [['Type', { init: '1 (handshake initiation)', resp: '2 (handshake response)', data: '4 (transport data)' }[w.type], '']];
-      if (w.type === 'init') fields.push(['Sender index', String(w.sender), 'Number the initiator uses for this session'], ['Ephemeral key, static key, timestamp', '116 bytes, encrypted', 'Encrypted with the public key of the receiver: only the right peer can read it'],
+      if (w.type === 'init') fields.push(['Sender index', String(w.sender), 'Number the initiator uses for this session'], ['Ephemeral key', '32 bytes, in the clear', 'A fresh key pair for this handshake only'], ['Static key, timestamp', '48 + 28 bytes, encrypted', 'Encrypted with a key that only the holder of the receiver\'s private key can derive: only the right peer can read it'],
         ['MAC1 / MAC2', '32 bytes', 'Protection against strangers and floods']);
-      if (w.type === 'resp') fields.push(['Sender / receiver index', `${w.sender} / ${w.receiver}`, 'Both sides now know each other\'s session number'], ['Ephemeral key, empty', '48 bytes, encrypted', 'Completes the key exchange']);
+      if (w.type === 'resp') fields.push(['Sender / receiver index', `${w.sender} / ${w.receiver}`, 'Both sides now know each other\'s session number'], ['Ephemeral key', '32 bytes, in the clear', 'Completes the key exchange'], ['Empty', '16 bytes, encrypted', 'Proves that the responder could derive the keys'], ['MAC1 / MAC2', '32 bytes', 'Protection against strangers and floods']);
       if (w.type === 'data') fields.push(['Receiver index', String(w.receiver), 'Tells the receiver which session (and key) to use'], ['Counter', String(w.counter), 'Nonce and protection against replays'],
         ['Encrypted packet', w.inner ? `${Math.ceil(w.inner.totalLength / 16) * 16} bytes (padded to 16)` : '0 bytes: keepalive', 'ChaCha20: nobody on the way can read it'], ['Authentication tag', '16 bytes', 'Poly1305: any change is noticed']);
       layers.push({ kind: 'vpn', depth, name: 'WireGuard', bytes: udpPayloadLen(l4) - (w.inner ? Math.ceil(w.inner.totalLength / 16) * 16 : 0), fields });

@@ -30,7 +30,7 @@ ${bar([['Dest. MAC', '6', 'eth', 1.1], ['Source MAC', '6', 'eth', 1.1], ['TPID 0
 <table><tr><th>Port</th><th>On the wire</th><th>Typical for</th></tr>
 <tr><td><b>Access</b></td><td>without a tag, the port belongs to exactly one VLAN</td><td>PC, printer, server with one network</td></tr>
 <tr><td><b>Trunk</b></td><td>with a tag, several VLANs over one cable</td><td>switch to switch, router, hypervisor</td></tr></table>
-<p>On a trunk, one VLAN may additionally run without a tag, the <b>native VLAN</b>. If it does not match on both sides, two VLANs get connected without anyone noticing.</p>
+<p>On a trunk, one VLAN may additionally run without a tag, the <b>native VLAN</b>. If it does not match on both sides, two VLANs get connected. Some switches warn about it (Cisco CDP: native VLAN mismatch), but the traffic leaks either way.</p>
 ${note('Your VMs on ESXi know this: for the VM, the port group is an access port. The vSwitch only adds the tag when the frame leaves the host via the uplink (a trunk).')}` },
       { type: 'lab', title: 'Connect two switches properly', topo: () => vlanTopo(false), edit: 'config',
         intro: '<p>a10 and b10 belong in VLAN 10, a20 and b20 in VLAN 20. But the cable between s1 and s2 is an access port in VLAN 1 on both sides. Turn it into a trunk.</p>',
@@ -140,7 +140,7 @@ ${note('If you do not specify one, Linux uses the old port <b>8472</b>. Always s
 
     { id: 'm3-l6', title: 'The MTU trap', minutes: 12, steps: [
       { type: 'theory', title: '50 bytes that break everything', html: `
-<p>VXLAN puts 50 bytes in front of every packet. A full packet of 1500 bytes becomes 1550 bytes in the underlay. Linux therefore automatically sets the MTU of a VXLAN interface to the MTU of the uplink minus 50.</p>
+<p>VXLAN puts 50 bytes in front of every packet. A full packet of 1500 bytes becomes 1550 bytes in the underlay. Linux therefore sets the MTU of a VXLAN interface to the MTU of the uplink minus 50 when the interface is created.</p>
 ${note('If a frame does not fit, it is <b>silently dropped</b>. To the hosts the VTEP is a switch, and a switch does not send ICMP messages; it does not even have an IP address in the segment. Ping works, large transfers hang.', true)}
 <table><tr><th>Solution</th><th>Assessment</th></tr>
 <tr><td>Underlay MTU of 1550 or jumbo frames (9000)</td><td>Standard in the data center, the hosts notice nothing</td></tr>
@@ -153,7 +153,7 @@ ${note('If a frame does not fit, it is <b>silently dropped</b>. To the hosts the
           { text: 'Which MTU does the VXLAN interface of vtep1 have?', ask: true, expect: () => ['1450'] },
           { text: 'Raise the MTU of both underlay cables to 1550 (click the cable) and send the ping again.', check: pingOk('srv1', '192.168.10.12', { size: 1472, df: true }) }],
         hints: ['The underlay cables are vtep1 ↔ core and vtep2 ↔ core.'],
-        outro: '<p>With 1550 in the underlay, the VXLAN interface automatically has MTU 1500 again, and the servers notice nothing of the encapsulation.</p>' }
+        outro: '<p>With 1550 in the underlay, the VXLAN interface can carry 1500 again, and the servers notice nothing of the encapsulation. In the lab its MTU follows the uplink automatically. On a real Linux VTEP, raise it yourself as well (<code>ip link set vxlan10 mtu 1500</code>), because Linux only computes it when the interface is created.</p>' }
     ] }
   ]
 };

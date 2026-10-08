@@ -31,9 +31,10 @@ export default {
 <p>Until now, every router had exactly one best route to a network. When two paths are equally good, that wastes half the capacity. <b>ECMP</b> (Equal-Cost Multi-Path) puts all equally good routes into the routing table and uses them at the same time.</p>
 <p>Routes count as equal when the prefix, the source (administrative distance) and the metric are the same. In OSPF that happens when two paths add up to the same cost, with static routes when you give a network several next hops.</p>
 <pre>$ ip route
-10.4.0.0/24 proto ospf metric 30
+10.4.0.0/24 proto ospf metric 20
         nexthop via 10.0.12.2 dev eth1 weight 1
         nexthop via 10.0.13.3 dev eth2 weight 1</pre>
+<p>The metric 20 is what FRR writes into the kernel for all its routes. The OSPF cost of the paths, 30 each here, is shown by <code>show ip route</code>.</p>
 <h2>Per flow, not per packet</h2>
 <p>If the router alternated packet by packet, the packets of one TCP connection would take paths of different length and overtake each other. TCP takes reordering for loss and slows down. That is why the router computes a <b>hash</b> over fields of each packet and picks the path with it. All packets of a flow have the same fields, so they always take the same path.</p>
 <table><tr><th>Hash policy</th><th>Fields</th><th>Effect</th></tr>

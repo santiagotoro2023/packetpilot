@@ -22,8 +22,10 @@ export default {
 Init → 2-Way      my router ID is in the neighbor's hello
 2-Way → Exchange  the databases are compared and exchanged
 Exchange → Full   both have the same map</pre>
+<p>Real routers show two more states in between: <b>ExStart</b> before Exchange (the two agree who leads the exchange) and <b>Loading</b> before Full (missing parts of the map are fetched). A neighbor stuck in ExStart usually means different MTUs on the link. On a LAN with several routers, two routers that are neither DR nor BDR stay in 2-Way, and that is normal.</p>
 <h2>Cost</h2>
 <p>Every interface has a <b>cost</b>, the sum along a path counts. By default it follows the bandwidth (reference 100 Mbit/s divided by the link speed). Here every link costs 10. The route with the lowest total cost wins, regardless of the number of hops.</p>
+<p>An interface towards hosts only is set to <b>passive</b>: OSPF still announces its network, but sends no hellos there and forms no neighbors, so nobody on that LAN can pose as an OSPF router.</p>
 ${note('Hello and dead interval must match on both sides, as must the subnet. If they do not, the routers ignore each other\'s hellos and never become neighbors. In FRR the defaults are hello 10 s and dead 40 s. The lab uses 1 s and 4 s so you do not have to wait.')}
 ${note('A route can be known from several sources. Then the administrative distance decides: connected 0, static 1, OSPF 110. A forgotten static route therefore always beats OSPF.')}` },
       { type: 'stack', title: 'Put the neighbor states in order', hint: 'The top is the first state.',
@@ -32,8 +34,8 @@ ${note('A route can be known from several sources. Then the administrative dista
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'To which address are OSPF hellos sent?', input: ['224.0.0.5'] },
         { q: 'Path A has three links with cost 10, path B one link with cost 50. Which does OSPF use?', options: ['A, total cost 30', 'B, fewer hops', 'Both alternately'], correct: 0 },
-        { q: 'Two routers stay in Init forever and never reach 2-Way. What is a likely cause?', options: ['Different hello or dead intervals', 'Too many routes', 'The routers have the same cost', 'The link is too fast'], correct: 0,
-          explain: 'With mismatched timers each side ignores the other\'s hellos, so neither ever sees its own ID in a hello. Different subnets on the link have the same effect.' }] }
+        { q: 'Two routers never become neighbors: show ip ospf neighbor stays empty on both. What is a likely cause?', options: ['Different hello or dead intervals', 'Too many routes', 'The routers have the same cost', 'The link is too fast'], correct: 0,
+          explain: 'With mismatched timers each router throws the other\'s hellos away, so the neighbor does not even reach Init. Different subnets on the link have the same effect. Init means that hellos only get through in one direction.' }] }
     ] },
 
     { id: 'm8-l2', title: 'Turn on OSPF', minutes: 15, steps: [
@@ -73,7 +75,7 @@ ${note('A route can be known from several sources. Then the administrative dista
           { text: 'Fix it: all three routers have two Full neighbors.', check: sim => ['o1', 'o2', 'o3'].every(id => fullCount(sim, id) === 2) },
           { text: 'pc2 reaches pc1.', check: pingOk('pc2', '10.1.0.10') }],
         hints: ['Compare show ip ospf interface on o1 and o2.', 'The timers are in Configuration → OSPF.'],
-        outro: '<p>Mismatched timers, a different subnet on the link, or an interface accidentally set to passive: these are the classic reasons why OSPF neighbors do not come up. The log of the receiving router always says why it ignores a hello.</p>' }
+        outro: '<p>Mismatched timers, a different subnet on the link, or an interface accidentally set to passive: these are the classic reasons why OSPF neighbors do not come up. For mismatched timers or subnets, the log of the receiving router says why it ignores a hello. A passive interface sends no hellos at all: check <code>show ip ospf interface</code>.</p>' }
     ] }
   ]
 };

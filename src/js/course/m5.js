@@ -48,7 +48,7 @@ dns     →  client UDP 53 → 51234  answer: web.lab A 10.20.0.80</pre>
 <tr><td>NXDOMAIN</td><td>the name does not exist</td></tr>
 <tr><td>SERVFAIL</td><td>the server could not answer the question</td></tr></table>
 <p><code>dig @10.20.0.53 web.lab</code> queries a specific server. Without <code>@</code>, dig uses the configured DNS server (on Linux from <code>/etc/resolv.conf</code>). Programs like <code>curl</code> or <code>ping</code> first resolve a name and only then send the actual packet.</p>
-${note('Answers over 512 bytes (e.g. with DNSSEC) switch to TCP port 53. A firewall that only allows UDP 53 therefore sometimes causes strange errors.')}` },
+${note('Without extensions a DNS answer over UDP may be at most 512 bytes. Today clients announce a larger size (EDNS), usually 1232 bytes. If an answer is still too large, e.g. with DNSSEC, the server sets the TC flag (truncated) and the client asks again over TCP port 53. A firewall that only allows UDP 53 therefore sometimes causes strange errors.')}` },
       { type: 'build', title: 'Build the DNS query', blocks: ['eth', 'vlan', 'arp', 'ip', 'icmp', 'udp', 'tcp', 'dns'],
         task: '<p>The <b>client</b> (10.10.0.10, gateway 10.10.0.1) asks the DNS server <b>dns</b> (10.20.0.53) for <code>web.lab</code>. The DNS server is in a different subnet. Build the frame as it leaves the client\'s cable.</p>',
         addresses: ADDR,
@@ -93,7 +93,7 @@ ${bar([['Ports', '4', 'tcp', 1], ['Sequence number', '4', 'tcp', 1.2], ['Acknowl
             ←  FIN, ACK
   ACK                                   →          closed</pre>
 <p>SYN and FIN count as one byte, which is why the server acknowledges the 1000 with 1001. The starting numbers are random so that nobody can inject foreign segments into a connection. The SYN also contains the <b>MSS</b> (maximum segment size): the maximum number of data bytes a segment may carry, normally the MTU minus 40.</p>
-${note('A router reads none of this. To it, a TCP segment is an IP packet like any other. Only stateful firewalls and load balancers look at ports and flags.')}` },
+${note('For plain forwarding, a router reads none of this: to it, a TCP segment is an IP packet like any other. Only devices that filter or translate look at ports and flags: firewalls, access lists on routers, NAT, load balancers, and MSS clamping later in this module.')}` },
       { type: 'label', title: 'Label the TCP header', distractors: ['TTL', 'VNI', 'Length (UDP)'],
         rows: [[{ label: 'Source port', size: '16 bits', kind: 'tcp', w: 200 }, { label: 'Dest. port', size: '16 bits', kind: 'tcp', w: 200 }],
           [{ label: 'Sequence number', size: '32 bits', kind: 'tcp', w: 406 }],
@@ -133,9 +133,9 @@ ${note('A router reads none of this. To it, a TCP segment is an IP packet like a
     { id: 'm5-l5', title: 'Refused, filtered, prohibited', minutes: 15, steps: [
       { type: 'theory', title: 'Three ways a connection fails', html: `
 <table><tr><th>What you see</th><th>What happened</th><th>Typical cause</th></tr>
-<tr><td><code>Connection refused</code> immediately</td><td>An RST came back in response to the SYN</td><td>Nothing is listening on the port, or a firewall rejects with RST</td></tr>
+<tr><td><code>Connection refused</code> immediately</td><td>An RST came back in response to the SYN, or an ICMP Port Unreachable</td><td>Nothing is listening on the port, or a firewall rejects with RST or Port Unreachable (the default of iptables REJECT)</td></tr>
 <tr><td><code>timed out</code> after seconds</td><td>Nothing at all came back in response to the SYN, the client repeats it several times</td><td>A firewall drops silently (DROP), or the host is gone</td></tr>
-<tr><td><code>No route to host</code> or <code>prohibited</code></td><td>An ICMP error came back</td><td>No ARP for the destination, or a firewall rejects with ICMP</td></tr></table>
+<tr><td><code>No route to host</code> or <code>prohibited</code></td><td>An ICMP error came back</td><td>No ARP for the destination, or a firewall rejects with ICMP Host Unreachable or Administratively Prohibited</td></tr></table>
 <p><code>nc -zv host port</code> only tests the connection setup and is well suited to distinguish these cases.</p>
 ${note('A firewall that rejects with RST uses the server\'s address as the sender. To the client, a rejected port therefore looks exactly like a closed one. Only the firewall\'s log or a capture on both sides shows the difference.')}
 ${note('DROP or REJECT? DROP reveals less, but makes every client wait until the timeout. For internal networks REJECT is often friendlier; at the border to the internet DROP is usually used.')}` },
@@ -158,7 +158,7 @@ ${note('DROP or REJECT? DROP reveals less, but makes every client wait until the
       { type: 'theory', title: 'TCP does not fragment, TCP segments', html: `
 <p>TCP sets the DF bit in every packet. Instead of IP fragments it uses smaller segments. How large they may be is negotiated by both sides in the handshake with the MSS: each side announces the MTU of its interface minus 40 (20 IP, 20 TCP). But both only know their own link.</p>
 <pre>client ── r1 ══ MTU 1400 ══ r2 ── fw ── web
-MSS in the handshake: 1460 and 1460 → web sends segments of 1500 bytes
+MSS in the handshake: 1460 and 1460 → web sends packets of 1500 bytes (1460 bytes of data each)
 r2 cannot forward them (DF set) → ICMP Fragmentation Needed, MTU 1400 to web
 web remembers the path MTU and resends the data, now with 1360 bytes per segment</pre>
 <p>This is <b>Path MTU Discovery</b> (module IP and routing) from TCP's point of view. If the ICMP message does not arrive, the infamous <b>PMTUD blackhole</b> appears:</p>
@@ -187,7 +187,7 @@ ${note('Typical places for this are VPN tunnels, PPPoE (MTU 1492) and VXLAN with
           { text: 'Was the three-way handshake completed? (yes or no)', ask: true, expect: () => ['yes'] },
           { text: 'Set up MSS clamping on r1 so that the segments fit through the narrow spot, and fetch the page again.', check: tcpDoneAfter('tcp-stalled') }],
         hints: ['You will find MSS clamping on r1 under Configuration, Add a feature, Advanced.', 'MTU 1400 minus 40 bytes for IP and TCP.'],
-        outro: '<p>With MSS clamping, the client only announces 1360 in the SYN, and the SYN/ACK from web is also adjusted on the way back. Neither side sends a segment that is too large any more, ICMP is not needed at all.</p>' }
+        outro: '<p>With MSS clamping, the client still announces 1460, but r1 rewrites it to 1360 in the forwarded SYN, so web only sees 1360. The SYN/ACK from web is adjusted the same way on the way back. Neither side sends a segment that is too large any more, ICMP is not needed at all.</p>' }
     ] }
   ]
 };

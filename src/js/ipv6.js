@@ -390,7 +390,7 @@ export class Ip6 {
   sendRa(ifname, solicited = false) {
     const src = this.ifAddr(ifname, false);
     if (!src) return;
-    const prefixes = this.addrs(ifname).filter(a => a.scope === 'global' && a.origin === 'static').map(a => ({ prefix: parseCidr6(`${a.ip}/${a.len}`).net, len: a.len, auto: a.len === 64, valid: 2592000, preferred: 604800 }));
+    const prefixes = this.addrs(ifname).filter(a => a.scope === 'global' && a.origin === 'static').map(a => ({ prefix: parseCidr6(`${a.ip}/${a.len}`).net, len: a.len, auto: true, valid: 2592000, preferred: 604800 }));
     const rdnss = String(this.cfg.ipv6?.rdnss || '').split(/[\s,]+/).filter(isIp6).map(norm6);
     const ra = icmp6(134, 0, { hopLimit: 64, managed: false, other: false, lifetime: T6.routerLifetime, slla: this.dev.mac(ifname), mtu: this.l3.mtu(ifname), prefixes, rdnss, periodic: !solicited });
     this.rec('info', `${solicited ? 'answers with' : 'sends'} a Router Advertisement on ${ifname}: ${prefixes.length ? 'prefix ' + prefixes.map(p => `${p.prefix}/${p.len}`).join(', ') : 'no prefix'}${rdnss.length ? ', DNS ' + rdnss.join(', ') : ''}, default router ${src}`,
@@ -414,7 +414,13 @@ export class Ip6 {
     if (this.cfg.ipv6?.slaac !== false) {
       const list = this.slaac.get(ifname) || [];
       for (const p of m.prefixes || []) {
-        if (!p.auto || p.len !== 64) continue;
+        if (!p.auto) continue;
+        // The interface ID has 64 bits, so only a /64 adds up to 128 (RFC 4862 5.5.3)
+        if (p.len !== 64) {
+          const key = `${ifname} ${p.prefix}/${p.len}`;
+          if (!(this.slaacIgnored ??= new Set()).has(key)) { this.slaacIgnored.add(key); this.rec('info', `ignores the prefix ${p.prefix}/${p.len} from the Router Advertisement: SLAAC needs a /64, a /${p.len} and a 64-bit interface ID do not add up to 128 bits`, { frame, tag: 'slaac-wrong-length' }); }
+          continue;
+        }
         const ip6 = slaacFor(p.prefix, this.dev.mac(ifname));
         if (list.some(a => a.ip === ip6)) continue;
         list.push({ ip: ip6, len: 64, prefix: p.prefix });

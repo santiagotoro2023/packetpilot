@@ -46,6 +46,16 @@ ${note('The <b>Protocol</b> field plays the same role as the EtherType in the Et
     { id: 'm2-l2', title: 'The routing decision', minutes: 12, steps: [
       { type: 'theory', title: 'Routing table and longest prefix match', html: `
 <p>Hosts and routers decide using the same procedure. A router simply also forwards packets that are not addressed to itself.</p>
+<h2>What /24 means</h2>
+<p>A route names a <b>network</b>: an address and a <b>prefix length</b> after the slash. <code>/24</code> means the first 24 of the 32 bits are fixed, the rest may vary. The shorter the prefix, the larger the network:</p>
+<table><tr><th>Prefix</th><th>Addresses</th><th>Example</th><th>Covers</th></tr>
+<tr><td>/8</td><td>16,777,216</td><td><code>10.0.0.0/8</code></td><td>10.0.0.0 to 10.255.255.255</td></tr>
+<tr><td>/16</td><td>65,536</td><td><code>10.1.0.0/16</code></td><td>10.1.0.0 to 10.1.255.255</td></tr>
+<tr><td>/24</td><td>256</td><td><code>10.1.2.0/24</code></td><td>10.1.2.0 to 10.1.2.255</td></tr>
+<tr><td>/25</td><td>128</td><td><code>10.1.2.128/25</code></td><td>10.1.2.128 to 10.1.2.255</td></tr>
+<tr><td>/26</td><td>64</td><td><code>10.1.2.64/26</code></td><td>10.1.2.64 to 10.1.2.127</td></tr>
+<tr><td>/0</td><td>all</td><td><code>0.0.0.0/0</code></td><td>every address: the <b>default route</b></td></tr></table>
+<p>Each step of one bit halves the network. A /26 is a quarter of a /24: it starts at .0, .64, .128 or .192 and is 64 addresses long. The subnetting trainer under Subnets practices this in detail.</p>
 <pre>$ ip route
 default via 192.168.10.1 dev eth1                         ← default route
 10.20.0.0/16 via 192.168.10.254 dev eth1                  ← static route
@@ -54,7 +64,7 @@ default via 192.168.10.1 dev eth1                         ← default route
 <tr><td>Connected route (directly attached)</td><td>the <b>destination</b> itself</td></tr>
 <tr><td>Route with <code>via</code></td><td>the <b>next hop</b></td></tr></table>
 ${note('<b>Longest prefix match:</b> if several entries match, the most specific one wins, i.e. the one with the longest prefix. The order in the table does not matter. For prefixes of equal length, the origin decides: connected before static.')}
-<p>On Linux, <code>ip route get &lt;destination&gt;</code> shows the decision for a destination without sending a packet. You can try this in every console in the lab, too.</p>` },
+<p>If <b>no</b> entry matches and there is no default route, the packet cannot be delivered: it is dropped, and the sender gets an ICMP <i>Destination Unreachable</i> (Network Unreachable). On Linux, <code>ip route get &lt;destination&gt;</code> shows the decision for a destination without sending a packet. You can try this in every console in the lab, too.</p>` },
       { type: 'lpm', title: 'Where does the packet go?', table: [['10.0.0.0/8', 'A'], ['10.1.0.0/16', 'B'], ['10.1.2.0/24', 'C'], ['10.1.2.64/26', 'D'], ['0.0.0.0/0', 'E']],
         dests: ['10.1.2.77', '10.1.2.200', '10.9.9.9', '10.1.3.1', '172.16.5.5'] },
       { type: 'lpm', title: 'And without a default route?', table: [['192.168.0.0/16', 'R1'], ['192.168.10.0/24', 'R2'], ['192.168.10.128/25', 'R3']],
@@ -108,14 +118,14 @@ ping -M dont -s 1472 dest   same size, fragmentation allowed</pre>
 ${note('After a Fragmentation Needed message, Linux already rejects packets that are too large locally: <code>ping: local error: message too long, mtu=1400</code>. With <code>ip route get</code> you can see the learned MTU.')}` },
       { type: 'lab', title: 'The bottleneck', topo: mtuTopo, edit: 'view',
         intro: '<p>The link between r1 and r2 only has MTU 1400. Test it from pc1.</p>',
-        presets: { pc1: ['ping -c 2 -M do -s 1472 10.0.2.20', 'ping -c 1 -M dont -s 1472 10.0.2.20', 'ip route get 10.0.2.20'] },
+        presets: { pc1: ['ping -c 1 -M dont -s 1472 10.0.2.20', 'ping -c 2 -M do -s 1472 10.0.2.20', 'ip route get 10.0.2.20'] },
         goals: [
-          { text: 'Send a ping with 1472 bytes and DF (-M do). Which MTU does r1 report back?', ask: true, expect: () => ['1400'] },
-          { text: 'pc1 remembers the MTU of the path.', check: tag('pc1', 'pmtu-learned') },
-          { text: 'Send the same ping without DF (-M dont). r1 fragments the packet, and the ping gets through.', check: pingOk('pc1', '10.0.2.20', { size: 1472, df: false }) },
+          { text: 'Send a ping with 1472 bytes without DF (-M dont). r1 fragments the packet, and the ping gets through.', check: pingOk('pc1', '10.0.2.20', { size: 1472, df: false }) },
           { text: 'Into how many fragments did r1 split the packet?', ask: true, expect: () => ['2'] },
+          { text: 'Send the same ping with DF (-M do). Which MTU does r1 report back?', ask: true, expect: () => ['1400'] },
+          { text: 'pc1 remembers the MTU of the path.', check: tag('pc1', 'pmtu-learned') },
           { text: 'What is the largest value for -s with which the ping works with -M do?', ask: true, expect: () => ['1372'] }],
-        outro: '<p>1372 + 8 + 20 = 1400. That is exactly how large an IP packet may be across the narrowest link.</p>' }
+        outro: '<p>1372 + 8 + 20 = 1400. That is exactly how large an IP packet may be across the narrowest link. Once pc1 knows the path MTU, a real Linux host also splits packets without DF itself, before sending them, instead of leaving it to r1.</p>' }
     ] },
 
     { id: 'm2-l6', title: 'Rules and the PMTUD blackhole', minutes: 15, steps: [

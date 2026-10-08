@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  PacketPilot 3.1.0
+#  PacketPilot 3.2.0
 #  Understand networks by watching every packet.
 #
 #  Installs PacketPilot on Debian 12 (Bookworm) or 13 (Trixie):
@@ -45,7 +45,7 @@ set -euo pipefail
 # Made from blueprint 1.1.1 (https://github.com/santiagotoro2023/project-blueprint)
 APP_ID="packetpilot"
 APP_NAME="PacketPilot"
-APP_VERSION="3.1.0"
+APP_VERSION="3.2.0"
 APP_PROFILE="static"
 APP_PORT="8080"
 APP_ROOT="/opt/${APP_ID}"
@@ -138,7 +138,7 @@ esac
 
 # Installers before 3.0.0 (before the blueprint) read the version of the new script from
 # this line when they run --update. Keep it, so every old server can still update.
-PP_VERSION="3.1.0"
+PP_VERSION="3.2.0"
 
 write_files() {
   local W="$1"
@@ -6821,7 +6821,7 @@ export const CHALLENGES = [
     presets: { pc1: ['ping -c 2 10.0.0.2'], sw1: ['show spanning-tree'], sw2: ['show spanning-tree'], sw3: ['show spanning-tree'] } },
 
   { id: 'rstp', level: 2, title: 'Rapid spanning tree, but not rapid', topics: ['RSTP', 'Failover'],
-    symptom: '<p>The ring was switched to rapid spanning tree last month. Still, when a cable to <b>sw3</b> fails, phone calls drop for half a minute. RSTP should fail over without losing a single packet.</p>',
+    symptom: '<p>The ring was switched to rapid spanning tree last month. Still, when a cable to <b>sw3</b> fails, phone calls drop for half a minute. RSTP should fail over in well under a second, losing a ping or two at most.</p>',
     topo: () => stpSquare({ mode: 'rstp', timers: 'standard', edge: true }),
     variants: [
       { fault: t => { dev(t, 'sw3').stp.mode = 'stp'; }, cause: 'sw3 itself still ran classic STP (802.1D). Its alternate port could only become the root port after listening and learning, 30 seconds. Its RSTP neighbors had fallen back to STP on their ports towards it, too.' },
@@ -6931,7 +6931,7 @@ export const CHALLENGES = [
     variants: [
       { fault: t => { dev(t, 'r1').ipv6.ra = []; }, cause: 'r1 did not send router advertisements on eth1. Without an RA the PCs got neither a prefix nor a default router, only their link-local addresses.' },
       { fault: t => { dev(t, 'r1').ipv6.ra = ['eth2']; }, cause: 'Router advertisements were turned on for eth2, the link to r2, instead of eth1 towards the LAN.' },
-      { fault: t => { dev(t, 'r1').ifaces.eth1.ip6 = ['2001:db8:1::1/56']; }, cause: 'r1 had a /56 on its LAN port. SLAAC only works with a /64: the RA contained the prefix, but without permission to form addresses from it.' },
+      { fault: t => { dev(t, 'r1').ifaces.eth1.ip6 = ['2001:db8:1::1/56']; }, cause: 'r1 had a /56 on its LAN port. The RA carried 2001:db8:1::/56, but SLAAC needs a /64: a /56 and a 64-bit interface ID do not add up to 128 bits, so the PCs ignored the prefix (their log says so).' },
       { fault: t => { dev(t, 'pc1').ipv6.slaac = false; }, cause: 'SLAAC was turned off on pc1 (accept_ra 0). pc1 ignored every router advertisement. pc2 worked fine.' }],
     goals: [{ text: 'pc1 pings the web server over IPv6 (2001:db8:2::80).', check: pingAfterStart('pc1', '2001:db8:2::80') }],
     hints: ['rdisc6 eth1 on pc1 shows whether a router advertises anything, and what.', 'Look at the IPv6 section of r1: which ports send RAs, with which prefix length?'],
@@ -6950,7 +6950,7 @@ export const CHALLENGES = [
     presets: { pc1: ['ping -6 -c 2 2001:db8:2::80', 'traceroute -6 2001:db8:2::80'], r1: ['show ipv6 route', 'ip -6 neigh'], r2: ['show ipv6 route', 'ip -6 neigh'], web: ['ip -6 route'] } },
 
   { id: 'ipv6dual', level: 2, title: 'www.lab is broken, but only for the new PCs', topics: ['IPv6', 'Dual stack', 'DNS'],
-    symptom: '<p>Since the PCs got IPv6, <code>curl http://www.lab/</code> fails on pc1. <code>curl -4 http://www.lab/</code> still works. Old devices without IPv6 have no problem at all.</p>',
+    symptom: '<p>Since the PCs got IPv6, <code>curl http://www.lab/</code> fails on pc1. <code>curl -4 http://www.lab/</code> still works. Old devices without IPv6 have no problem at all. (curl in the lab only tries the first address it gets. Real browsers and curl would fall back to IPv4 after a short delay, Happy Eyeballs, but every page would then load noticeably slower.)</p>',
     topo: () => ipv6Topo(),
     variants: [
       { fault: t => { dev(t, 'dns').dns.find(r => r.type === 'AAAA').ip = '2001:db8:2::81'; }, cause: 'The AAAA record of www.lab pointed to 2001:db8:2::81 instead of ::80. The PCs prefer IPv6 and tried an address nobody has. IPv4 clients only asked for the A record.' },
@@ -7263,11 +7263,13 @@ export function runCommand(dev, line) {
         }
         for (const g of groups) {
           const r = g[0], dst = r.len === 0 ? 'default' : r.net + '/' + r.len;
-          const proto = r.proto === 'O' ? ' proto ospf' : r.dhcp ? ' proto dhcp' : '';
+          const proto = r.proto === 'O' ? ' proto ospf' : r.proto === 'B' ? ' proto bgp' : r.dhcp ? ' proto dhcp' : '';
+          // FRR installs its routes into the kernel with metric 20; the OSPF cost is in show ip route
+          const metric = r.proto === 'O' || r.proto === 'B' ? ' metric 20' : r.metric ? ' metric ' + r.metric : '';
           if (r.proto === 'C') { say(`${dst} dev ${r.dev} proto kernel scope link src ${r.src}`); continue; }
-          if (g.length > 1) { say(`${dst}${proto}${r.metric ? ' metric ' + r.metric : ''}`); for (const x of g) say(`\tnexthop via ${x.via} dev ${x.dev} weight 1`); continue; }
+          if (g.length > 1) { say(`${dst}${proto}${metric}`); for (const x of g) say(`\tnexthop via ${x.via} dev ${x.dev} weight 1`); continue; }
           if (!r.dev) { say(`${dst} via ${r.via}  (inactive: ${r.bfdDown ? 'BFD says the next hop is down' : 'next hop unreachable'})`); continue; }
-          say(`${dst} via ${r.via} dev ${r.dev}${proto}${r.metric ? ' metric ' + r.metric : ''}${r.bfd ? '  (BFD watched)' : ''}`);
+          say(`${dst}${r.via ? ' via ' + r.via : ''} dev ${r.dev}${proto}${r.via ? '' : ' scope link'}${metric}${r.bfd ? '  (BFD watched)' : ''}`);
         }
         return;
       }
@@ -8252,7 +8254,7 @@ ${bar([['Ethernet', '14 bytes', 'eth', 1.2], ['IPv4', '20 bytes', 'ip', 1.4], ['
 <tr><td>Transport</td><td>Segment (TCP), datagram (UDP)</td><td>Port</td><td>Firewall, load balancer</td></tr>
 <tr><td>Internet</td><td>Packet</td><td>IP address</td><td>Router</td></tr>
 <tr><td>Link</td><td>Frame</td><td>MAC address</td><td>Switch</td></tr></table>
-${note('<b>Every device only looks as deep as it has to.</b> A switch reads the Ethernet header. A router unwraps the frame, reads the IP header, decides and wraps the packet in a <i>new</i> frame. Neither of them touches anything above that.')}
+${note('<b>Every device only looks as deep as it has to.</b> A switch reads the Ethernet header. A router unwraps the frame, reads the IP header, decides and wraps the packet in a <i>new</i> frame. On the way it lowers the packet\'s <b>TTL</b> (time to live) by one, and at 0 the packet is dropped, so a packet cannot circle forever. Neither of them touches anything above that.')}
 <p>In the lab you can see this on every packet: the colored stripes on the envelope are its layers, from outside to inside. Clicking a packet takes it apart in the packet inspector.</p>` },
       { type: 'stack', title: 'Put the parts in the right order', retry: 'Remember: which layer goes onto the wire first?', hint: 'The top is what goes over the wire first.',
         items: [{ name: 'Ethernet header', size: '14 bytes', kind: 'eth' }, { name: 'IPv4 header', size: '20 bytes', kind: 'ip' }, { name: 'UDP header', size: '8 bytes', kind: 'udp' },
@@ -8299,12 +8301,12 @@ TCP payload:    1500 - 20 (IP) - 20 (TCP) - 12 (timestamps) = 1448 bytes
 
     { id: 'm1-l3', title: 'What a MAC address reveals', minutes: 8, steps: [
       { type: 'theory', title: 'Structure of the MAC address', html: `
-<p>A MAC address has 48 bits and is only valid in the local segment. The first 3 bytes are the <b>OUI</b> (Organizationally Unique Identifier), which the IEEE assigns to manufacturers. <code>00:50:56</code> belongs to VMware, which is why the addresses of your VMs on ESXi start with it.</p>
+<p>A MAC address has 48 bits and is only valid in the local segment. The first 3 bytes are the <b>OUI</b> (Organizationally Unique Identifier), which the IEEE assigns to manufacturers. <code>00:50:56</code> and <code>00:0c:29</code> belong to VMware, which is why the addresses of virtual machines on ESXi start with them.</p>
 <p>Two bits in the first byte have a special meaning:</p>
 <table><tr><th>Bit</th><th>0</th><th>1</th></tr>
 <tr><td><b>b0</b> (I/G)</td><td>Unicast: one interface</td><td>Group: multicast or broadcast</td></tr>
 <tr><td><b>b1</b> (U/L)</td><td>assigned by the manufacturer</td><td>locally administered (Docker, containerlab, random MAC on a smartphone)</td></tr></table>
-${note('You can spot locally administered addresses by the <b>second</b> hex digit: 2, 6, A or E. Examples: <code>02:42:…</code> in older Docker versions, <code>aa:c1:ab:…</code> in containerlab and here in the lab.')}
+${note('You can spot locally administered unicast addresses by the <b>second</b> hex digit: 2, 6, A or E (for group addresses it is 3, 7, B or F). Examples: <code>02:42:…</code> in older Docker versions, <code>aa:c1:ab:…</code> in containerlab and here in the lab.')}
 <table><tr><th>Address</th><th>Meaning</th></tr>
 <tr><td><code>ff:ff:ff:ff:ff:ff</code></td><td>Broadcast, everyone in the segment</td></tr>
 <tr><td><code>01:00:5e:…</code></td><td>IPv4 multicast, e.g. OSPF to 224.0.0.5</td></tr>
@@ -8340,7 +8342,7 @@ ${note('A <b>hub</b> learns nothing and passes every frame on to everyone. In th
         outro: '<p>With aging 0 the switch forgets every address immediately and has to flood everything like a hub. Every host then sees other hosts\' traffic: bad for security and for bandwidth. Feel free to set the aging time back to 300 afterwards.</p>' },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'From what does a switch learn which port a device is connected to?', options: ['From the destination MAC', 'From the source MAC', 'From the IP address', 'From ARP'], correct: 1, explain: 'Only the source MAC reveals who is sending on that port.' },
-        { q: 'A switch receives a frame for a MAC that is not in its table. What does it do?', options: ['Drop it', 'Ask via ARP', 'Send it to all ports in the VLAN except the incoming one', 'Send it to the router'], correct: 2,
+        { q: 'A switch receives a frame for a MAC that is not in its table. What does it do?', options: ['Drop it', 'Ask via ARP', 'Send it to all ports except the incoming one', 'Send it to the router'], correct: 2,
           explain: 'Unknown unicast flooding. When the destination replies, the switch learns its port, and from then on traffic goes there directly.' }] }
     ] },
 
@@ -8498,9 +8500,10 @@ export default {
 <p>Until now, every router had exactly one best route to a network. When two paths are equally good, that wastes half the capacity. <b>ECMP</b> (Equal-Cost Multi-Path) puts all equally good routes into the routing table and uses them at the same time.</p>
 <p>Routes count as equal when the prefix, the source (administrative distance) and the metric are the same. In OSPF that happens when two paths add up to the same cost, with static routes when you give a network several next hops.</p>
 <pre>$ ip route
-10.4.0.0/24 proto ospf metric 30
+10.4.0.0/24 proto ospf metric 20
         nexthop via 10.0.12.2 dev eth1 weight 1
         nexthop via 10.0.13.3 dev eth2 weight 1</pre>
+<p>The metric 20 is what FRR writes into the kernel for all its routes. The OSPF cost of the paths, 30 each here, is shown by <code>show ip route</code>.</p>
 <h2>Per flow, not per packet</h2>
 <p>If the router alternated packet by packet, the packets of one TCP connection would take paths of different length and overtake each other. TCP takes reordering for loss and slows down. That is why the router computes a <b>hash</b> over fields of each packet and picks the path with it. All packets of a flow have the same fields, so they always take the same path.</p>
 <table><tr><th>Hash policy</th><th>Fields</th><th>Effect</th></tr>
@@ -8611,7 +8614,7 @@ export default {
     { id: 'm11-l1', title: 'From the root down', minutes: 14, steps: [
       { type: 'theory', title: 'Nobody knows every name', html: `
 <p>No server in the world knows all names. DNS is a tree, read from right to left. Each level only knows who is responsible for the next level down:</p>
-<pre>.                    the root: 13 server names, hundreds of machines (anycast)
+<pre>.                    the root: 13 server names, well over a thousand machines (anycast)
 └── lab.             a top-level domain (TLD), like com. or ch.
     ├── firma.lab.   a zone of a company, on its own name servers
     │   └── www.firma.lab.  →  203.0.113.80
@@ -8632,7 +8635,7 @@ ${note('Authoritative servers usually refuse to resolve for strangers (status RE
           { name: 'root → resolver: referral, lab. is at ns1.nic.lab', kind: 'data' }, { name: 'resolver → ns1.nic.lab: A www.firma.lab?', kind: 'udp' },
           { name: 'ns1.nic.lab → resolver: referral, firma.lab. is at ns1.firma.lab', kind: 'data' }, { name: 'resolver → ns1.firma.lab: A www.firma.lab?', kind: 'udp' },
           { name: 'ns1.firma.lab → resolver: 203.0.113.80 (aa)', kind: 'data' }, { name: 'resolver → client: 203.0.113.80', kind: 'data' }],
-        explain: 'The client only sees the first and the last message. In between, the resolver walks down the tree, and every server only names the next one. Only the last answer is authoritative.' },
+        explain: 'The client only sees the first and the last message. In between, the resolver walks down the tree, and every server only names the next one. Only the answer from ns1.firma.lab is authoritative (aa). The referrals are not, and neither is the resolver\'s answer to the client.' },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'Which server can answer "www.firma.lab is 203.0.113.80" authoritatively?', options: ['A root server', 'The TLD server of lab.', 'The name server of the zone firma.lab', 'Any resolver'], correct: 2 },
         { q: 'What does the root server answer when asked for www.firma.lab?', options: ['The address', 'NXDOMAIN, it does not know the name', 'A referral to the servers of lab.', 'Nothing'], correct: 2,
@@ -8651,7 +8654,7 @@ ${note('Authoritative servers usually refuse to resolve for strangers (status RE
           { block: 'ip', fields: { src: '10.1.0.53', dst: '198.41.0.4', proto: '17', ttl: '64' } },
           { block: 'udp', fields: { sport: EPHEMERAL, dport: '53' } },
           { block: 'dns', fields: { qr: '0', name: 'www.firma.lab', qtype: 'A', rd: '0' } }],
-        explain: 'The resolver asks with its own address, not the client\'s: the root never learns who wanted to know. It asks for the full name, even though the root will only answer with a referral, and it clears RD: it does not want the root to resolve anything for it.' },
+        explain: 'The resolver asks with its own address, not the client\'s: the root never learns who wanted to know. Like the lab, a classic resolver asks for the full name, even though the root will only answer with a referral. Modern resolvers such as Unbound only ask the root about lab. (QNAME minimisation, RFC 9156), so it learns less. It clears RD: it does not want the root to resolve anything for it.' },
       { type: 'lab', title: 'From the root down', topo: () => dnsTopo(), edit: 'config',
         intro: '<p>The client uses the resolver 10.1.0.53 in its own network. On the internet there are a root server, the TLD server of <code>lab.</code> and two authoritative servers. All caches are empty.</p>',
         presets: { client: ['dig www.firma.lab', 'dig +trace portal.partner.lab', 'dig @203.0.113.53 portal.partner.lab', 'dig shop.firma.lab'], resolver: ['unbound-control dump_cache'], ns1: ['dig @203.0.113.53 www.firma.lab'] },
@@ -8923,7 +8926,7 @@ ${note('Both DAD messages go to the same group, ff02::1:ff12:3456: link-local an
     ] },
     { id: 'm12-l3', title: 'IPv6 in the LAN', minutes: 18, steps: [
       { type: 'lab', title: 'Dual stack in action', topo: () => ipv6Topo(), edit: 'config',
-        intro: '<p>pc1 and pc2 have an IPv4 address and get IPv6 by themselves: r1 sends router advertisements on the LAN. The servers have static IPv6 addresses, r1 and r2 static IPv6 routes. The name www.lab has an A and an AAAA record.</p>',
+        intro: '<p>pc1 and pc2 have an IPv4 address and get IPv6 by themselves: r1 sends router advertisements on the LAN. The servers have static IPv6 addresses, r1 and r2 static IPv6 routes. The name www.lab has an A and an AAAA record.</p><p>DNS translates names like www.lab into addresses: an <b>A</b> record holds an IPv4 address, an <b>AAAA</b> record ("quad A") an IPv6 address. DNS follows in detail in a later module. <code>curl</code> fetches a web page on the command line.</p>',
         presets: { pc1: ['ip -6 addr', 'ip -6 route', 'rdisc6 eth1', 'ping -6 -c 2 2001:db8:2::80', 'ip -6 neigh', 'ping -6 -c 1 ff02::1%eth1', 'curl http://www.lab/'], r1: ['show ipv6 route', 'ip -6 neigh'] },
         goals: [
           { text: 'Look at the IPv6 addresses of pc1 (<code>ip -6 addr</code>). Which prefix did pc1 get from r1?', ask: true, expect: () => ['2001:db8:1::/64', '2001:db8:1::', '2001:db8:1:0::/64'], placeholder: 'prefix' },
@@ -8933,14 +8936,15 @@ ${note('Both DAD messages go to the same group, ff02::1:ff12:3456: link-local an
           { text: 'Ping all nodes of the LAN at once: <code>ping -6 -c 1 ff02::1%eth1</code>.', check: tag('pc1', 'ping-done', d => String(d.dst).startsWith('ff02::1') && (d.from || []).length >= 2) },
           { text: 'Open <code>http://www.lab/</code> with curl. Which address does curl use?', ask: true, expect: () => ['2001:db8:2::80'] }],
         hints: ['ip -6 addr shows "scope global dynamic" for the SLAAC address.', 'The interface ID is everything after 2001:db8:1:0:', 'The NS of r1 says "asks its solicited-node group …".'],
-        outro: '<p>pc1 asked DNS for AAAA first, because it has a global IPv6 address and an IPv6 default route, and preferred IPv6, like every modern operating system. The group ff02::1 reached pc2 and r1 at once: multicast replaces the broadcast. And the hop limit of the reply was 62, two routers on the way, just like the TTL in IPv4.</p>' }
+        outro: '<p>pc1 got the AAAA record for www.lab and preferred IPv6, because it has a global IPv6 address and an IPv6 default route, like every modern operating system (RFC 6724). Real systems ask for A and AAAA at the same time and then sort the answers; the lab simply asks for AAAA first. The group ff02::1 reached pc2 and r1 at once: multicast replaces the broadcast. And the hop limit of the reply was 62, two routers on the way, just like the TTL in IPv4.</p>' }
     ] },
 
     { id: 'm12-l4', title: 'Building IPv6 routing yourself', minutes: 20, steps: [
       { type: 'theory', title: 'What a router needs for IPv6', html: `
-<p>A router does not pass anything on just because it has IPv6 addresses. Three things are needed:</p>
+<p>A router does not pass anything on just because it has IPv6 addresses. Four things are needed:</p>
 <table><tr><th>What</th><th>Linux / FRR</th><th>Effect</th></tr>
-<tr><td>Router advertisements on the LAN</td><td><code>ipv6 nd prefix 2001:db8:1::/64</code> (radvd, FRR)</td><td>hosts get a prefix and a default router</td></tr>
+<tr><td>IPv6 forwarding switched on</td><td><code>sysctl -w net.ipv6.conf.all.forwarding=1</code> (Cisco: <code>ipv6 unicast-routing</code>)</td><td>the device forwards IPv6 at all. Off by default on Linux; the routers in the lab have it on</td></tr>
+<tr><td>Router advertisements on the LAN</td><td>FRR: <code>no ipv6 nd suppress-ra</code> and <code>ipv6 nd prefix 2001:db8:1::/64</code> on the interface. radvd: <code>AdvSendAdvert on</code> with a <code>prefix</code> block</td><td>hosts get a prefix and a default router</td></tr>
 <tr><td>Routes to the other networks</td><td><code>ip -6 route add 2001:db8:2::/64 via 2001:db8:12::2</code></td><td>like IPv4: static, OSPFv3 or BGP</td></tr>
 <tr><td>Optionally DNS in the RA</td><td>RDNSS option</td><td>hosts find a DNS server without DHCPv6</td></tr></table>
 <p>The RA has two flags for DHCPv6: <b>M</b> (managed: take addresses from DHCPv6) and <b>O</b> (other: only DNS and similar from DHCPv6). With both off, SLAAC and RDNSS do everything.</p>
@@ -8954,16 +8958,16 @@ ${note('IPv6 has no NAT in normal networks: every device has a global address. T
           { text: 'Put the DNS server 2001:db8:2::53 into the router advertisement of r1. pc1 learns it.', check: sim => (sim.dev('pc1')?.l3.v6.rdnss || []).includes('2001:db8:2::53') },
           { text: 'Open http://www.lab/ on pc1. It goes over IPv6.', check: curl6('pc1') },
           { text: 'Through which router address does pc1 reach everything outside its LAN? (ip -6 route on pc1)', ask: true, expect: sim => [sim.dev('r1') ? linkLocalFor(sim.dev('r1').mac('eth1')) : ''], placeholder: 'fe80::…' }],
-        hints: ['A route needs both routers: r1 must know 2001:db8:2::/64 and r2 must know the way back to 2001:db8:1::/64.', 'The router advertisement is repeated every 30 seconds and sent at once after a change.', 'The default route of pc1 points to a link-local address.'],
+        hints: ['A route needs both routers: r1 must know 2001:db8:2::/64 and r2 must know the way back to 2001:db8:1::/64.', 'In the lab the router advertisement is repeated every 30 seconds (real routers: every few minutes) and sent at once after a change.', 'The default route of pc1 points to a link-local address.'],
         outro: '<p>The PCs never got a manual setting: prefix, default router and DNS server all came from the router advertisement. The default router is the link-local address of r1, which stays the same even if the global prefix changes.</p>' }
     ] },
 
     { id: 'm12-l5', title: 'Dual stack and the way to IPv6', minutes: 10, steps: [
       { type: 'theory', title: 'Two protocols side by side', html: `
 <p>The internet will not switch over in one night. Most networks run <b>dual stack</b>: every device has an IPv4 and an IPv6 address, and every application decides which one to use.</p>
-<ol><li>The name is resolved for <b>AAAA</b> and <b>A</b>.</li>
+<ol><li>The name is resolved for <b>AAAA</b> (IPv6) and <b>A</b> (IPv4) at the same time.</li>
 <li>If the device has a global IPv6 address and a default route, IPv6 is preferred (RFC 6724).</li>
-<li><b>Happy Eyeballs</b>: browsers start IPv6 and, after a short head start of 50 to 250 ms, IPv4 in parallel. Whichever connects first wins. A broken IPv6 path then only costs a fraction of a second.</li></ol>
+<li><b>Happy Eyeballs</b>: browsers and curl start IPv6 and, after a head start of about 250 ms (RFC 8305, Chrome 300 ms), IPv4 in parallel. Whichever connects first wins. A broken IPv6 path then only costs a fraction of a second.</li></ol>
 <h2>When only one side has IPv6</h2>
 <table><tr><th>Technique</th><th>Idea</th></tr>
 <tr><td>NAT64 + DNS64</td><td>An IPv6-only network reaches IPv4 servers: DNS invents an AAAA record inside <code>64:ff9b::/96</code>, a gateway translates.</td></tr>
@@ -9010,7 +9014,7 @@ outer:  198.51.100.1 → 203.0.113.1   UDP 51820            (visible to everyone
 <tr><td>Integrity</td><td>a changed byte is noticed, the packet is dropped</td></tr>
 <tr><td>Authenticity</td><td>only someone with the right key can send into the tunnel</td></tr></table>
 <h2>The cost: bytes</h2>
-<p>Every packet carries a second IP header, a UDP header and the VPN header with its authentication tag. With WireGuard over IPv4 that is up to 60 bytes, over IPv6 80 bytes. That is why the tunnel interface gets a smaller MTU, usually <b>1420</b>: a 1420-byte inner packet plus 80 bytes still fits into 1500.</p>
+<p>Every packet carries a second IP header, a UDP header and the VPN header with its authentication tag. With WireGuard over IPv4 that is 60 bytes (20 IP, 8 UDP, 16 WireGuard header, 16 tag), over IPv6 80 bytes. On top of that, WireGuard pads the encrypted inner packet to a multiple of 16 bytes, so up to 15 more bytes, but never beyond the MTU of the tunnel. That is why the tunnel interface gets a smaller MTU, usually <b>1420</b>: a 1420-byte inner packet plus 80 bytes still fits into 1500.</p>
 ${note('A VPN encrypts between the gateways. Inside each site the traffic is as readable as before; for end-to-end protection use TLS on top.')}
 <h2>The usual protocols</h2>
 <table><tr><th></th><th>WireGuard</th><th>IPsec (IKEv2 + ESP)</th><th>OpenVPN</th></tr>
@@ -9038,12 +9042,12 @@ AllowedIPs = 10.99.0.2/32, 10.2.0.0/24
 PersistentKeepalive = 25</pre>
 <h2>Cryptokey routing</h2>
 <p><b>AllowedIPs</b> work in both directions:</p>
-<ul><li><b>Sending</b>: a packet to 10.2.0.10 matches the allowed IPs of gwB, so it is encrypted with gwB's key and sent to gwB's endpoint. wg-quick also adds a route for every allowed IP into wg0.</li>
+<ul><li><b>Sending</b>: a packet to 10.2.0.10 matches the allowed IPs of gwB, so it is encrypted with the session key of the tunnel to gwB and sent to gwB's endpoint. The public keys are only used in the handshake that agrees on these session keys. wg-quick also adds a route for every allowed IP into wg0.</li>
 <li><b>Receiving</b>: after decrypting, the source of the inner packet must be in the allowed IPs of the peer that sent it. Otherwise it is dropped. A key thus decides which addresses a peer may use.</li></ul>
 <h2>Handshake and silence</h2>
 <p>Before the first data packet, one round trip creates the session keys: <i>handshake initiation</i> (148 bytes) and <i>response</i> (92 bytes). They are renewed every two minutes. A WireGuard port never answers strangers: a wrong key gets no error, just silence. That makes WireGuard invisible to port scanners, and makes troubleshooting a little harder.</p>
 <h2>Roaming and NAT</h2>
-<p>The endpoint is updated with every valid packet. A laptop that changes from Wi-Fi to mobile keeps its tunnel. A device behind NAT sends a <b>keepalive</b> every 25 seconds, so the NAT entry stays open and the other side can reach it at any time.</p>
+<p>The endpoint is updated with every valid packet. A laptop that changes from Wi-Fi to mobile keeps its tunnel. A device behind NAT should set <code>PersistentKeepalive = 25</code> (it is off by default): it then sends a <b>keepalive</b> every 25 seconds, so the NAT entry stays open and the other side can reach it at any time.</p>
 ${note('The packets on the wire show only UDP. In the packet inspector PacketPilot shows you the decrypted inner packet anyway, marked as encrypted.')}` },
       { type: 'build', title: 'Build the tunnel packet', blocks: ['eth', 'ip', 'icmp', 'udp', 'tcp', 'wg', 'data'],
         task: '<p>pcA (10.1.0.10) pings srvB (10.2.0.10). The handshake between gwA and gwB is done. Build the frame as gwA sends it on its internet side (eth2) to the provider router <b>isp</b>.</p>',
@@ -9142,7 +9146,7 @@ export default {
 <pre>10.2.0.0/24   AS_PATH 65002          learned directly from AS 65002
 10.2.0.0/24   AS_PATH 65100 65002    the same network, one AS further away</pre>
 <h2>Sessions over TCP</h2>
-<p>BGP runs over <b>TCP port 179</b>: reliable, ordered, no own retransmission needed. Neighbors are configured by hand, there is no discovery. Four messages:</p>
+<p>BGP runs over <b>TCP port 179</b>: reliable, ordered, no own retransmission needed. Neighbors are configured by hand, there is no discovery. eBGP packets leave with <b>TTL 1</b> by default: the neighbor must be directly connected (one further away needs <code>ebgp-multihop</code>). Four messages:</p>
 <table><tr><th>Message</th><th>Content</th></tr>
 <tr><td>OPEN</td><td>my AS, router ID, hold time, capabilities</td></tr>
 <tr><td>KEEPALIVE</td><td>"still here", every hold time / 3</td></tr>
@@ -9152,8 +9156,8 @@ export default {
 ${note('BGP announces a network only if it is in the own routing table with exactly that prefix: <code>network 10.1.0.0/24</code> does nothing if the router only knows 10.1.0.0/16.')}` },
       { type: 'stack', title: 'A session comes up', hint: 'From the first packet to the first route. The top is the first message.',
         items: [{ name: 'r1 → r2: TCP SYN to port 179', kind: 'tcp' }, { name: 'r2 → r1: SYN, ACK', kind: 'tcp' }, { name: 'r1 → r2: ACK', kind: 'tcp' },
-          { name: 'r1 → r2: OPEN (AS 65001)', kind: 'rt' }, { name: 'r2 → r1: OPEN (AS 65002)', kind: 'rt' }, { name: 'r1 → r2: KEEPALIVE', kind: 'rt' },
-          { name: 'r2 → r1: KEEPALIVE, both Established', kind: 'rt' }, { name: 'UPDATE: 10.1.0.0/24, AS_PATH 65001', kind: 'rt' }],
+          { name: 'r1 → r2: OPEN (AS 65001)', kind: 'rt' }, { name: 'r2 → r1: OPEN (AS 65002)', kind: 'rt' }, { name: 'r2 → r1: KEEPALIVE', kind: 'rt' },
+          { name: 'r1 → r2: KEEPALIVE, both Established', kind: 'rt' }, { name: 'UPDATE: 10.1.0.0/24, AS_PATH 65001', kind: 'rt' }],
         explain: 'First TCP, then the OPENs, each confirmed with a KEEPALIVE. Only then do the UPDATEs carry the networks.' },
       { type: 'build', title: 'Build the OPEN of r1', blocks: ['eth', 'ip', 'icmp', 'udp', 'tcp', 'bgp', 'data'],
         task: '<p>r1 (AS 65001, 10.0.12.1 on eth2) has opened the TCP connection to its eBGP neighbor r2 (10.0.12.2, AS 65002). Build the frame with the OPEN message r1 sends next.</p>',
@@ -9183,7 +9187,7 @@ ${note('BGP announces a network only if it is in the own routing table with exac
           { text: 'Which AS path does r1 see for 10.2.0.0/24?', ask: true, expect: () => ['65002', '65002 i'] },
           { text: 'Click a BGP UPDATE in the log and look at its attributes in the packet inspector.', check: inspected(isUpdate) }],
         hints: ['BGP is under Configuration on r2: Add a feature, BGP.', 'In the log of r1 you see the TCP connection being refused while r2 has BGP off.', 'Networks are entered as 10.2.0.0/24.'],
-        outro: '<p>Without BGP on r2, nobody listened on TCP 179: r1 got a reset and stayed in Active. With both sides configured, the session went through OpenSent and OpenConfirm to Established, and each router announced its network with its own AS in the path.</p>' }
+        outro: '<p>Without BGP on r2, nobody listened on TCP 179: r1 got a reset, fell back to Idle and kept trying again. Many real routers show such a session as Active. With both sides configured, the session went through OpenSent and OpenConfirm to Established, and each router announced its network with its own AS in the path.</p>' }
     ] },
 
     { id: 'm14-l3', title: 'iBGP and the next hop', minutes: 15, steps: [
@@ -9250,6 +9254,7 @@ ${note('The IGP (OSPF) carries the loopbacks and links of the own AS. BGP carrie
 <tr><td>7</td><td>eBGP over iBGP</td><td>eBGP</td></tr>
 <tr><td>8</td><td>IGP metric to the next hop</td><td>lower</td></tr>
 <tr><td>9</td><td>Router ID, neighbor address</td><td>lower</td></tr></table>
+<p>A router only passes on its <b>best</b> path. Its neighbors never learn about the paths it did not choose.</p>
 <h2>The way out: local preference</h2>
 <p>You decide which exit your own traffic takes. Set <b>local preference</b> higher on the routes from the provider you prefer (e.g. 200 instead of the default 100). It is passed to all iBGP neighbors, so the whole AS agrees, and it wins before the AS path length is even looked at.</p>
 <h2>The way in: AS path prepending and MED</h2>
@@ -9260,7 +9265,7 @@ ${note('Changing the way out does not change the way back: traffic can leave thr
         presets: { pc2: ['traceroute 198.51.100.80'], r2: ['show ip bgp', 'show ip bgp 198.51.100.0/24'], r3: ['show ip bgp 198.51.100.0/24'], isp1: ['show ip bgp 10.2.0.0/24'] },
         goals: [
           { text: 'traceroute from pc2 to the web server. Through which of our edge routers does it go?', ask: true, expect: () => ['r1'] },
-          { text: 'Why does r2 prefer that path? (show ip bgp 198.51.100.0/24 on r2 shows the reason)', ask: true, expect: () => ['as path length', 'as path', 'as-path', 'shorter as path', 'as_path'] },
+          { text: 'r3 has its own provider 2, yet the traffic leaves through r1. Why does r3 not use provider 2? (show ip bgp 198.51.100.0/24 on r3 shows the reason)', ask: true, expect: () => ['as path length', 'as path', 'as-path', 'shorter as path', 'as_path'] },
           { text: 'Make the whole AS leave through provider 2: give its routes a higher local preference on r3. Then traceroute again.', check: traceVia('pc2', '10.0.23.3') },
           { text: 'Now look at isp1: <code>show ip bgp 10.2.0.0/24</code>. Through which AS do the answers come back to us?', ask: true, expect: () => ['65001', 'directly', 'r1', 'via r1', 'as 65001'] },
           { text: 'Make provider 1 send the answers through provider 2 as well: prepend AS 65001 twice towards provider 1 on r1. isp1 then prefers the path via AS 65200.', check: sim => (sim.dev('isp1')?.bgp?.table() || []).some(r => r.prefix === '10.2.0.0/24' && r.best && r.asPath[0] === 65200) }],
@@ -9284,7 +9289,7 @@ export default {
     { id: 'm15-l1', title: 'Why VXLAN needs a control plane', minutes: 14, steps: [
       { type: 'theory', title: 'From flood and learn to EVPN', html: `
 <p>Plain VXLAN works like a big switch stretched over IP: unknown destinations are flooded to all VTEPs of the segment, and MAC addresses are learned from the packets that come back (<b>flood and learn</b>). That has three problems:</p>
-<ul><li>Every VTEP needs a <b>static flood list</b> of all other VTEPs. A new VTEP means touching every other one.</li>
+<ul><li>Without multicast in the underlay, every VTEP needs a <b>static flood list</b> of all other VTEPs. A new VTEP means touching every other one.</li>
 <li>Broadcast, unknown unicast and multicast (BUM) are copied to every VTEP. Every ARP request crosses the whole fabric.</li>
 <li>A MAC is only known after it has sent something, and after a move the old entry stays until it ages out.</li></ul>
 <p><b>EVPN</b> (Ethernet VPN, RFC 7432 and 8365) solves this with BGP: the VTEPs announce what they know, like routers announce networks. The address family is <code>l2vpn evpn</code>, the transport iBGP or eBGP as usual.</p>
@@ -9293,10 +9298,10 @@ export default {
 <tr><td><b>2</b></td><td>MAC/IP advertisement</td><td>"The host with this MAC (and IP) is behind me, in VNI 10010"</td></tr>
 <tr><td><b>3</b></td><td>Inclusive multicast</td><td>"I take part in VNI 10010: send me its flooded traffic"</td></tr>
 <tr><td>5</td><td>IP prefix</td><td>routing between VNIs (not in this course)</td></tr>
-<tr><td>1, 4</td><td>Ethernet segment</td><td>one host connected to two VTEPs (multihoming)</td></tr></table>
-<p>Type 3 routes build the flood lists automatically. Type 2 routes fill the MAC tables of all VTEPs, so even unknown unicast no longer has to be flooded. With <b>ARP suppression</b> a VTEP even answers an ARP request itself when it knows the IP from a type 2 route.</p>
+<tr><td>1, 4</td><td>Ethernet auto-discovery (1), Ethernet segment (4)</td><td>one host connected to two VTEPs (multihoming)</td></tr></table>
+<p>Type 3 routes build the flood lists automatically. Type 2 routes fill the MAC tables of all VTEPs, so unicast to every announced host goes straight to the right VTEP. Only MACs that nobody has announced yet are still flooded. With <b>ARP suppression</b> a VTEP even answers an ARP request itself when it knows the IP from a type 2 route.</p>
 <h2>Who talks to whom</h2>
-<p>In a leaf-spine fabric the leaves are VTEPs. They do not peer with each other: the spines are <b>route reflectors</b>, every leaf has one iBGP session per spine. The route reflector itself does not need VXLAN, it only passes the EVPN routes on.</p>
+<p>In a leaf-spine fabric the leaves are VTEPs. They do not peer with each other. In an iBGP fabric the spines are <b>route reflectors</b>, every leaf has one iBGP session per spine (fabrics with eBGP between leaf and spine need none). The route reflector itself does not need VXLAN, it only passes the EVPN routes on.</p>
 ${note('Each route also carries a route distinguisher and route targets, so that several tenants can use the same MAC or IP. Here every VNI simply has its own.')}` },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'A new VTEP joins VNI 10010. Which route tells the others to include it in their flood list?', options: ['Type 2', 'Type 3', 'Type 5', 'A static entry'], correct: 1 },
@@ -9386,6 +9391,16 @@ ${note('The <b>Protocol</b> field plays the same role as the EtherType in the Et
     { id: 'm2-l2', title: 'The routing decision', minutes: 12, steps: [
       { type: 'theory', title: 'Routing table and longest prefix match', html: `
 <p>Hosts and routers decide using the same procedure. A router simply also forwards packets that are not addressed to itself.</p>
+<h2>What /24 means</h2>
+<p>A route names a <b>network</b>: an address and a <b>prefix length</b> after the slash. <code>/24</code> means the first 24 of the 32 bits are fixed, the rest may vary. The shorter the prefix, the larger the network:</p>
+<table><tr><th>Prefix</th><th>Addresses</th><th>Example</th><th>Covers</th></tr>
+<tr><td>/8</td><td>16,777,216</td><td><code>10.0.0.0/8</code></td><td>10.0.0.0 to 10.255.255.255</td></tr>
+<tr><td>/16</td><td>65,536</td><td><code>10.1.0.0/16</code></td><td>10.1.0.0 to 10.1.255.255</td></tr>
+<tr><td>/24</td><td>256</td><td><code>10.1.2.0/24</code></td><td>10.1.2.0 to 10.1.2.255</td></tr>
+<tr><td>/25</td><td>128</td><td><code>10.1.2.128/25</code></td><td>10.1.2.128 to 10.1.2.255</td></tr>
+<tr><td>/26</td><td>64</td><td><code>10.1.2.64/26</code></td><td>10.1.2.64 to 10.1.2.127</td></tr>
+<tr><td>/0</td><td>all</td><td><code>0.0.0.0/0</code></td><td>every address: the <b>default route</b></td></tr></table>
+<p>Each step of one bit halves the network. A /26 is a quarter of a /24: it starts at .0, .64, .128 or .192 and is 64 addresses long. The subnetting trainer under Subnets practices this in detail.</p>
 <pre>$ ip route
 default via 192.168.10.1 dev eth1                         ← default route
 10.20.0.0/16 via 192.168.10.254 dev eth1                  ← static route
@@ -9394,7 +9409,7 @@ default via 192.168.10.1 dev eth1                         ← default route
 <tr><td>Connected route (directly attached)</td><td>the <b>destination</b> itself</td></tr>
 <tr><td>Route with <code>via</code></td><td>the <b>next hop</b></td></tr></table>
 ${note('<b>Longest prefix match:</b> if several entries match, the most specific one wins, i.e. the one with the longest prefix. The order in the table does not matter. For prefixes of equal length, the origin decides: connected before static.')}
-<p>On Linux, <code>ip route get &lt;destination&gt;</code> shows the decision for a destination without sending a packet. You can try this in every console in the lab, too.</p>` },
+<p>If <b>no</b> entry matches and there is no default route, the packet cannot be delivered: it is dropped, and the sender gets an ICMP <i>Destination Unreachable</i> (Network Unreachable). On Linux, <code>ip route get &lt;destination&gt;</code> shows the decision for a destination without sending a packet. You can try this in every console in the lab, too.</p>` },
       { type: 'lpm', title: 'Where does the packet go?', table: [['10.0.0.0/8', 'A'], ['10.1.0.0/16', 'B'], ['10.1.2.0/24', 'C'], ['10.1.2.64/26', 'D'], ['0.0.0.0/0', 'E']],
         dests: ['10.1.2.77', '10.1.2.200', '10.9.9.9', '10.1.3.1', '172.16.5.5'] },
       { type: 'lpm', title: 'And without a default route?', table: [['192.168.0.0/16', 'R1'], ['192.168.10.0/24', 'R2'], ['192.168.10.128/25', 'R3']],
@@ -9448,14 +9463,14 @@ ping -M dont -s 1472 dest   same size, fragmentation allowed</pre>
 ${note('After a Fragmentation Needed message, Linux already rejects packets that are too large locally: <code>ping: local error: message too long, mtu=1400</code>. With <code>ip route get</code> you can see the learned MTU.')}` },
       { type: 'lab', title: 'The bottleneck', topo: mtuTopo, edit: 'view',
         intro: '<p>The link between r1 and r2 only has MTU 1400. Test it from pc1.</p>',
-        presets: { pc1: ['ping -c 2 -M do -s 1472 10.0.2.20', 'ping -c 1 -M dont -s 1472 10.0.2.20', 'ip route get 10.0.2.20'] },
+        presets: { pc1: ['ping -c 1 -M dont -s 1472 10.0.2.20', 'ping -c 2 -M do -s 1472 10.0.2.20', 'ip route get 10.0.2.20'] },
         goals: [
-          { text: 'Send a ping with 1472 bytes and DF (-M do). Which MTU does r1 report back?', ask: true, expect: () => ['1400'] },
-          { text: 'pc1 remembers the MTU of the path.', check: tag('pc1', 'pmtu-learned') },
-          { text: 'Send the same ping without DF (-M dont). r1 fragments the packet, and the ping gets through.', check: pingOk('pc1', '10.0.2.20', { size: 1472, df: false }) },
+          { text: 'Send a ping with 1472 bytes without DF (-M dont). r1 fragments the packet, and the ping gets through.', check: pingOk('pc1', '10.0.2.20', { size: 1472, df: false }) },
           { text: 'Into how many fragments did r1 split the packet?', ask: true, expect: () => ['2'] },
+          { text: 'Send the same ping with DF (-M do). Which MTU does r1 report back?', ask: true, expect: () => ['1400'] },
+          { text: 'pc1 remembers the MTU of the path.', check: tag('pc1', 'pmtu-learned') },
           { text: 'What is the largest value for -s with which the ping works with -M do?', ask: true, expect: () => ['1372'] }],
-        outro: '<p>1372 + 8 + 20 = 1400. That is exactly how large an IP packet may be across the narrowest link.</p>' }
+        outro: '<p>1372 + 8 + 20 = 1400. That is exactly how large an IP packet may be across the narrowest link. Once pc1 knows the path MTU, a real Linux host also splits packets without DF itself, before sending them, instead of leaving it to r1.</p>' }
     ] },
 
     { id: 'm2-l6', title: 'Rules and the PMTUD blackhole', minutes: 15, steps: [
@@ -9527,7 +9542,7 @@ ${bar([['Dest. MAC', '6', 'eth', 1.1], ['Source MAC', '6', 'eth', 1.1], ['TPID 0
 <table><tr><th>Port</th><th>On the wire</th><th>Typical for</th></tr>
 <tr><td><b>Access</b></td><td>without a tag, the port belongs to exactly one VLAN</td><td>PC, printer, server with one network</td></tr>
 <tr><td><b>Trunk</b></td><td>with a tag, several VLANs over one cable</td><td>switch to switch, router, hypervisor</td></tr></table>
-<p>On a trunk, one VLAN may additionally run without a tag, the <b>native VLAN</b>. If it does not match on both sides, two VLANs get connected without anyone noticing.</p>
+<p>On a trunk, one VLAN may additionally run without a tag, the <b>native VLAN</b>. If it does not match on both sides, two VLANs get connected. Some switches warn about it (Cisco CDP: native VLAN mismatch), but the traffic leaks either way.</p>
 ${note('Your VMs on ESXi know this: for the VM, the port group is an access port. The vSwitch only adds the tag when the frame leaves the host via the uplink (a trunk).')}` },
       { type: 'lab', title: 'Connect two switches properly', topo: () => vlanTopo(false), edit: 'config',
         intro: '<p>a10 and b10 belong in VLAN 10, a20 and b20 in VLAN 20. But the cable between s1 and s2 is an access port in VLAN 1 on both sides. Turn it into a trunk.</p>',
@@ -9637,7 +9652,7 @@ ${note('If you do not specify one, Linux uses the old port <b>8472</b>. Always s
 
     { id: 'm3-l6', title: 'The MTU trap', minutes: 12, steps: [
       { type: 'theory', title: '50 bytes that break everything', html: `
-<p>VXLAN puts 50 bytes in front of every packet. A full packet of 1500 bytes becomes 1550 bytes in the underlay. Linux therefore automatically sets the MTU of a VXLAN interface to the MTU of the uplink minus 50.</p>
+<p>VXLAN puts 50 bytes in front of every packet. A full packet of 1500 bytes becomes 1550 bytes in the underlay. Linux therefore sets the MTU of a VXLAN interface to the MTU of the uplink minus 50 when the interface is created.</p>
 ${note('If a frame does not fit, it is <b>silently dropped</b>. To the hosts the VTEP is a switch, and a switch does not send ICMP messages; it does not even have an IP address in the segment. Ping works, large transfers hang.', true)}
 <table><tr><th>Solution</th><th>Assessment</th></tr>
 <tr><td>Underlay MTU of 1550 or jumbo frames (9000)</td><td>Standard in the data center, the hosts notice nothing</td></tr>
@@ -9650,7 +9665,7 @@ ${note('If a frame does not fit, it is <b>silently dropped</b>. To the hosts the
           { text: 'Which MTU does the VXLAN interface of vtep1 have?', ask: true, expect: () => ['1450'] },
           { text: 'Raise the MTU of both underlay cables to 1550 (click the cable) and send the ping again.', check: pingOk('srv1', '192.168.10.12', { size: 1472, df: true }) }],
         hints: ['The underlay cables are vtep1 ↔ core and vtep2 ↔ core.'],
-        outro: '<p>With 1550 in the underlay, the VXLAN interface automatically has MTU 1500 again, and the servers notice nothing of the encapsulation.</p>' }
+        outro: '<p>With 1550 in the underlay, the VXLAN interface can carry 1500 again, and the servers notice nothing of the encapsulation. In the lab its MTU follows the uplink automatically. On a real Linux VTEP, raise it yourself as well (<code>ip link set vxlan10 mtu 1500</code>), because Linux only computes it when the interface is created.</p>' }
     ] }
   ]
 };
@@ -9745,7 +9760,7 @@ ${note('BPDUs are not Ethernet II frames. They use the older 802.3 format with a
         expected: [
           { block: 'eth', fields: { dst: '01:80:c2:00:00:00', src: macFor('sw1/eth1'), type: 'len' } },
           { block: 'stp', fields: { root: `4096.${bmac('sw1')}`, cost: '0', bridge: `4096.${bmac('sw1')}` } }],
-        explain: 'The root has a cost of 0 to itself and is also the sender. The destination MAC is the reserved multicast address for bridges, which no switch forwards. Instead of an EtherType, the header contains the payload length (802.3), followed by the LLC header.' },
+        explain: 'The root has a cost of 0 to itself and is also the sender. The destination MAC is the reserved multicast address for bridges: a switch that runs spanning tree processes it and never forwards it. Instead of an EtherType, the header contains the payload length (802.3), followed by the LLC header.' },
       { type: 'lab', title: 'Find the root and pick a new one', topo: () => stpTriangle({ enabled: true }), edit: 'config',
         intro: `<p>All three switches have the default priority 32768. Find out who became root, and then choose a new root yourself. Use <code>show spanning-tree</code> in a switch's console or look under Tables to see the state.</p>`,
         presets: { sw1: ['show spanning-tree'], sw2: ['show spanning-tree'], sw3: ['show spanning-tree'] },
@@ -9779,7 +9794,7 @@ sw3: two paths with cost 8, via sw2 or via sw4
 Segment sw2–sw3: sw2 offers 4, sw3 offers 8 → sw2 is designated
 Segment sw3–sw4: the same, sw4 is designated
 → The port of sw3 towards the "loser" is left over: alternate, blocking</pre>
-${note('The roles tell you where traffic flows. A frame from one end of the ring to the other always takes the path via the root, even if a shorter path exists that is currently blocked.')}` },
+${note('The roles tell you where traffic flows. Frames only travel along the tree. Between the two switches on either side of the blocked port, traffic goes the long way around the ring (here via the root), although a direct cable exists.')}` },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'How many root ports does the root bridge have?', input: ['0', 'none', 'zero'], explain: 'The root does not need a path to itself. All of its ports are designated.' },
         { q: 'A switch reaches the root directly via a 100 Mbit link (cost 19) or via two gigabit hops (4 + 4). Which path becomes the root port?', options: ['The direct 100 Mbit link', 'The path via two gigabit hops', 'Both, STP balances the load'], correct: 1,
@@ -9830,8 +9845,9 @@ ${note('<b>RSTP</b> (802.1w, the standard today) negotiates new ports in fractio
 <tr><td>direct: its own root port loses the link</td><td>immediately</td><td>30 s (listening + learning)</td></tr>
 <tr><td>indirect: the path breaks somewhere else</td><td>BPDUs stop arriving, after max age the information expires</td><td>up to 50 s (20 + 15 + 15)</td></tr></table>
 <h2>Topology change</h2>
-<p>After failing over, the MAC tables are no longer correct: they still point to the old path. Without countermeasures, frames would run into nowhere until aging (300 s). That is why a switch reports a <b>topology change</b> (TC) towards the root, the root sets the TC flag in its BPDUs, and all switches then quickly flush their MAC tables. After that, addresses are learned again via the new path.</p>
-${note('A TC also occurs when an ordinary port of an end device goes to Forwarding. Without PortFast, every PC that is switched on briefly triggers a flush of the MAC tables in the entire network. Another reason for edge ports.')}` },
+<p>After failing over, the MAC tables are no longer correct: they still point to the old path. Without countermeasures, frames would run into nowhere until aging (300 s). That is why a switch reports a <b>topology change</b> (TC) towards the root, the root sets the TC flag in its BPDUs, and while it is set, all switches let their MAC entries expire after the forward delay (15 s) instead of 300 s. Stale entries disappear quickly and addresses are learned again via the new path.</p>
+${note('In the lab the switches simply flush their MAC tables at once when they hear a topology change. That is what RSTP does, see the end of this module; classic 802.1D only shortens the aging time.')}
+${note('A TC also occurs when an ordinary port of an end device goes to Forwarding. Without PortFast, every PC that is switched on makes the MAC tables of the entire network age out quickly for a while, which causes a burst of flooding. Another reason for edge ports.')}` },
       { type: 'lab', title: 'Pull a cable', topo: () => stpTriangle({ enabled: true, rootPrio: 4096 }), edit: 'config',
         intro: '<p>sw1 is root. Let the network converge and check with a ping that everything works. Then interrupt the cable between sw1 and sw2 and watch how STP releases the backup path.</p>',
         presets: { pc1: ['ping -c 1 10.0.0.2', 'ping -c 12 10.0.0.2'], sw2: ['show spanning-tree', 'ip link set eth1 down'], sw3: ['show spanning-tree'] },
@@ -9858,7 +9874,7 @@ ${note('A TC also occurs when an ordinary port of an end device goes to Forwardi
 <p>The good news first: the root election, the bridge ID, the costs and the port roles work exactly as you learned. RSTP changes <i>how fast</i> the tree is built, not <i>which</i> tree.</p>
 <table><tr><th></th><th>STP (802.1D)</th><th>RSTP (802.1w)</th></tr>
 <tr><td>Port states</td><td>Blocking, Listening, Learning, Forwarding</td><td><b>Discarding</b>, Learning, Forwarding</td></tr>
-<tr><td>Roles</td><td>Root, Designated, Alternate</td><td>the same, plus <b>Backup</b></td></tr>
+<tr><td>Roles</td><td>Root, Designated, all other ports simply block</td><td>Root, Designated, plus <b>Alternate</b> and <b>Backup</b> for the discarding ports</td></tr>
 <tr><td>BPDUs</td><td>come from the root, the others relay them</td><td>every switch sends its own every hello, like a keepalive</td></tr>
 <tr><td>Neighbor gone</td><td>after max age, 20 s</td><td>after 3 missed hellos, 6 s. A dead link at once</td></tr>
 <tr><td>New forwarding port</td><td>30 s of timers</td><td><b>proposal and agreement</b>, milliseconds</td></tr>
@@ -9881,10 +9897,10 @@ eth1: Forwarding (milliseconds)      eth1 forwards as the root port
 <p>The <b>sync</b> is the trick: before sw2 agrees, it blocks its own ports towards the rest of the network. So there is never an open loop, and the handshake travels down the tree like a wave, one link at a time. A blocked alternate port agrees right away because it does not forward anyway.</p>
 <h2>When the handshake does not work</h2>
 <table><tr><th>Situation</th><th>What happens</th></tr>
-<tr><td>Port to an end device without <b>edge</b> setting</td><td>A PC does not answer proposals: the port waits 2 × forward delay, 30 s, as in STP</td></tr>
+<tr><td>Port to an end device without <b>edge</b> setting</td><td>A PC does not answer proposals. Switches with <b>automatic edge detection</b> (802.1D-2004, the default of mstpd on Linux) treat a port that hears no BPDU for about 3 s as an edge port. Without it (e.g. Cisco, and in the lab) the port waits 2 × forward delay, 30 s, as in STP</td></tr>
 <tr><td>Neighbor only speaks 802.1D</td><td>It ignores RST BPDUs and sends old ones. The RSTP switch falls back to STP on that port, with timers</td></tr>
 <tr><td>Shared link (half duplex, hub)</td><td>The handshake needs a point-to-point link, otherwise timers</td></tr></table>
-${note('So the edge setting is more important with RSTP, not less: it is the only way a port to an end device forwards without delay. On Cisco: <code>spanning-tree portfast</code>, on Linux with mstpd: <code>mstpctl setportadminedge</code>.')}
+${note('So the edge setting is more important with RSTP, not less: it is the only reliable way a port to an end device forwards without delay. On Cisco: <code>spanning-tree portfast</code>, on Linux with mstpd: <code>mstpctl setportadminedge</code>.')}
 <h2>Topology change</h2>
 <p>In RSTP only a port that <b>starts forwarding</b> counts as a topology change, and edge ports never do. The switch that notices it flushes the MAC addresses on its other ports and sends BPDUs with the TC flag on all its root and designated ports at once. Every switch that receives one does the same, so the news spreads in milliseconds without a detour via the root.</p>
 <h2>Inside an RST BPDU</h2>
@@ -9912,7 +9928,7 @@ ${note('In the lab, the packet inspector shows these bits for every RST BPDU, to
           explain: 'The alternate port already is a loop-free path to the root. It becomes the root port and forwards at once.' },
         { q: 'What does a switch do before it answers a proposal on its root port with an agreement?', options: ['It waits 15 seconds', 'It blocks all its other non-edge designated ports (sync)', 'It asks the root', 'It flushes its MAC table only'], correct: 1 },
         { q: 'After how many missed hellos does RSTP discard the information of a neighbor?', input: ['3', 'three'], explain: 'With hello 2 s that is 6 s instead of max age 20 s.' },
-        { q: 'In an RSTP network, a PC is plugged into a port without edge setting. How many seconds until the port forwards (standard timers)?', input: ['30'], unit: 'seconds',
+        { q: 'In an RSTP network without automatic edge detection, as in the lab, a PC is plugged into a port without edge setting. How many seconds until the port forwards (standard timers)?', input: ['30'], unit: 'seconds',
           explain: 'The PC never answers the proposal, so only the fallback with 2 × forward delay remains.' }] }
     ] },
 
@@ -9947,9 +9963,9 @@ ${note('In the lab, the packet inspector shows these bits for every RST BPDU, to
           { text: 'Disconnect the cable of pc3, reconnect it and ping pc3 from pc1 right away. The port forwards immediately and the reply comes.',
             check: sim => { const up = sim.log.filter(e => e.tag === 'link-up' && e.text.includes('pc3')).pop();
               return !!up && sim.log.some(e => e.seq > up.seq && e.dev === 'sw3' && e.tag === 'stp-state' && e.data?.port === 'eth5' && e.data.edge) && pingOkAfter('pc1', '10.0.0.3', e => e === up)(sim); } },
-          { text: 'Without the edge setting: how many seconds would the port of pc3 wait with the standard timers?', ask: true, expect: () => ['30'], placeholder: 'seconds' }],
+          { text: 'Without the edge setting: how many seconds would the port of pc3 wait in the lab with the standard timers?', ask: true, expect: () => ['30'], placeholder: 'seconds' }],
         hints: ['The neighbors of an STP-only switch log: "receives a classic 802.1D BPDU … falls back to STP".', 'The edge setting is in the spanning tree section of the configuration, or: spanning-tree portfast eth5 on'],
-        outro: '<p>Two classics from practice. A single old switch makes RSTP slow on all its links, and a missing edge setting makes every PC wait half a minute, even in a modern network. Real switches report the old neighbor as "Peer(STP)", and they also need a nudge to try RSTP again later: on Cisco <code>clear spanning-tree detected-protocols</code>.</p>' }
+        outro: '<p>Two classics from practice. A single old switch makes RSTP slow on all its links, and on switches without automatic edge detection a missing edge setting makes every PC wait half a minute, even in a modern network. Real switches report the old neighbor as "Peer(STP)", and they also need a nudge to try RSTP again later: on Cisco <code>clear spanning-tree detected-protocols</code>.</p>' }
     ] }
   ]
 };
@@ -10006,7 +10022,7 @@ dns     →  client UDP 53 → 51234  answer: web.lab A 10.20.0.80</pre>
 <tr><td>NXDOMAIN</td><td>the name does not exist</td></tr>
 <tr><td>SERVFAIL</td><td>the server could not answer the question</td></tr></table>
 <p><code>dig @10.20.0.53 web.lab</code> queries a specific server. Without <code>@</code>, dig uses the configured DNS server (on Linux from <code>/etc/resolv.conf</code>). Programs like <code>curl</code> or <code>ping</code> first resolve a name and only then send the actual packet.</p>
-${note('Answers over 512 bytes (e.g. with DNSSEC) switch to TCP port 53. A firewall that only allows UDP 53 therefore sometimes causes strange errors.')}` },
+${note('Without extensions a DNS answer over UDP may be at most 512 bytes. Today clients announce a larger size (EDNS), usually 1232 bytes. If an answer is still too large, e.g. with DNSSEC, the server sets the TC flag (truncated) and the client asks again over TCP port 53. A firewall that only allows UDP 53 therefore sometimes causes strange errors.')}` },
       { type: 'build', title: 'Build the DNS query', blocks: ['eth', 'vlan', 'arp', 'ip', 'icmp', 'udp', 'tcp', 'dns'],
         task: '<p>The <b>client</b> (10.10.0.10, gateway 10.10.0.1) asks the DNS server <b>dns</b> (10.20.0.53) for <code>web.lab</code>. The DNS server is in a different subnet. Build the frame as it leaves the client\'s cable.</p>',
         addresses: ADDR,
@@ -10051,7 +10067,7 @@ ${bar([['Ports', '4', 'tcp', 1], ['Sequence number', '4', 'tcp', 1.2], ['Acknowl
             ←  FIN, ACK
   ACK                                   →          closed</pre>
 <p>SYN and FIN count as one byte, which is why the server acknowledges the 1000 with 1001. The starting numbers are random so that nobody can inject foreign segments into a connection. The SYN also contains the <b>MSS</b> (maximum segment size): the maximum number of data bytes a segment may carry, normally the MTU minus 40.</p>
-${note('A router reads none of this. To it, a TCP segment is an IP packet like any other. Only stateful firewalls and load balancers look at ports and flags.')}` },
+${note('For plain forwarding, a router reads none of this: to it, a TCP segment is an IP packet like any other. Only devices that filter or translate look at ports and flags: firewalls, access lists on routers, NAT, load balancers, and MSS clamping later in this module.')}` },
       { type: 'label', title: 'Label the TCP header', distractors: ['TTL', 'VNI', 'Length (UDP)'],
         rows: [[{ label: 'Source port', size: '16 bits', kind: 'tcp', w: 200 }, { label: 'Dest. port', size: '16 bits', kind: 'tcp', w: 200 }],
           [{ label: 'Sequence number', size: '32 bits', kind: 'tcp', w: 406 }],
@@ -10091,9 +10107,9 @@ ${note('A router reads none of this. To it, a TCP segment is an IP packet like a
     { id: 'm5-l5', title: 'Refused, filtered, prohibited', minutes: 15, steps: [
       { type: 'theory', title: 'Three ways a connection fails', html: `
 <table><tr><th>What you see</th><th>What happened</th><th>Typical cause</th></tr>
-<tr><td><code>Connection refused</code> immediately</td><td>An RST came back in response to the SYN</td><td>Nothing is listening on the port, or a firewall rejects with RST</td></tr>
+<tr><td><code>Connection refused</code> immediately</td><td>An RST came back in response to the SYN, or an ICMP Port Unreachable</td><td>Nothing is listening on the port, or a firewall rejects with RST or Port Unreachable (the default of iptables REJECT)</td></tr>
 <tr><td><code>timed out</code> after seconds</td><td>Nothing at all came back in response to the SYN, the client repeats it several times</td><td>A firewall drops silently (DROP), or the host is gone</td></tr>
-<tr><td><code>No route to host</code> or <code>prohibited</code></td><td>An ICMP error came back</td><td>No ARP for the destination, or a firewall rejects with ICMP</td></tr></table>
+<tr><td><code>No route to host</code> or <code>prohibited</code></td><td>An ICMP error came back</td><td>No ARP for the destination, or a firewall rejects with ICMP Host Unreachable or Administratively Prohibited</td></tr></table>
 <p><code>nc -zv host port</code> only tests the connection setup and is well suited to distinguish these cases.</p>
 ${note('A firewall that rejects with RST uses the server\'s address as the sender. To the client, a rejected port therefore looks exactly like a closed one. Only the firewall\'s log or a capture on both sides shows the difference.')}
 ${note('DROP or REJECT? DROP reveals less, but makes every client wait until the timeout. For internal networks REJECT is often friendlier; at the border to the internet DROP is usually used.')}` },
@@ -10116,7 +10132,7 @@ ${note('DROP or REJECT? DROP reveals less, but makes every client wait until the
       { type: 'theory', title: 'TCP does not fragment, TCP segments', html: `
 <p>TCP sets the DF bit in every packet. Instead of IP fragments it uses smaller segments. How large they may be is negotiated by both sides in the handshake with the MSS: each side announces the MTU of its interface minus 40 (20 IP, 20 TCP). But both only know their own link.</p>
 <pre>client ── r1 ══ MTU 1400 ══ r2 ── fw ── web
-MSS in the handshake: 1460 and 1460 → web sends segments of 1500 bytes
+MSS in the handshake: 1460 and 1460 → web sends packets of 1500 bytes (1460 bytes of data each)
 r2 cannot forward them (DF set) → ICMP Fragmentation Needed, MTU 1400 to web
 web remembers the path MTU and resends the data, now with 1360 bytes per segment</pre>
 <p>This is <b>Path MTU Discovery</b> (module IP and routing) from TCP's point of view. If the ICMP message does not arrive, the infamous <b>PMTUD blackhole</b> appears:</p>
@@ -10145,7 +10161,7 @@ ${note('Typical places for this are VPN tunnels, PPPoE (MTU 1492) and VXLAN with
           { text: 'Was the three-way handshake completed? (yes or no)', ask: true, expect: () => ['yes'] },
           { text: 'Set up MSS clamping on r1 so that the segments fit through the narrow spot, and fetch the page again.', check: tcpDoneAfter('tcp-stalled') }],
         hints: ['You will find MSS clamping on r1 under Configuration, Add a feature, Advanced.', 'MTU 1400 minus 40 bytes for IP and TCP.'],
-        outro: '<p>With MSS clamping, the client only announces 1360 in the SYN, and the SYN/ACK from web is also adjusted on the way back. Neither side sends a segment that is too large any more, ICMP is not needed at all.</p>' }
+        outro: '<p>With MSS clamping, the client still announces 1460, but r1 rewrites it to 1360 in the forwarded SYN, so web only sees 1360. The SYN/ACK from web is adjusted the same way on the way back. Neither side sends a segment that is too large any more, ICMP is not needed at all.</p>' }
     ] }
   ]
 };
@@ -10183,7 +10199,7 @@ ${bar([['Ethernet', '14', 'eth', 1], ['IPv4', '20', 'ip', 1], ['UDP 68 → 67', 
 <tr><td>1</td><td>Subnet mask</td></tr><tr><td>3</td><td>Router, the default gateway</td></tr>
 <tr><td>6</td><td>DNS servers</td></tr><tr><td>51</td><td>Lease time</td></tr><tr><td>53</td><td>Message type (Discover, Offer, …)</td></tr>
 <tr><td>54</td><td>Server identifier</td></tr></table>
-${note('Halfway through the lease (T1), the client asks the same server directly to extend it. Only if that fails for a long time does it start over with a broadcast. If a client gets no answer at all, Linux keeps the interface without an address, Windows picks one from <code>169.254.0.0/16</code> (APIPA): a sure sign that DHCP failed.')}` },
+${note('Halfway through the lease (T1), the client asks the same server directly to extend it. If that server does not answer, at 87.5 % (T2) it asks any server by broadcast. Only when the lease has run out does it give up the address and start over with a Discover. If a client gets no answer at all, Linux keeps the interface without an address, Windows picks one from <code>169.254.0.0/16</code> (APIPA): a sure sign that DHCP failed.')}` },
       { type: 'stack', title: 'Put the DHCP messages in order', hint: 'The top is the first message.',
         items: [{ name: 'DHCP Discover from the client (broadcast)', kind: 'data' }, { name: 'DHCP Offer from the server', kind: 'data' },
           { name: 'DHCP Request from the client (broadcast)', kind: 'data' }, { name: 'DHCP ACK from the server', kind: 'data' }],
@@ -10205,7 +10221,7 @@ ${note('Halfway through the lease (T1), the client asks the same server directly
           { text: 'Which destination IP does the Offer have?', ask: true, expect: () => ['255.255.255.255'] },
           { text: 'Release the address of client1 (<code>dhclient -r</code>) and ask again (<code>dhclient</code>).', check: boundAfter('client1', 'dhcp-released-client') },
           { text: 'Which address did client2 get?', ask: true, expect: sim => [leaseOf(sim, 'client2')].filter(Boolean), placeholder: '10.10.0.…' }],
-        hints: ['A Discover and a Request come from 0.0.0.0. The server answers to the broadcast address too, because the client cannot receive anything else yet.', 'The server shows its leases with show ip dhcp binding.'],
+        hints: ['A Discover and a Request come from 0.0.0.0. In the lab the server answers to the broadcast address too. Real clients that cannot receive a unicast before they have an address set the broadcast flag; for the others (e.g. Linux dhclient) the server sends the Offer straight to the new address and the client\'s MAC.', 'The server shows its leases with show ip dhcp binding.'],
         outro: '<p>client1 got the same address again: the server remembers which address belongs to which MAC and offers it again. That is why devices often keep their address even though it is assigned dynamically.</p>' },
       { type: 'build', title: 'Build the DHCP Discover', blocks: ['eth', 'vlan', 'arp', 'ip', 'icmp', 'udp', 'tcp', 'dhcp'],
         task: '<p><b>client1</b> starts and has no address. Build the first frame it sends.</p>',
@@ -10350,8 +10366,10 @@ export default {
 Init → 2-Way      my router ID is in the neighbor's hello
 2-Way → Exchange  the databases are compared and exchanged
 Exchange → Full   both have the same map</pre>
+<p>Real routers show two more states in between: <b>ExStart</b> before Exchange (the two agree who leads the exchange) and <b>Loading</b> before Full (missing parts of the map are fetched). A neighbor stuck in ExStart usually means different MTUs on the link. On a LAN with several routers, two routers that are neither DR nor BDR stay in 2-Way, and that is normal.</p>
 <h2>Cost</h2>
 <p>Every interface has a <b>cost</b>, the sum along a path counts. By default it follows the bandwidth (reference 100 Mbit/s divided by the link speed). Here every link costs 10. The route with the lowest total cost wins, regardless of the number of hops.</p>
+<p>An interface towards hosts only is set to <b>passive</b>: OSPF still announces its network, but sends no hellos there and forms no neighbors, so nobody on that LAN can pose as an OSPF router.</p>
 ${note('Hello and dead interval must match on both sides, as must the subnet. If they do not, the routers ignore each other\'s hellos and never become neighbors. In FRR the defaults are hello 10 s and dead 40 s. The lab uses 1 s and 4 s so you do not have to wait.')}
 ${note('A route can be known from several sources. Then the administrative distance decides: connected 0, static 1, OSPF 110. A forgotten static route therefore always beats OSPF.')}` },
       { type: 'stack', title: 'Put the neighbor states in order', hint: 'The top is the first state.',
@@ -10360,8 +10378,8 @@ ${note('A route can be known from several sources. Then the administrative dista
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'To which address are OSPF hellos sent?', input: ['224.0.0.5'] },
         { q: 'Path A has three links with cost 10, path B one link with cost 50. Which does OSPF use?', options: ['A, total cost 30', 'B, fewer hops', 'Both alternately'], correct: 0 },
-        { q: 'Two routers stay in Init forever and never reach 2-Way. What is a likely cause?', options: ['Different hello or dead intervals', 'Too many routes', 'The routers have the same cost', 'The link is too fast'], correct: 0,
-          explain: 'With mismatched timers each side ignores the other\'s hellos, so neither ever sees its own ID in a hello. Different subnets on the link have the same effect.' }] }
+        { q: 'Two routers never become neighbors: show ip ospf neighbor stays empty on both. What is a likely cause?', options: ['Different hello or dead intervals', 'Too many routes', 'The routers have the same cost', 'The link is too fast'], correct: 0,
+          explain: 'With mismatched timers each router throws the other\'s hellos away, so the neighbor does not even reach Init. Different subnets on the link have the same effect. Init means that hellos only get through in one direction.' }] }
     ] },
 
     { id: 'm8-l2', title: 'Turn on OSPF', minutes: 15, steps: [
@@ -10401,7 +10419,7 @@ ${note('A route can be known from several sources. Then the administrative dista
           { text: 'Fix it: all three routers have two Full neighbors.', check: sim => ['o1', 'o2', 'o3'].every(id => fullCount(sim, id) === 2) },
           { text: 'pc2 reaches pc1.', check: pingOk('pc2', '10.1.0.10') }],
         hints: ['Compare show ip ospf interface on o1 and o2.', 'The timers are in Configuration → OSPF.'],
-        outro: '<p>Mismatched timers, a different subnet on the link, or an interface accidentally set to passive: these are the classic reasons why OSPF neighbors do not come up. The log of the receiving router always says why it ignores a hello.</p>' }
+        outro: '<p>Mismatched timers, a different subnet on the link, or an interface accidentally set to passive: these are the classic reasons why OSPF neighbors do not come up. For mismatched timers or subnets, the log of the receiving router says why it ignores a hello. A passive interface sends no hellos at all: check <code>show ip ospf interface</code>.</p>' }
     ] }
   ]
 };
@@ -10438,7 +10456,7 @@ export default {
 ${bar([['Ethernet', 'src 00:00:5e:00:01:01', 'eth', 1.6], ['IPv4 → 224.0.0.18', 'proto 112, TTL 255', 'ip', 1.6], ['VRRP', 'VRID, priority, virtual IP', 'rt', 2]], 'A VRRP advertisement: the master sends it with the virtual MAC as its source, so the switches always know where the virtual MAC is.')}
 <h2>The takeover</h2>
 <p>If the backups miss about three advertisements, the one with the highest priority becomes master. It sends a <b>gratuitous ARP</b> for the virtual IP with the virtual MAC, and the switches learn its new port. The hosts do not have to do anything: their ARP entry for the gateway (virtual IP → virtual MAC) stays the same.</p>
-${note('Linux implements VRRP with keepalived, Cisco has its own HSRP that works the same way. On the routers, the LAN interface also keeps its own address: the virtual IP comes on top.')}` },
+${note('On Linux, keepalived implements VRRP. By default it uses the router\'s own MAC and updates the hosts with gratuitous ARPs, only with <code>use_vmac</code> does it use the virtual MAC. Cisco\'s HSRP follows the same idea with its own MAC range (<code>0000.0c07.acXX</code>) and with preempt off by default. On the routers, the LAN interface also keeps its own address: the virtual IP comes on top.')}` },
       { type: 'quiz', title: 'Quick check', questions: [
         { q: 'Which virtual MAC address does VRRP group 5 use?', input: ['00:00:5e:00:01:05', '0000.5e00.0105', '00-00-5e-00-01-05'] },
         { q: 'ra has priority 110, rb priority 100. Which router is master?', options: ['ra', 'rb', 'The one that started first'], correct: 0 },
@@ -10469,7 +10487,7 @@ ${note('Linux implements VRRP with keepalived, Cisco has its own HSRP that works
           { text: 'Give rb the priority 120. It takes over the master role.', check: sim => stateOf(sim, 'rb') === 'master' && stateOf(sim, 'ra') === 'backup' },
           { text: 'pc1 still reaches the server.', check: sim => sim.log.some(e => e.dev === 'pc1' && e.tag === 'ping-done' && e.data.received > 0 && stateOf(sim, 'rb') === 'master') },
           { text: 'Did pc1 have to learn a new MAC address for its gateway? (yes or no)', ask: true, expect: () => ['no'] }],
-        hints: ['Configuration → VRRP on rb, "+ Group". Interface eth1, group 1, virtual IP 10.0.0.1.', 'With preempt on, the router with the higher priority takes over immediately when it hears a lower one.'],
+        hints: ['Configuration → VRRP on rb, "+ Group". Interface eth1, group 1, virtual IP 10.0.0.1.', 'With preempt on, the router with the higher priority ignores the advertisements of a lower master and takes over when its master down timer runs out, after about three advertisement intervals.'],
         outro: '<p>Priorities decide who is master in normal operation, for example the router with the faster uplink. In real networks, the priority is often lowered automatically when the uplink fails (tracking), so the other router takes over.</p>' }
     ] }
   ]
@@ -12422,7 +12440,7 @@ class Bridge {
       this.stp.lastFlush = this.sim.time;
       this.fdb.clear();
       this.stp.tcUntil = Math.max(this.stp.tcUntil, this.sim.time + this.timers().fwd * 1000);
-      this.dev.record('info', 'Topology change reported: MAC table flushed, addresses are learned again', { tag: 'stp-tc-flush' });
+      this.dev.record('info', 'Topology change reported: MAC table flushed, addresses are learned again (simplified: classic 802.1D only lets the entries expire after the forward delay)', { tag: 'stp-tc-flush' });
     }
     this.stpRecompute();
   }
@@ -12501,7 +12519,7 @@ class Bridge {
     if (this.sim.time - this.stp.lastFlush > 5000) {
       this.stp.lastFlush = this.sim.time;
       this.fdb.clear();
-      this.dev.record('info', 'Topology change: MAC table flushed and change reported via BPDU', { tag: 'stp-tc', data: {} });
+      this.dev.record('info', 'Topology change: MAC table flushed and change reported via BPDU (simplified: classic 802.1D only lets the entries expire after the forward delay)', { tag: 'stp-tc', data: {} });
     }
   }
 
@@ -12937,7 +12955,7 @@ function validate(seq) {
   if (seq[0] !== 'eth') err(0, 'A frame always starts with the Ethernet header.');
   for (let i = 0; i < seq.length; i++) {
     const b = seq[i], prev = seq[i - 1], next = seq[i + 1];
-    if (b === 'vlan' && prev !== 'eth') err(i, 'The 802.1Q tag follows directly after the Ethernet header (after the source MAC).');
+    if (b === 'vlan' && prev !== 'eth' && !(prev === 'vlan' && seq[i - 2] === 'eth')) err(i, 'The 802.1Q tag follows directly after the Ethernet header (after the source MAC). A second tag may follow the first (QinQ).');
     if (b === 'eth' && i > 0 && prev !== 'vxlan') err(i, 'A second Ethernet header only makes sense after a VXLAN header (inner frame).');
     if (b === 'arp' && !['eth', 'vlan'].includes(prev)) err(i, 'ARP belongs directly in the Ethernet frame (EtherType).');
     if ((b === 'ip' || b === 'ipv6') && !['eth', 'vlan', 'wg', 'esp'].includes(prev)) err(i, `${BLOCKS[b].name} belongs directly in the Ethernet frame (EtherType), or inside a VPN tunnel.`);
@@ -12955,7 +12973,7 @@ function validate(seq) {
     if (b === 'vxlan' && next !== 'eth') err(i, 'The inner Ethernet frame follows the VXLAN header.');
     if (b === 'data' && !['udp', 'tcp', 'icmp', 'icmp6'].includes(prev)) err(i, 'Application data is carried in UDP, TCP or ICMP.');
     if (b === 'data' && next) err(i + 1, 'Only the FCS comes after the data.');
-    if (b === 'vlan' && seq.filter(x => x === 'vlan').length > 2) err(i, 'More than two tags (QinQ) are unusual.');
+    if (b === 'vlan' && seq.slice(0, i + 1).filter(x => x === 'vlan').length === 3) err(i, 'Two tags are QinQ (802.1ad, the outer one with TPID 0x88A8). More than two are unusual.');
     const B = BLOCKS[b];
     if (B.in && !B.in.includes(prev)) err(i, `${B.name} is carried in ${B.in.map(x => BLOCKS[x].name).join(' or ')}.`);
     if (B.last && next) err(i + 1, `Nothing follows ${B.name}, it is the payload itself.`);
@@ -13721,7 +13739,7 @@ export class Ip6 {
   sendRa(ifname, solicited = false) {
     const src = this.ifAddr(ifname, false);
     if (!src) return;
-    const prefixes = this.addrs(ifname).filter(a => a.scope === 'global' && a.origin === 'static').map(a => ({ prefix: parseCidr6(`${a.ip}/${a.len}`).net, len: a.len, auto: a.len === 64, valid: 2592000, preferred: 604800 }));
+    const prefixes = this.addrs(ifname).filter(a => a.scope === 'global' && a.origin === 'static').map(a => ({ prefix: parseCidr6(`${a.ip}/${a.len}`).net, len: a.len, auto: true, valid: 2592000, preferred: 604800 }));
     const rdnss = String(this.cfg.ipv6?.rdnss || '').split(/[\s,]+/).filter(isIp6).map(norm6);
     const ra = icmp6(134, 0, { hopLimit: 64, managed: false, other: false, lifetime: T6.routerLifetime, slla: this.dev.mac(ifname), mtu: this.l3.mtu(ifname), prefixes, rdnss, periodic: !solicited });
     this.rec('info', `${solicited ? 'answers with' : 'sends'} a Router Advertisement on ${ifname}: ${prefixes.length ? 'prefix ' + prefixes.map(p => `${p.prefix}/${p.len}`).join(', ') : 'no prefix'}${rdnss.length ? ', DNS ' + rdnss.join(', ') : ''}, default router ${src}`,
@@ -13745,7 +13763,13 @@ export class Ip6 {
     if (this.cfg.ipv6?.slaac !== false) {
       const list = this.slaac.get(ifname) || [];
       for (const p of m.prefixes || []) {
-        if (!p.auto || p.len !== 64) continue;
+        if (!p.auto) continue;
+        // The interface ID has 64 bits, so only a /64 adds up to 128 (RFC 4862 5.5.3)
+        if (p.len !== 64) {
+          const key = `${ifname} ${p.prefix}/${p.len}`;
+          if (!(this.slaacIgnored ??= new Set()).has(key)) { this.slaacIgnored.add(key); this.rec('info', `ignores the prefix ${p.prefix}/${p.len} from the Router Advertisement: SLAAC needs a /64, a /${p.len} and a 64-bit interface ID do not add up to 128 bits`, { frame, tag: 'slaac-wrong-length' }); }
+          continue;
+        }
         const ip6 = slaacFor(p.prefix, this.dev.mac(ifname));
         if (list.some(a => a.ip === ip6)) continue;
         list.push({ ip: ip6, len: 64, prefix: p.prefix });
@@ -15473,7 +15497,7 @@ export function dissect(f, depth = 0) {
   if (f.vlan) layers.push({ kind: 'vlan', depth, name: `${pre}802.1Q tag`, bytes: VLAN_TAG, fields: [
     ['TPID', '0x8100', 'Identifies the tag'],
     ['PCP (priority)', String(f.vlan.pcp || 0), '0 to 7'],
-    ['DEI', '0', 'May be dropped under congestion'],
+    ['DEI', '0', '0: normal. 1 would mark the frame as the first to drop under congestion'],
     ['VID (VLAN)', String(f.vlan.vid), 'Usable 1 to 4094'],
     ['EtherType', f.type === 'arp' ? '0x0806 (ARP)' : f.type === 'ipv6' ? '0x86DD (IPv6)' : '0x0800 (IPv4)', '']
   ]});
@@ -15500,7 +15524,7 @@ export function dissect(f, depth = 0) {
     ['TTL', String(ip.ttl), 'Every router subtracts 1'],
     ['Protocol', `${ip.proto} (${PROTO_NAME[ip.proto] || '?'})`, ''],
     ['Header Checksum', hex4(ip.checksum), 'Recomputed at every hop'],
-    ['Source IP', ip.src, 'Stays the same end to end'],
+    ['Source IP', ip.src, 'Stays the same end to end, unless a NAT router rewrites it'],
     ['Destination IP', ip.dst, '']
   ]});
   return l4Layers(f, ip, layers, depth, pre);
@@ -15610,9 +15634,9 @@ function l4Layers(f, ip, layers, depth, pre) {
       layers.push({ kind: 'udp', depth, name: `${pre}UDP`, bytes: UDP_HDR, fields: [['Source port', String(l4.sport), 'Listen port of the sending peer'],
         ['Destination port', String(l4.dport), l4.dport === 51820 ? 'WireGuard (usual port)' : 'Listen port of the peer'], ['Length', `${UDP_HDR + udpPayloadLen(l4)} bytes`, '']] });
       const fields = [['Type', { init: '1 (handshake initiation)', resp: '2 (handshake response)', data: '4 (transport data)' }[w.type], '']];
-      if (w.type === 'init') fields.push(['Sender index', String(w.sender), 'Number the initiator uses for this session'], ['Ephemeral key, static key, timestamp', '116 bytes, encrypted', 'Encrypted with the public key of the receiver: only the right peer can read it'],
+      if (w.type === 'init') fields.push(['Sender index', String(w.sender), 'Number the initiator uses for this session'], ['Ephemeral key', '32 bytes, in the clear', 'A fresh key pair for this handshake only'], ['Static key, timestamp', '48 + 28 bytes, encrypted', 'Encrypted with a key that only the holder of the receiver\'s private key can derive: only the right peer can read it'],
         ['MAC1 / MAC2', '32 bytes', 'Protection against strangers and floods']);
-      if (w.type === 'resp') fields.push(['Sender / receiver index', `${w.sender} / ${w.receiver}`, 'Both sides now know each other\'s session number'], ['Ephemeral key, empty', '48 bytes, encrypted', 'Completes the key exchange']);
+      if (w.type === 'resp') fields.push(['Sender / receiver index', `${w.sender} / ${w.receiver}`, 'Both sides now know each other\'s session number'], ['Ephemeral key', '32 bytes, in the clear', 'Completes the key exchange'], ['Empty', '16 bytes, encrypted', 'Proves that the responder could derive the keys'], ['MAC1 / MAC2', '32 bytes', 'Protection against strangers and floods']);
       if (w.type === 'data') fields.push(['Receiver index', String(w.receiver), 'Tells the receiver which session (and key) to use'], ['Counter', String(w.counter), 'Nonce and protection against replays'],
         ['Encrypted packet', w.inner ? `${Math.ceil(w.inner.totalLength / 16) * 16} bytes (padded to 16)` : '0 bytes: keepalive', 'ChaCha20: nobody on the way can read it'], ['Authentication tag', '16 bytes', 'Poly1305: any change is noticed']);
       layers.push({ kind: 'vpn', depth, name: 'WireGuard', bytes: udpPayloadLen(l4) - (w.inner ? Math.ceil(w.inner.totalLength / 16) * 16 : 0), fields });
@@ -18115,7 +18139,10 @@ export const MODES = {
   same: {
     title: 'Same subnet?', text: 'Decide whether two hosts are in the same subnet and can talk without a router.',
     make(level) {
-      const len = prefixFor(level); const ip = randomIp(); const i = info(ip, len);
+      const len = prefixFor(level);
+      // Both hosts must be real hosts: never the network or broadcast address of the subnet
+      let ip; do ip = randomIp(); while (ip === info(ip, len).net || ip === info(ip, len).bc);
+      const i = info(ip, len);
       const base = ipToInt(i.net), size = 2 ** (32 - len);
       const same = Math.random() < .5;
       const step = base + 2 * size <= 0xffffffff ? size : -size;
@@ -18144,7 +18171,7 @@ export function explain(mode, q) {
     const bits = 32 - q.len;
     const e = q.len % 8 === 0 && q.len ? `The mask ends exactly at an octet boundary.` : `${q.len} ones: ${Math.floor(q.len / 8)} full octets of 255, then ${q.len % 8} more bits = ${256 - 2 ** (8 - q.len % 8)}.`;
     return mode === 'mask' ? `<p>/${q.len} means ${q.len} ones followed by ${bits} zeros. ${e} So /${q.len} = <code>${maskStr(q.len)}</code>.</p>`
-      : `<p>With ${bits} host bits there are 2<sup>${bits}</sup> − 2 = ${2 ** bits - 2} usable addresses (network and broadcast are reserved). ${bits - 1} host bits would only give ${2 ** (bits - 1) - 2}, too few for ${q.hosts}. So the prefix is 32 − ${bits} = <b>/${q.len}</b>.</p>`;
+      : `<p>With ${bits} host bits there are 2<sup>${bits}</sup> − 2 = ${2 ** bits - 2} usable addresses (network and broadcast are reserved). ${bits === 2 ? 'One host bit (/31) gives only 2 addresses, which on a normal LAN would both be reserved (only point-to-point links may use both, RFC 3021).' : `${bits - 1} host bits would only give ${2 ** (bits - 1) - 2}, too few for ${q.hosts}.`} So the prefix is 32 − ${bits} = <b>/${q.len}</b>.</p>`;
   }
   const x = explainOctet(q.ip, q.len), i = info(q.ip, q.len);
   if (q.len % 8 === 0) return `<p>/${q.len} ends at an octet boundary: the first ${q.len / 8} octets are the network, the rest are host bits. Network <code>${i.net}</code> (all host bits 0), broadcast <code>${i.bc}</code> (all host bits 1).</p>
@@ -18153,7 +18180,7 @@ export function explain(mode, q) {
   let s = `<p>The prefix /${q.len} ends in octet ${x.octet} after ${x.bits} bit${x.bits === 1 ? '' : 's'}. Mask in that octet: 256 − ${x.block} = ${x.maskOctet}, so the subnets there come in blocks of <b>${x.block}</b>.</p>
 <p>Octet ${x.octet} of <code>${q.ip}</code> is ${x.val} = <code>${mark}</code> in binary (network bits | host bits). ${x.val} lies in the block <b>${x.start} to ${x.end}</b>.</p>
 <p><b>Network</b> = start of the block, all host bits 0: <code>${i.net}</code>. <b>Broadcast</b> = end of the block, all host bits 1: <code>${i.bc}</code>.</p>
-<p><b>First host</b> = network + 1 = <code>${i.first}</code>, <b>last host</b> = broadcast − 1 = <code>${i.last}</code>. ${x.octet === 4 && x.start ? `Not .1 or .254: those belong to other blocks, this block only runs from ${x.start} to ${x.end}.` : ''} 2<sup>${32 - q.len}</sup> − 2 = ${i.hosts.toLocaleString('en')} usable.</p>`;
+<p><b>First host</b> = network + 1 = <code>${i.first}</code>, <b>last host</b> = broadcast − 1 = <code>${i.last}</code>. ${x.octet === 4 && (x.start > 0 || x.end < 255) ? `Not ${[x.start > 0 && '.1', x.end < 255 && '.254'].filter(Boolean).join(' or ')}: ${x.start > 0 && x.end < 255 ? 'those belong to other blocks' : 'that belongs to another block'}, this block only runs from ${x.start} to ${x.end}.` : ''} 2<sup>${32 - q.len}</sup> − 2 = ${i.hosts.toLocaleString('en')} usable.</p>`;
   if (mode === 'same') s += `<p>${q.other} ${info(q.other, q.len).net === i.net ? 'lies in the same block, so: <b>yes</b>' : `belongs to the network ${info(q.other, q.len).net}, so: <b>no</b>, the hosts need a router`}.</p>`;
   return s;
 }
@@ -18559,7 +18586,7 @@ function stack(step, el, done, saved, save) {
 }
 
 // ---------------------------------------------------------------- MAC decoder
-const OUI = { '00:50:56': 'VMware (ESXi)', '00:0c:29': 'VMware (Workstation)', '52:54:00': 'QEMU/KVM (locally administered)', 'aa:c1:ab': 'containerlab (locally administered)',
+const OUI = { '00:50:56': 'VMware (vCenter or set by hand)', '00:0c:29': 'VMware (ESXi, Workstation)', '52:54:00': 'QEMU/KVM (locally administered)', 'aa:c1:ab': 'containerlab (locally administered)',
   '02:42:ac': 'Docker (older versions)', '00:1b:21': 'Intel', '3c:fd:fe': 'Intel', 'f4:4d:30': 'Elitegroup', '00:00:5e': 'IANA (VRRP: 00:00:5e:00:01:xx)', '01:00:5e': 'IPv4 multicast', '33:33:00': 'IPv6 multicast' };
 export function classifyMac(m) {
   if (m === 'ff:ff:ff:ff:ff:ff') return 'Broadcast';
