@@ -42,7 +42,7 @@
 # =============================================================================
 set -euo pipefail
 
-# Made from blueprint 1.1.1 (https://github.com/santiagotoro2023/project-blueprint)
+# Made from blueprint 1.1.2 (https://github.com/santiagotoro2023/project-blueprint)
 APP_ID="packetpilot"
 APP_NAME="PacketPilot"
 APP_VERSION="3.2.0"

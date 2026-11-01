@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Blueprint 1.1.1: the installer of PacketPilot on a real Debian with systemd (in Docker).
+# Blueprint 1.1.2: the installer of PacketPilot on a real Debian with systemd (in Docker).
 #   bash build.sh && bash test/installer/run.sh [debian:12|debian:13] [previous-installer.sh]
 # Installs, checks HTTPS and the app, installs again (settings and certificate are kept),
 # changes options,

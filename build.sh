@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds packetpilot-install.sh, the one-file installer, from src/
-# after writing every blueprint file from project.conf and VERSION (blueprint 1.1.1).
+# after writing every blueprint file from project.conf and VERSION (blueprint 1.1.2).
 #   bash build.sh            render, build, check
 set -euo pipefail
 cd "$(dirname "$0")"
